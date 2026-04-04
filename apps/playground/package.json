@@ -1,0 +1,20 @@
+{
+  "name": "@jiku/playground",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.66",
+    "@ai-sdk/openai": "^3.0.50",
+    "@jiku/core": "workspace:*",
+    "@jiku/kit": "workspace:*",
+    "@jiku/plugin-social": "workspace:*",
+    "@jiku/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "scripts": {
+    "start": "bun run index.ts"
+  }
+}

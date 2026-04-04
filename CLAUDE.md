@@ -11,6 +11,16 @@
 
 ---
 
+## TypeScript Rules
+
+- **No dynamic `import()` type expressions inside function bodies or signatures.** All imports must be at the top of the file as static `import` statements.
+  - ❌ `provide: <K extends keyof import('@jiku/types').Foo>(...)` — wrong
+  - ✅ Add `import type { Foo } from '@jiku/types'` at the top, then use `Foo` directly
+- The only exception is runtime lazy loading (e.g. dynamic plugin discovery from filesystem), where `import()` is intentional and load-time matters.
+- **No `any`.** Use proper types, generics, or `unknown` with narrowing.
+
+---
+
 ## Project Context — Read These First
 
 Before making any changes, always read the relevant docs:

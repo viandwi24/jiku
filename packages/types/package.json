@@ -1,5 +1,5 @@
 {
-  "name": "@jiku/kit",
+  "name": "@jiku/types",
   "module": "src/index.ts",
   "types": "src/index.ts",
   "typings": "src/index.ts",
@@ -10,5 +10,8 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "ai": "^6.0.146"
   }
 }

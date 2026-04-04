@@ -1,10 +1,17 @@
 {
-  "name": "@jiku/types",
+  "name": "@jiku/core",
   "module": "src/index.ts",
   "types": "src/index.ts",
   "typings": "src/index.ts",
   "type": "module",
   "private": true,
+  "dependencies": {
+    "@jiku/types": "workspace:*",
+    "@jiku/kit": "workspace:*",
+    "ai": "^6.0.145",
+    "zod": "^4.3.6",
+    "hookable": "^6.1.0"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

@@ -1,15 +1,24 @@
-# Product Spec
-
-<!-- TODO: Fill in the product description -->
+# Product Spec — Jiku
 
 ## What is this product?
 
-<!-- Describe what the product does and who it's for -->
+Jiku adalah **agentic AI platform** dengan arsitektur multi-tenant. Platform ini memungkinkan perusahaan membangun dan mengelola AI agent yang dapat berinteraksi dengan pengguna melalui dua mode: chat (percakapan interaktif) dan task (eksekusi otonom berbasis goal).
+
+Hierarki entitas utama:
+```
+Company → Project → Agent → Conversation (Chat / Task mode)
+```
 
 ## Goals
 
-<!-- What are the primary goals of this product? -->
+- Menyediakan runtime agent yang modular dan extensible lewat plugin system
+- Memisahkan permission/policy dari code — semua aturan akses adalah data yang bisa diubah runtime
+- Mendukung multi-mode: chat untuk interaksi user, task untuk otomasi background
+- Zero-dependency core — `@jiku/core` tidak tahu tentang DB atau storage implementasi
+- Developer experience yang baik untuk plugin author lewat `@jiku/kit` SDK
 
 ## Target Users
 
-<!-- Who will use this product? -->
+- **SaaS builders** yang ingin embed AI agent ke produk mereka dengan kontrol akses per-user
+- **Enterprises** yang butuh multi-tenant AI dengan isolation per company/project
+- **Plugin authors** yang ingin extend fungsionalitas agent

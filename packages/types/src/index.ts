@@ -1,1 +1,356 @@
-console.log("Hello via Bun!");
+// ============================================================
+// MODE
+// ============================================================
+
+export type AgentMode = 'chat' | 'task'
+
+// ============================================================
+// TOOL
+// ============================================================
+
+export interface ToolMeta {
+  id: string
+  name: string
+  description: string
+}
+
+export interface ToolDefinition {
+  meta: ToolMeta
+  permission: string
+  modes: AgentMode[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  input: any
+  execute: (args: unknown, ctx: ToolContext) => Promise<unknown>
+  prompt?: string
+}
+
+export interface ResolvedTool extends ToolDefinition {
+  resolved_id: string         // 'jiku.social:create_post' — untuk rules & internal refs
+  tool_name: string           // 'jiku_social__create_post' — LLM-safe, pattern ^[a-zA-Z0-9_-]+$
+  resolved_permission: string
+  plugin_id: string
+}
+
+// ============================================================
+// STREAM DATA TYPES
+// ============================================================
+
+/**
+ * Typed data parts for the Jiku run stream.
+ * Matches AI SDK's UIDataTypes shape — keys map to data payload types.
+ *
+ * Extend via declaration merging:
+ *   declare module '@jiku/types' {
+ *     interface JikuDataTypes { 'my-event': { value: string } }
+ *   }
+ */
+export interface JikuDataTypes {
+  'jiku-meta': {
+    run_id: string
+    conversation_id: string
+    agent_id: string
+    mode: AgentMode
+  }
+  'jiku-usage': {
+    input_tokens: number
+    output_tokens: number
+  }
+  'jiku-step-usage': {
+    step: number
+    input_tokens: number
+    output_tokens: number
+  }
+  'jiku-tool-data': {
+    tool_id: string
+    data: unknown
+  }
+}
+
+/**
+ * JikuDataTypes with index signature for AI SDK UIDataTypes compatibility.
+ * Used internally — do not use this for narrowing; use JikuDataTypes directly.
+ */
+export type JikuDataTypesCompat = JikuDataTypes & { [key: string]: unknown }
+
+// ============================================================
+// STREAM WRITER
+// ============================================================
+
+/**
+ * Type-safe writer injected into ToolContext.
+ * Based on AI SDK UIMessageStreamWriter, narrowed to JikuDataTypes.
+ */
+export interface JikuStreamWriter {
+  write<K extends keyof JikuDataTypes & string>(
+    type: K,
+    data: JikuDataTypes[K],
+  ): void
+}
+
+// ============================================================
+// PLUGIN
+// ============================================================
+
+export interface PluginMeta {
+  id: string
+  name: string
+  version: string
+  description?: string
+}
+
+export interface PluginSetupContext {
+  tools: {
+    register: (...tools: ToolDefinition[]) => void
+  }
+  prompt: {
+    inject: (segment: string | (() => Promise<string>)) => void
+  }
+  hooks: HookAPI
+  storage: PluginStorageAPI
+  provide: <K extends keyof RuntimeContext>(
+    key: K,
+    factory: (ctx: CallerContext) => RuntimeContext[K]
+  ) => void
+}
+
+export interface PluginDefinition {
+  meta: PluginMeta
+  dependencies?: string[]
+  setup: (ctx: PluginSetupContext) => void
+  onActivated?: (ctx: CallerContext) => void | Promise<void>
+  onDeactivated?: () => void | Promise<void>
+}
+
+// ============================================================
+// AGENT
+// ============================================================
+
+export interface AgentMeta {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface AgentDefinition {
+  meta: AgentMeta
+  base_prompt: string
+  allowed_modes: AgentMode[]
+  provider_id?: string
+  model_id?: string
+}
+
+// ============================================================
+// POLICY & RULES
+// ============================================================
+
+export type PolicyEffect = 'allow' | 'deny'
+export type ResourceType = 'agent' | 'tool'
+export type SubjectType = 'role' | 'permission'
+
+export interface PolicyRule {
+  resource_type: ResourceType
+  resource_id: string
+  subject_type: SubjectType
+  subject: string
+  effect: PolicyEffect
+  priority?: number
+}
+
+// ============================================================
+// CALLER
+// ============================================================
+
+export interface CallerContext {
+  user_id: string
+  roles: string[]
+  permissions: string[]
+  user_data: Record<string, unknown>
+}
+
+// ============================================================
+// RUNTIME CONTEXT
+// ============================================================
+
+export interface RuntimeContext {
+  caller: CallerContext
+  agent: {
+    id: string
+    name: string
+    mode: AgentMode
+  }
+  conversation_id: string
+  run_id: string
+  [key: string]: unknown
+}
+
+export interface ToolContext {
+  runtime: RuntimeContext
+  storage: PluginStorageAPI
+  /** Push typed data chunks into the current run stream. */
+  writer: JikuStreamWriter
+}
+
+// ============================================================
+// CONVERSATION
+// ============================================================
+
+export type ConversationMode = AgentMode
+
+export interface Conversation {
+  id: string
+  agent_id: string
+  mode: ConversationMode
+  title?: string
+  status: 'active' | 'completed' | 'failed'
+  goal?: string
+  output?: unknown
+  created_at: Date
+  updated_at: Date
+}
+
+export interface Message {
+  id: string
+  conversation_id: string
+  role: 'user' | 'assistant' | 'tool'
+  content: MessageContent[]
+  created_at: Date
+}
+
+export type MessageContent =
+  | { type: 'text'; text: string }
+  | { type: 'tool_call'; tool_id: string; args: unknown }
+  | { type: 'tool_result'; tool_id: string; result: unknown }
+  | { type: 'data'; name: string; value: unknown }
+
+// ============================================================
+// MODEL PROVIDER
+// ============================================================
+
+export interface ModelProviderDefinition {
+  id: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getModel(model_id: string): any
+}
+
+// ============================================================
+// RUNTIME OPTIONS
+// ============================================================
+
+export interface JikuRuntimeOptions {
+  plugins: PluginLoaderInterface
+  storage: JikuStorageAdapter
+  rules?: PolicyRule[]
+  providers?: Record<string, ModelProviderDefinition>
+  default_provider?: string
+  default_model?: string
+}
+
+// ============================================================
+// RUN PARAMS
+// ============================================================
+
+export interface JikuRunParams {
+  agent_id: string
+  caller: CallerContext
+  mode: AgentMode
+  input: string
+  conversation_id?: string
+  provider_id?: string
+  model_id?: string
+  abort_signal?: AbortSignal
+}
+
+// ============================================================
+// RUN RESULT — fully typed via AI SDK
+// ============================================================
+
+import type { UIMessage, UIMessageChunk, UIMessageStreamWriter } from 'ai'
+
+/** JikuUIMessage — uses JikuDataTypesCompat to satisfy AI SDK UIDataTypes constraint. */
+export type JikuUIMessage = UIMessage<unknown, JikuDataTypesCompat>
+
+/** Writer for Jiku's stream. */
+export type JikuUIMessageStreamWriter = UIMessageStreamWriter<JikuUIMessage>
+
+/**
+ * Typed data chunks — one member per JikuDataTypes key.
+ * This is a hand-rolled discriminated union so chunk.type narrows chunk.data correctly,
+ * without the index-signature problem from UIMessageChunk<unknown, JikuDataTypes>.
+ */
+export type JikuDataChunk = {
+  [K in keyof JikuDataTypes]: {
+    type: `data-${K}`
+    id?: string
+    data: JikuDataTypes[K]
+    transient?: boolean
+  }
+}[keyof JikuDataTypes]
+
+/**
+ * Full typed stream chunk — AI SDK base chunks + Jiku typed data chunks.
+ * chunk.type === 'data-jiku-usage' narrows chunk.data to { input_tokens, output_tokens }.
+ */
+export type JikuStreamChunk =
+  | Exclude<UIMessageChunk<unknown, JikuDataTypesCompat>, { type: `data-${string}` }>
+  | JikuDataChunk
+
+export interface JikuRunResult {
+  run_id: string
+  conversation_id: string
+  stream: ReadableStream<JikuStreamChunk>
+}
+
+export type { UIMessage, UIMessageChunk, UIMessageStreamWriter }
+
+// ============================================================
+// RESOLVED SCOPE
+// ============================================================
+
+export interface ResolvedScope {
+  accessible: boolean
+  allowed_modes: AgentMode[]
+  active_tools: ResolvedTool[]
+  system_prompt: string
+  denial_reason?: string
+}
+
+// ============================================================
+// ADAPTERS
+// ============================================================
+
+export interface JikuStorageAdapter {
+  getConversation(id: string): Promise<Conversation | null>
+  createConversation(data: Omit<Conversation, 'id' | 'created_at' | 'updated_at'>): Promise<Conversation>
+  updateConversation(id: string, updates: Partial<Conversation>): Promise<Conversation>
+  listConversations(agent_id: string): Promise<Conversation[]>
+
+  getMessages(conversation_id: string, opts?: { limit?: number; offset?: number }): Promise<Message[]>
+  addMessage(conversation_id: string, message: Omit<Message, 'id' | 'created_at'>): Promise<Message>
+  deleteMessages(conversation_id: string, ids: string[]): Promise<void>
+
+  pluginGet(scope: string, key: string): Promise<unknown>
+  pluginSet(scope: string, key: string, value: unknown): Promise<void>
+  pluginDelete(scope: string, key: string): Promise<void>
+  pluginKeys(scope: string, prefix?: string): Promise<string[]>
+}
+
+export interface PluginStorageAPI {
+  get(key: string): Promise<unknown>
+  set(key: string, value: unknown): Promise<void>
+  delete(key: string): Promise<void>
+  keys(prefix?: string): Promise<string[]>
+}
+
+export interface HookAPI {
+  hook(event: string, handler: (payload: unknown) => Promise<void>): void
+  callHook(event: string, payload?: unknown): Promise<void>
+}
+
+export interface PluginLoaderInterface {
+  boot(): Promise<void>
+  stop(): Promise<void>
+  getResolvedTools(): ResolvedTool[]
+  getPromptSegments(): string[]
+  resolveProviders(caller: CallerContext): Record<string, unknown>
+}
+

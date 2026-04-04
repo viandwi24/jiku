@@ -1,18 +1,23 @@
 ## Phase
-Bootstrap
+Foundation — Complete
 
 ## Currently Working On
-- Setup automated docs architecture for the project
+(idle — foundation selesai)
 
 ## Relevant Files
-- `CLAUDE.md` — main AI builder instructions with automated docs protocol
-- `.claude/commands/docs-update.md` — /docs-update command
-- `docs/builder/` — builder docs directory
+- `packages/types/src/index.ts` — semua core types
+- `packages/kit/src/index.ts` — factory functions SDK
+- `packages/core/src/` — runtime, runner, resolver, loader, storage
+- `plugins/jiku.social/src/index.ts` — contoh plugin
+- `apps/playground/index.ts` — demo usage
 
 ## Important Context / Temporary Decisions
-- Automated docs setup completed on 2026-04-04
-- All stub files created, ready to be populated
+- AI SDK v6: gunakan `tool()` + `zodSchema()` + `stopWhen: stepCountIs(N)`
+- `@ai-sdk/anthropic` harus v3+ untuk LanguageModelV3 compatibility
+- `tsconfig.json` sudah ada `"types": ["node"]` untuk process.env
 
 ## Next Up
-- Fill in `docs/product_spec.md` with product description
-- Fill in `docs/architecture.md` with system architecture
+- Implementasi `@jiku/db` (drizzle schema + query helpers)
+- Implementasi adapter postgres untuk storage
+- Buat lebih banyak built-in plugins
+- Tambah API layer (HTTP server)

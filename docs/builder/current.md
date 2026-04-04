@@ -1,24 +1,21 @@
 ## Phase
-Plugin System V2 — Complete
+Idle — Plan 3, 3.5 complete
 
 ## Currently Working On
-(idle — Plugin System V2 selesai)
+(idle)
 
 ## Relevant Files
-- `packages/types/src/index.ts` — PluginDefinition generic, Contributes, MergeContributes, phantom brand
-- `packages/kit/src/index.ts` — definePlugin overloads
-- `packages/core/src/plugins/dependency.ts` — PluginNode, circular detection, resolveContributes
-- `packages/core/src/plugins/loader.ts` — override(), boot V2
-- `apps/playground/plugins.ts` — all plugin definitions
-- `apps/playground/checks.ts` — edge case tests
-- `apps/playground/index.ts` — runtime + chat run
+- `docs/plans/3-studio-base-implement-report.md` — implementation report Plan 3
+- `docs/plans/3.5-policy-implement-report.md` — implementation report Plan 3.5
 
 ## Important Context / Temporary Decisions
-- `Contributes<T>` = `() => T | Promise<T>` — always function, no object form (ADR-005)
-- `_contributes_type` phantom brand for type extraction (ADR-004)
-- `PluginDependency` uses `PluginDefinition<any>` to preserve specific generic params
+- `apps/studio/web` sudah import dari `@jiku/ui` untuk semua shadcn + ai-elements components
+- `@source "../node_modules/@jiku/ui/src"` di `globals.css` untuk Tailwind v4 content scan
+- Server pakai `@hono/node-server` + `ws` npm (bukan Bun.serve) — Node-compatible
+- DB commands ada di `apps/studio/server/package.json` dengan `--env-file=../server/.env`
+- `ws/chat.ts` masih pakai Anthropic SDK langsung — belum connect ke `@jiku/core` JikuRuntime
 
 ## Next Up
-- `@jiku/db` (drizzle schema + query helpers)
-- Adapter postgres
-- API layer (HTTP server)
+- Connect `@jiku/core` JikuRuntime ke `JikuRuntimeManager` (ws/chat.ts saat ini langsung Anthropic SDK)
+- DB migrations — jalankan `bun db:generate` + `bun db:migrate` dari server/
+- Invite member feature

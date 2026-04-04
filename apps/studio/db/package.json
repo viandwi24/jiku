@@ -1,0 +1,25 @@
+{
+  "name": "@jiku-studio/db",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "@jiku/types": "workspace:*",
+    "drizzle-orm": "^0.44.1",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "dotenv": "^17.4.0",
+    "drizzle-kit": "^0.31.1"
+  }
+}

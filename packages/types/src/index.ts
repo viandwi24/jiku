@@ -215,17 +215,44 @@ export interface AgentDefinition {
 // ============================================================
 
 export type PolicyEffect = 'allow' | 'deny'
-export type ResourceType = 'agent' | 'tool'
-export type SubjectType = 'role' | 'permission'
+/** @deprecated Open string — kept for backwards compat only */
+export type ResourceType = string
+/** @deprecated Open string — kept for backwards compat only */
+export type SubjectType = string
+
+/**
+ * A condition evaluated against CallerContext.
+ * All conditions in one rule are AND-logic — all must pass.
+ */
+export interface PolicyCondition {
+  /**
+   * Dot-notation path into CallerContext.
+   * e.g. 'roles', 'permissions', 'attributes.plan', 'user_data.company_id'
+   */
+  attribute: string
+  operator: 'eq' | 'not_eq' | 'in' | 'not_in' | 'contains' | 'not_contains'
+  value: string | string[]
+}
 
 export interface PolicyRule {
-  resource_type: ResourceType
+  /** Open string — 'agent' | 'tool' | any developer-defined resource type */
+  resource_type: string
+  /** '*' matches all resources of this type */
   resource_id: string
-  subject_type: SubjectType
+  /** Open string — 'role' | 'permission' | 'user' | any attribute key */
+  subject_type: string
   subject: string
   effect: PolicyEffect
   priority?: number
+  /** Optional extra conditions — all must pass (AND logic) */
+  conditions?: PolicyCondition[]
 }
+
+/**
+ * Pluggable subject matching function for JikuRuntime.
+ * If not set, defaultSubjectMatcher is used.
+ */
+export type SubjectMatcher = (rule: PolicyRule, caller: CallerContext) => boolean
 
 // ============================================================
 // CALLER
@@ -236,6 +263,12 @@ export interface CallerContext {
   roles: string[]
   permissions: string[]
   user_data: Record<string, unknown>
+  /**
+   * Arbitrary attributes for policy conditions.
+   * Studio sets: channel, company_id, plan.
+   * Custom integrations (telegram, webhook, cron) can add their own.
+   */
+  attributes?: Record<string, string | string[]>
 }
 
 // ============================================================
@@ -314,6 +347,11 @@ export interface JikuRuntimeOptions {
   providers?: Record<string, ModelProviderDefinition>
   default_provider?: string
   default_model?: string
+  /**
+   * Custom subject matcher. When not set, defaultSubjectMatcher is used.
+   * Handles: role, permission, user, wildcard '*', and attributes.{key}
+   */
+  subject_matcher?: SubjectMatcher
 }
 
 // ============================================================

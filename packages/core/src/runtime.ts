@@ -4,10 +4,12 @@ import type {
   JikuRunResult,
   JikuRuntimeOptions,
   PolicyRule,
+  SubjectMatcher,
   JikuStorageAdapter,
 } from '@jiku/types'
 import { AgentRunner } from './runner.ts'
 import { ModelProviders } from './providers.ts'
+import { defaultSubjectMatcher } from './resolver/access.ts'
 import type { PluginLoader } from './plugins/loader.ts'
 
 export class JikuRuntime {
@@ -16,6 +18,7 @@ export class JikuRuntime {
   private storage: JikuStorageAdapter
   private plugins: PluginLoader
   private providers: ModelProviders
+  private subjectMatcher: SubjectMatcher
 
   constructor(
     options: Omit<JikuRuntimeOptions, 'plugins'> & {
@@ -29,6 +32,7 @@ export class JikuRuntime {
       options.providers ?? {},
       options.default_provider,
     )
+    this.subjectMatcher = options.subject_matcher ?? defaultSubjectMatcher
   }
 
   addAgent(def: AgentDefinition): void {
@@ -40,6 +44,10 @@ export class JikuRuntime {
     this.agents.delete(agent_id)
   }
 
+  /**
+   * Update policy rules at runtime.
+   * Call this only when an admin changes a policy — not per-request.
+   */
   updateRules(rules: PolicyRule[]): void {
     this.rules = rules
   }
@@ -47,7 +55,11 @@ export class JikuRuntime {
   async run(params: JikuRunParams): Promise<JikuRunResult> {
     const runner = this.agents.get(params.agent_id)
     if (!runner) throw new Error(`Agent '${params.agent_id}' not found`)
-    return runner.run({ ...params, rules: this.rules })
+    return runner.run({
+      ...params,
+      rules: this.rules,
+      subject_matcher: this.subjectMatcher,
+    })
   }
 
   async boot(): Promise<void> {

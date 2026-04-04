@@ -67,3 +67,20 @@ Overload pertama harus punya `depends` sebagai required field agar TypeScript pi
 ## JikuRunResult.stream adalah ReadableStream<JikuStreamChunk>
 
 `runtime.run()` return `stream: ReadableStream<JikuStreamChunk>`. Consume dengan `.getReader()` atau pipe ke `createUIMessageStreamResponse()` untuk HTTP response.
+
+## @jiku/ui import path conventions
+
+Components di `packages/ui/src/components/ui/` gunakan:
+- `../../lib/utils` untuk `cn()`
+- `./other-ui-component` untuk sibling di ui/
+
+Components di `packages/ui/src/components/ai-elements/` gunakan:
+- `../../lib/utils` untuk `cn()`
+- `../ui/component-name` untuk ui primitives
+- `./sibling` untuk sibling ai-elements
+
+Jangan pakai alias `@/` di dalam packages/ui — tidak ada Next.js tsconfig path alias di sini.
+
+## apps/studio/web masih punya salinan lokal ui/ dan ai-elements/
+
+Setelah migration ke @jiku/ui, `apps/studio/web/components/ui/` dan `ai-elements/` masih ada. Import di web belum diupdate. Task terpisah diperlukan untuk switch import ke `@jiku/ui` dan hapus lokal copies.

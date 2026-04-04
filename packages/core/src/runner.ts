@@ -15,6 +15,7 @@ import type {
   JikuDataTypes,
   JikuStreamWriter,
   PolicyRule,
+  SubjectMatcher,
   JikuStorageAdapter,
   RuntimeContext,
   ToolContext,
@@ -56,8 +57,8 @@ export class AgentRunner {
     private providers: ModelProviders,
   ) {}
 
-  async run(params: JikuRunParams & { rules: PolicyRule[] }): Promise<JikuRunResult> {
-    const { caller, mode, input, rules } = params
+  async run(params: JikuRunParams & { rules: PolicyRule[]; subject_matcher?: SubjectMatcher }): Promise<JikuRunResult> {
+    const { caller, mode, input, rules, subject_matcher } = params
 
     // 1. Resolve scope
     const scope = resolveScope({
@@ -66,6 +67,7 @@ export class AgentRunner {
       rules,
       all_tools: this.plugins.getResolvedTools(),
       mode,
+      subject_matcher,
     })
 
     if (!scope.accessible) throw new JikuAccessError(scope.denial_reason ?? 'Access denied')

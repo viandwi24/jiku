@@ -1,0 +1,33 @@
+{
+  "name": "@jiku-studio/server",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "db:generate": "cd ../db && bun --env-file=../server/.env run db:generate",
+    "db:migrate": "cd ../db && bun --env-file=../server/.env run db:migrate",
+    "db:push": "cd ../db && bun --env-file=../server/.env run db:push",
+    "db:studio": "cd ../db && bun --env-file=../server/.env run db:studio"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.3",
+    "@jiku-studio/db": "workspace:*",
+    "@jiku/core": "workspace:*",
+    "@jiku/kit": "workspace:*",
+    "@jiku/types": "workspace:*",
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.7.11",
+    "jose": "^5.10.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.53.0",
+    "@types/bcryptjs": "^3.0.0",
+    "@types/bun": "latest",
+    "@types/ws": "^8.18.1"
+  }
+}

@@ -1,3 +1,13 @@
+// Credentials
+export { CredentialCard } from './components/credentials/credential-card.tsx'
+export type { CredentialCardItem } from './components/credentials/credential-card.tsx'
+export { CredentialList } from './components/credentials/credential-list.tsx'
+export { CredentialForm } from './components/credentials/credential-form.tsx'
+export type { CredentialAdapter, AdapterField } from './components/credentials/credential-form.tsx'
+export { CredentialSelector } from './components/credentials/credential-selector.tsx'
+export { ModelSelector } from './components/credentials/model-selector.tsx'
+export { MetadataOverrideForm } from './components/credentials/metadata-override-form.tsx'
+
 // Layout
 export { Sidebar, SidebarHeader, SidebarContent, SidebarFooter, SidebarItem } from './components/layout/sidebar.tsx'
 export { Header, Breadcrumb } from './components/layout/header.tsx'

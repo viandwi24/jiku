@@ -4,10 +4,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { Agent } from '@/lib/api'
-import { Button } from '@jiku/ui'
-import { Input } from '@jiku/ui'
-import { Label } from '@jiku/ui'
-import { Textarea } from '@jiku/ui'
+import { Button, Input, Label, Textarea } from '@jiku/ui'
 import { toast } from 'sonner'
 
 interface AgentConfigFormProps {
@@ -20,10 +17,9 @@ export function AgentConfigForm({ agent, projectId }: AgentConfigFormProps) {
   const [name, setName] = useState(agent.name)
   const [description, setDescription] = useState(agent.description ?? '')
   const [basePrompt, setBasePrompt] = useState(agent.base_prompt)
-  const [modelId, setModelId] = useState(agent.model_id)
 
   const mutation = useMutation({
-    mutationFn: () => api.agents.update(agent.id, { name, description: description || null, base_prompt: basePrompt, model_id: modelId }),
+    mutationFn: () => api.agents.update(agent.id, { name, description: description || null, base_prompt: basePrompt }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents', projectId] })
       toast.success('Agent updated')
@@ -43,10 +39,6 @@ export function AgentConfigForm({ agent, projectId }: AgentConfigFormProps) {
       <div className="space-y-2">
         <Label>Description</Label>
         <Input value={description} onChange={e => setDescription(e.target.value)} />
-      </div>
-      <div className="space-y-2">
-        <Label>Model</Label>
-        <Input value={modelId} onChange={e => setModelId(e.target.value)} />
       </div>
       <div className="space-y-2">
         <Label>System Prompt</Label>

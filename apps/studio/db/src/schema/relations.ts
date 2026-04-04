@@ -7,12 +7,14 @@ import { projects } from './projects.ts'
 import { agents } from './agents.ts'
 import { policies, policy_rules, agent_policies, agent_user_policies } from './policies.ts'
 import { conversations, messages } from './conversations.ts'
+import { credentials, agent_credentials } from './credentials.ts'
 
 export const usersRelations = relations(users, ({ many }) => ({
   companies: many(companies),
   company_members: many(company_members),
   agent_user_policies: many(agent_user_policies),
   conversations: many(conversations),
+  credentials: many(credentials),
 }))
 
 export const companiesRelations = relations(companies, ({ one, many }) => ({
@@ -54,6 +56,17 @@ export const agentsRelations = relations(agents, ({ one, many }) => ({
   agent_policies: many(agent_policies),
   agent_user_policies: many(agent_user_policies),
   conversations: many(conversations),
+  agent_credential: many(agent_credentials),
+}))
+
+export const credentialsRelations = relations(credentials, ({ one, many }) => ({
+  created_by_user: one(users, { fields: [credentials.created_by], references: [users.id] }),
+  agent_credentials: many(agent_credentials),
+}))
+
+export const agentCredentialsRelations = relations(agent_credentials, ({ one }) => ({
+  agent: one(agents, { fields: [agent_credentials.agent_id], references: [agents.id] }),
+  credential: one(credentials, { fields: [agent_credentials.credential_id], references: [credentials.id] }),
 }))
 
 export const policiesRelations = relations(policies, ({ one, many }) => ({

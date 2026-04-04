@@ -29,8 +29,6 @@ export function CreateAgentDialog({ projectId }: { projectId: string }) {
         description: description || null,
         base_prompt: basePrompt,
         allowed_modes: ['chat'],
-        provider_id: 'anthropic',
-        model_id: 'claude-sonnet-4-5',
       })
       await qc.invalidateQueries({ queryKey: ['agents', projectId] })
       setOpen(false)

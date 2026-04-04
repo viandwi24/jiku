@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { agents, agent_user_policies } from '../schema/index.ts'
 import type { NewAgent } from '../schema/index.ts'
@@ -12,6 +12,15 @@ export async function getAgentsByProjectId(projectId: string) {
 export async function getAgentById(id: string) {
   return db.query.agents.findFirst({
     where: eq(agents.id, id),
+  })
+}
+
+export async function getAgentBySlug(projectId: string, slug: string) {
+  return db.query.agents.findFirst({
+    where: and(
+      eq(agents.project_id, projectId),
+      eq(agents.slug, slug),
+    ),
   })
 }
 

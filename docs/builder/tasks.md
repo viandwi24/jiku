@@ -1,9 +1,9 @@
 ## Backlog
 
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
-- [ ] Connect `@jiku/core` JikuRuntime to `JikuRuntimeManager` (currently using Anthropic SDK directly in ws/chat.ts)
+- [ ] Connect `@jiku/core` JikuRuntime to `JikuRuntimeManager` (chat now uses Vercel AI SDK via buildProvider, but runtime is still separate)
 - [ ] DB migrations — run `drizzle-kit generate` + `migrate` to generate and apply migrations
-- [ ] Add `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL` to web `.env.local`
+- [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
 - [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
 - [ ] Tambah built-in plugins — jiku.cron, jiku.skills
 - [ ] Invite member feature (currently only owner can be member)

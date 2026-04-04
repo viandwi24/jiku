@@ -33,6 +33,11 @@ export async function createProject(data: Omit<NewProject, 'id' | 'created_at'>)
   return project!
 }
 
+export async function updateProject(id: string, data: Partial<Omit<NewProject, 'id' | 'created_at'>>) {
+  const [project] = await db.update(projects).set(data).where(eq(projects.id, id)).returning()
+  return project!
+}
+
 export async function deleteProject(id: string) {
   await db.delete(projects).where(eq(projects.id, id))
 }

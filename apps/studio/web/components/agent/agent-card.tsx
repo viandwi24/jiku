@@ -13,7 +13,7 @@ interface AgentCardProps {
 }
 
 export function AgentCard({ agent, companySlug, projectSlug }: AgentCardProps) {
-  const basePath = `/${companySlug}/${projectSlug}/agents/${agent.id}`
+  const basePath = `/${companySlug}/${projectSlug}/agents/${agent.slug}`
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardHeader>

@@ -18,7 +18,7 @@ interface PageProps {
 }
 
 export default function PermissionsPage({ params }: PageProps) {
-  const { company: companySlug, project: projectSlug, agent: agentId } = use(params)
+  const { company: companySlug, project: projectSlug, agent: agentSlug } = use(params)
   const user = useAuthStore(s => s.user)
   const qc = useQueryClient()
 
@@ -44,7 +44,8 @@ export default function PermissionsPage({ params }: PageProps) {
     enabled: !!project?.id,
   })
 
-  const agent = agentsData?.agents.find(a => a.id === agentId)
+  const agent = agentsData?.agents.find(a => a.slug === agentSlug)
+  const agentId = agent?.id ?? ''
 
   // Attached policies
   const { data: attachedData } = useQuery({
@@ -145,7 +146,7 @@ export default function PermissionsPage({ params }: PageProps) {
     setEditPermsOpen(true)
   }
 
-  const settingsPath = `/${companySlug}/${projectSlug}/agents/${agentId}/settings`
+  const settingsPath = `/${companySlug}/${projectSlug}/agents/${agentSlug}/settings`
   const attachedPolicies = attachedData?.policies ?? []
   const companyPolicies = companyPoliciesData?.policies ?? []
   const alreadyAttached = new Set(attachedPolicies.map(ap => ap.policy_id))

@@ -4,4 +4,5 @@ export const env = {
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN ?? '7d',
   PORT: Number(process.env.PORT ?? 3001),
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '',
+  CREDENTIALS_ENCRYPTION_KEY: process.env.CREDENTIALS_ENCRYPTION_KEY ?? '',
 }

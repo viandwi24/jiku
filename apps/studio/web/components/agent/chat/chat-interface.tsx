@@ -1,9 +1,13 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
-import { useChat } from '@/lib/ws'
+import { useRef, useEffect, useState } from 'react'
+import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import { Bot, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getToken } from '@/lib/auth'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
 interface ChatInterfaceProps {
   conversationId: string
@@ -13,17 +17,38 @@ interface ChatInterfaceProps {
 }
 
 export function ChatInterface({ conversationId, agentId, projectId, companyId }: ChatInterfaceProps) {
-  const { messages, input, setInput, send, isLoading } = useChat({
-    conversationId,
-    agentId,
-    projectId,
-    companyId,
-  })
+  const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const { messages, sendMessage, status, error } = useChat({
+    transport: new DefaultChatTransport({
+      api: `${API_URL}/api/conversations/${conversationId}/chat`,
+      headers: () => ({
+        Authorization: `Bearer ${getToken() ?? ''}`,
+      }),
+      prepareSendMessagesRequest: ({ id, messages }) => ({
+        body: {
+          id,
+          messages,
+          agent_id: agentId,
+          project_id: projectId,
+          company_id: companyId,
+        },
+      }),
+    }),
+  })
+
+  const isLoading = status === 'streaming' || status === 'submitted'
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  function handleSend() {
+    if (!input.trim() || isLoading) return
+    sendMessage({ text: input })
+    setInput('')
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -48,7 +73,11 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
                 ? 'bg-primary text-primary-foreground rounded-br-sm'
                 : 'bg-muted rounded-bl-sm',
             )}>
-              <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+              <p className="whitespace-pre-wrap break-words">
+                {msg.parts.map((part, i) =>
+                  part.type === 'text' ? <span key={i}>{part.text}</span> : null,
+                )}
+              </p>
             </div>
             {msg.role === 'user' && (
               <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center shrink-0 mt-0.5">
@@ -57,6 +86,17 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
             )}
           </div>
         ))}
+        {error && (
+          <div className="flex gap-2 items-start">
+            <div className="w-7 h-7 rounded-full bg-destructive/10 flex items-center justify-center shrink-0 mt-0.5">
+              <Bot className="w-4 h-4 text-destructive" />
+            </div>
+            <div className="bg-destructive/10 text-destructive rounded-xl rounded-bl-sm px-3.5 py-2.5 text-sm max-w-[75%]">
+              <p className="font-medium">Error</p>
+              <p className="text-xs mt-0.5 opacity-80">{error.message}</p>
+            </div>
+          </div>
+        )}
         {isLoading && (
           <div className="flex gap-2 items-start">
             <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
@@ -82,7 +122,7 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                if (!isLoading && input.trim()) send(input)
+                handleSend()
               }
             }}
             placeholder="Type a message... (Enter to send)"
@@ -90,7 +130,7 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
           />
           <button
             type="button"
-            onClick={() => send(input)}
+            onClick={handleSend}
             disabled={isLoading || !input.trim()}
             className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors"
           >

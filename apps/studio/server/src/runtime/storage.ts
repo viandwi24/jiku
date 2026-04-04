@@ -3,45 +3,140 @@ import {
   getMessages,
   addMessage,
   createConversation,
+  updateConversation,
   updateConversationTitle,
+  listConversationsByAgent,
+  deleteMessagesByIds,
+  pluginKvGet,
+  pluginKvSet,
+  pluginKvDelete,
+  pluginKvKeys,
 } from '@jiku-studio/db'
+import type { JikuStorageAdapter, Conversation, Message, MessageContent } from '@jiku/types'
 
-export interface StorageMessage {
-  role: string
-  content: unknown
-}
-
-export interface ConversationRecord {
+function toJikuConversation(row: {
   id: string
   agent_id: string
-  user_id: string
   mode: string
-  title: string | null
+  title?: string | null
   status: string
+  goal?: string | null
+  created_at: Date | null
+  updated_at?: Date | null
+}): Conversation {
+  return {
+    id: row.id,
+    agent_id: row.agent_id,
+    mode: (row.mode === 'task' ? 'task' : 'chat') as Conversation['mode'],
+    status: (row.status === 'completed' ? 'completed' : row.status === 'failed' ? 'failed' : 'active'),
+    goal: row.goal ?? undefined,
+    title: row.title ?? undefined,
+    created_at: row.created_at ?? new Date(),
+    updated_at: row.updated_at ?? new Date(),
+  }
 }
 
-export class StudioStorageAdapter {
+function toJikuMessage(row: {
+  id: string
+  conversation_id: string
+  role: string
+  content: unknown
+  created_at: Date | null
+}): Message {
+  // content in DB is jsonb — could be a string (legacy) or MessageContent[] (new format)
+  let content: MessageContent[]
+  if (typeof row.content === 'string') {
+    content = [{ type: 'text', text: row.content }]
+  } else if (Array.isArray(row.content)) {
+    content = row.content as MessageContent[]
+  } else {
+    content = [{ type: 'text', text: String(row.content) }]
+  }
+
+  const role = row.role === 'assistant' ? 'assistant'
+    : row.role === 'tool' ? 'tool'
+    : 'user'
+
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    role,
+    content,
+    created_at: row.created_at ?? new Date(),
+  }
+}
+
+/**
+ * StudioStorageAdapter — implements @jiku/types JikuStorageAdapter
+ * using @jiku-studio/db queries backed by PostgreSQL.
+ *
+ * Plugin KV store is persisted in the `plugin_kv` table, scoped by projectId.
+ */
+export class StudioStorageAdapter implements JikuStorageAdapter {
   constructor(private readonly projectId: string) {}
 
-  async getConversation(conversationId: string): Promise<ConversationRecord | null> {
-    const conv = await getConversationById(conversationId)
-    return conv ?? null
+  async getConversation(id: string): Promise<Conversation | null> {
+    const row = await getConversationById(id)
+    return row ? toJikuConversation(row) : null
   }
 
-  async createConversation(agentId: string, userId: string, mode = 'chat'): Promise<ConversationRecord> {
-    return createConversation({ agent_id: agentId, user_id: userId, mode })
+  async createConversation(data: Omit<Conversation, 'id' | 'created_at' | 'updated_at'>): Promise<Conversation> {
+    const row = await createConversation({
+      agent_id: data.agent_id,
+      user_id: (data as Record<string, unknown>)['user_id'] as string ?? 'system',
+      mode: data.mode,
+      status: data.status,
+      goal: data.goal,
+      title: data.title,
+    })
+    return toJikuConversation(row)
   }
 
-  async getMessages(conversationId: string): Promise<StorageMessage[]> {
-    const msgs = await getMessages(conversationId)
-    return msgs.map(m => ({ role: m.role, content: m.content }))
+  async updateConversation(id: string, updates: Partial<Conversation>): Promise<Conversation> {
+    const row = await updateConversation(id, {
+      status: updates.status,
+      title: updates.title,
+      goal: updates.goal,
+    })
+    return toJikuConversation(row!)
   }
 
-  async addMessage(conversationId: string, role: string, content: unknown): Promise<void> {
-    await addMessage({ conversation_id: conversationId, role, content })
+  async listConversations(agent_id: string): Promise<Conversation[]> {
+    const rows = await listConversationsByAgent(agent_id)
+    return rows.map(toJikuConversation)
   }
 
-  async setTitle(conversationId: string, title: string): Promise<void> {
-    await updateConversationTitle(conversationId, title)
+  async getMessages(conversationId: string): Promise<Message[]> {
+    const rows = await getMessages(conversationId)
+    return rows.map(toJikuMessage)
+  }
+
+  async addMessage(conversationId: string, message: Omit<Message, 'id' | 'created_at'>): Promise<Message> {
+    const row = await addMessage({
+      conversation_id: conversationId,
+      role: message.role,
+      content: message.content,   // stored as jsonb array of MessageContent
+    })
+    return toJikuMessage(row)
+  }
+
+  async deleteMessages(_conversationId: string, ids: string[]): Promise<void> {
+    await deleteMessagesByIds(ids)
+  }
+
+  async pluginGet(scope: string, key: string): Promise<unknown> {
+    return pluginKvGet(this.projectId, scope, key)
+  }
+
+  async pluginSet(scope: string, key: string, value: unknown): Promise<void> {
+    await pluginKvSet(this.projectId, scope, key, value)
+  }
+
+  async pluginDelete(scope: string, key: string): Promise<void> {
+    await pluginKvDelete(this.projectId, scope, key)
+  }
+
+  async pluginKeys(scope: string, prefix?: string): Promise<string[]> {
+    return pluginKvKeys(this.projectId, scope, prefix)
   }
 }

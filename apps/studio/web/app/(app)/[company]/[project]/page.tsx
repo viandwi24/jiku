@@ -2,10 +2,12 @@
 
 import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import Link from 'next/link'
 import { api } from '@/lib/api'
 import { AgentCard } from '@/components/agent/agent-card'
 import { CreateAgentDialog } from '@/components/agent/create-agent-dialog'
-import { Skeleton } from '@jiku/ui'
+import { Button, Skeleton } from '@jiku/ui'
+import { Settings } from 'lucide-react'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -44,7 +46,14 @@ export default function ProjectPage({ params }: PageProps) {
           <h1 className="text-2xl font-bold">{project?.name ?? projectSlug}</h1>
           <p className="text-sm text-muted-foreground">Agents</p>
         </div>
-        {project && <CreateAgentDialog projectId={project.id} />}
+        <div className="flex items-center gap-2">
+          <Link href={`/${companySlug}/${projectSlug}/settings`}>
+            <Button variant="outline" size="icon" className="h-8 w-8">
+              <Settings className="w-4 h-4" />
+            </Button>
+          </Link>
+          {project && <CreateAgentDialog projectId={project.id} />}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">

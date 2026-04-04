@@ -1,21 +1,29 @@
 ## Phase
-Idle — Plan 3, 3.5 complete
+Plan 4 — Credentials + Chat via JikuRuntime (complete)
 
 ## Currently Working On
 (idle)
 
 ## Relevant Files
-- `docs/plans/3-studio-base-implement-report.md` — implementation report Plan 3
-- `docs/plans/3.5-policy-implement-report.md` — implementation report Plan 3.5
+- `apps/studio/server/src/runtime/manager.ts` — JikuRuntimeManager holds one JikuRuntime per project
+- `apps/studio/server/src/runtime/storage.ts` — StudioStorageAdapter implements full JikuStorageAdapter
+- `apps/studio/server/src/routes/chat.ts` — POST /api/conversations/:id/chat via runtimeManager.run()
+- `apps/studio/server/src/credentials/service.ts` — buildProvider() + resolveAgentModel()
+- `apps/studio/web/components/agent/chat/chat-interface.tsx` — useChat from @ai-sdk/react, shows error state
 
 ## Important Context / Temporary Decisions
-- `apps/studio/web` sudah import dari `@jiku/ui` untuk semua shadcn + ai-elements components
-- `@source "../node_modules/@jiku/ui/src"` di `globals.css` untuk Tailwind v4 content scan
-- Server pakai `@hono/node-server` + `ws` npm (bukan Bun.serve) — Node-compatible
-- DB commands ada di `apps/studio/server/package.json` dengan `--env-file=../server/.env`
-- `ws/chat.ts` masih pakai Anthropic SDK langsung — belum connect ke `@jiku/core` JikuRuntime
+- **project = runtime** — di studio, satu project = satu JikuRuntime (mengikuti terminologi @jiku/core)
+- Chat lewat `runtimeManager.run(projectId, params)` → `JikuRuntime.run()` → `AgentRunner` → `streamText()`
+- Provider di runtime adalah "dynamic provider" — `buildProvider()` dipanggil per-request, model di-cache sementara di `modelCache` Map selama stream berlangsung
+- `model_id` yang dikirim ke JikuRuntime adalah cache key unik (`agentId:timestamp:random`), bukan model id sungguhan
+- Stream di-wrap untuk cleanup model cache setelah stream selesai
+- `StudioStorageAdapter.createConversation()` butuh `user_id` di data — di-pass via `(data as Record)[user_id]` karena tidak ada di `@jiku/types Conversation`
+- Message `content` di DB adalah jsonb — bisa legacy string atau `MessageContent[]` array. Storage adapter handle keduanya.
+- Plugin KV store adalah in-memory Map (belum ada DB table untuk plugin storage)
+- Error dari server (400) ditampilkan di ChatInterface sebagai error bubble merah
+- `NEXT_PUBLIC_WS_URL` env var tidak diperlukan lagi (WebSocket sudah dihapus)
 
 ## Next Up
-- Connect `@jiku/core` JikuRuntime ke `JikuRuntimeManager` (ws/chat.ts saat ini langsung Anthropic SDK)
-- DB migrations — jalankan `bun db:generate` + `bun db:migrate` dari server/
+- Tambah plugin system ke runtime (saat ini PluginLoader kosong)
 - Invite member feature
+- Plugin KV store ke DB (optional)

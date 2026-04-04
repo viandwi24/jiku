@@ -46,6 +46,15 @@ export async function getMember(companyId: string, userId: string) {
   })
 }
 
+export async function updateCompany(id: string, data: Partial<Omit<NewCompany, 'id' | 'created_at'>>) {
+  const [company] = await db.update(companies).set(data).where(eq(companies.id, id)).returning()
+  return company!
+}
+
+export async function deleteCompany(id: string) {
+  await db.delete(companies).where(eq(companies.id, id))
+}
+
 export async function addMember(companyId: string, userId: string, roleId: string) {
   const [member] = await db
     .insert(company_members)

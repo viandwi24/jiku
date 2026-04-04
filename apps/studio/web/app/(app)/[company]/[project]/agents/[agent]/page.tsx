@@ -14,7 +14,7 @@ interface PageProps {
 }
 
 export default function AgentChatPage({ params }: PageProps) {
-  const { company: companySlug, project: projectSlug, agent: agentId } = use(params)
+  const { company: companySlug, project: projectSlug, agent: agentSlug } = use(params)
   const user = useAuthStore(s => s.user)
   const qc = useQueryClient()
 
@@ -40,11 +40,12 @@ export default function AgentChatPage({ params }: PageProps) {
     enabled: !!project?.id,
   })
 
-  const agent = agentsData?.agents.find(a => a.id === agentId)
+  const agent = agentsData?.agents.find(a => a.slug === agentSlug)
+  const agentId = agent?.id
 
   const { data: convsData } = useQuery({
     queryKey: ['conversations', agentId],
-    queryFn: () => api.conversations.list(agentId),
+    queryFn: () => api.conversations.list(agentId!),
     enabled: !!agentId,
   })
 
@@ -54,14 +55,14 @@ export default function AgentChatPage({ params }: PageProps) {
     : convsData?.conversations[0]
 
   const createConv = useMutation({
-    mutationFn: () => api.conversations.create(agentId),
+    mutationFn: () => api.conversations.create(agentId!),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['conversations', agentId] })
       setActiveConvId(data.conversation.id)
     },
   })
 
-  const settingsPath = `/${companySlug}/${projectSlug}/agents/${agentId}/settings`
+  const settingsPath = `/${companySlug}/${projectSlug}/agents/${agentSlug}/settings`
 
   return (
     <div className="flex h-[calc(100vh-56px)]">
@@ -105,7 +106,7 @@ export default function AgentChatPage({ params }: PageProps) {
         <div className="flex items-center justify-between px-4 py-2.5 border-b shrink-0">
           <div>
             <p className="font-medium text-sm">{agent?.name ?? agentId}</p>
-            <p className="text-xs text-muted-foreground">{agent?.model_id}</p>
+            <p className="text-xs text-muted-foreground">{agent?.slug}</p>
           </div>
           <Link href={settingsPath}>
             <Button variant="ghost" size="sm">
@@ -115,7 +116,7 @@ export default function AgentChatPage({ params }: PageProps) {
           </Link>
         </div>
 
-        {activeConversation && companyData && project ? (
+        {activeConversation && companyData && project && agentId ? (
           <ChatInterface
             conversationId={activeConversation.id}
             agentId={agentId}

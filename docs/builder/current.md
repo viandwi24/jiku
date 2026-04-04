@@ -1,23 +1,24 @@
 ## Phase
-Foundation — Complete
+Plugin System V2 — Complete
 
 ## Currently Working On
-(idle — foundation selesai)
+(idle — Plugin System V2 selesai)
 
 ## Relevant Files
-- `packages/types/src/index.ts` — semua core types
-- `packages/kit/src/index.ts` — factory functions SDK
-- `packages/core/src/` — runtime, runner, resolver, loader, storage
-- `plugins/jiku.social/src/index.ts` — contoh plugin
-- `apps/playground/index.ts` — demo usage
+- `packages/types/src/index.ts` — PluginDefinition generic, Contributes, MergeContributes, phantom brand
+- `packages/kit/src/index.ts` — definePlugin overloads
+- `packages/core/src/plugins/dependency.ts` — PluginNode, circular detection, resolveContributes
+- `packages/core/src/plugins/loader.ts` — override(), boot V2
+- `apps/playground/plugins.ts` — all plugin definitions
+- `apps/playground/checks.ts` — edge case tests
+- `apps/playground/index.ts` — runtime + chat run
 
 ## Important Context / Temporary Decisions
-- AI SDK v6: gunakan `tool()` + `zodSchema()` + `stopWhen: stepCountIs(N)`
-- `@ai-sdk/anthropic` harus v3+ untuk LanguageModelV3 compatibility
-- `tsconfig.json` sudah ada `"types": ["node"]` untuk process.env
+- `Contributes<T>` = `() => T | Promise<T>` — always function, no object form (ADR-005)
+- `_contributes_type` phantom brand for type extraction (ADR-004)
+- `PluginDependency` uses `PluginDefinition<any>` to preserve specific generic params
 
 ## Next Up
-- Implementasi `@jiku/db` (drizzle schema + query helpers)
-- Implementasi adapter postgres untuk storage
-- Buat lebih banyak built-in plugins
-- Tambah API layer (HTTP server)
+- `@jiku/db` (drizzle schema + query helpers)
+- Adapter postgres
+- API layer (HTTP server)

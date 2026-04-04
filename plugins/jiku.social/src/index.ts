@@ -5,9 +5,15 @@ export default definePlugin({
   meta: {
     id: 'jiku.social',
     name: 'Social Media Manager',
-    version: '1.0.0',
+    version: '2.0.0',
     description: 'Manage social media posts across platforms',
   },
+
+  contributes: () => ({
+    social: {
+      getPlatforms: (): string[] => ['twitter', 'instagram'],
+    },
+  }),
 
   setup(ctx) {
     ctx.tools.register(
@@ -61,7 +67,7 @@ export default definePlugin({
 
     )
 
-    ctx.provide('social', (_caller) => ({
+    ctx.provide('social', (_caller: unknown) => ({
       getPlatformConfig: () => ({ api_key: process.env.SOCIAL_API_KEY ?? 'demo-key' }),
     }))
   },

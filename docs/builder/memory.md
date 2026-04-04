@@ -40,6 +40,26 @@ Runner pakai `createUIMessageStream<JikuUIMessage>` dari AI SDK + `writer.merge(
 
 `JikuStreamChunk` adalah `InferUIMessageChunk<JikuUIMessage>`. Data chunk bertipe `{ type: 'data-jiku-usage', data: unknown }` — `data` tidak otomatis ter-narrow dari `type`. Gunakan type guard `isJikuDataChunk(chunk, 'jiku-usage')` dari `@jiku/types` untuk narrowing yang type-safe.
 
+## Plugin contributes harus function
+
+`Contributes<T>` = `() => T | Promise<T>`. Selalu function, sync atau async. Object form dihilangkan karena TypeScript tidak bisa infer `TContributes` dari union type 3-cabang. Arrow function wrapping: `contributes: () => ({ server: ... })`.
+
+## Plugin type inference via phantom brand
+
+`PluginDefinition` punya `readonly _contributes_type?: TContributes` — phantom field di covariant position. `MergeContributes` extract types dari field ini, bukan dari `setup` parameter (yang contravariant). Jangan hapus field ini.
+
+## PluginDependency pakai `any`
+
+`PluginDependency = string | PluginDefinition<any>` — harus `any`, bukan `ContributesValue`. Kalau pakai `ContributesValue`, TypeScript widen setiap element di `depends[]` ke `PluginDefinition<ContributesValue>` sehingga specific type hilang.
+
+## definePlugin overloads
+
+`definePlugin` punya 2 overloads:
+1. Dengan `depends: Deps` (required) → `setup(ctx: BasePluginContext & MergeContributes<Deps>)`
+2. Tanpa `depends` (`depends?: never`) → `setup(ctx: BasePluginContext)`
+
+Overload pertama harus punya `depends` sebagai required field agar TypeScript pilih overload ini saat ada `depends` array.
+
 ## @jiku/types boleh deps ke `ai`
 
 `@jiku/types` diizinkan depend ke `ai` karena dibutuhkan untuk `UIMessage`, `InferUIMessageChunk`, dll. Bukan zero-deps lagi sejak stream types diperkenalkan.

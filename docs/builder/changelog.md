@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-04 — Plugin System V2
+
+- `PluginDefinition` sekarang generic `<TContributes>` — plugin bisa `contributes` context ke dependents
+- `Contributes<T>` = `() => T | Promise<T>` — always a factory, sync or async
+- `depends: PluginDependency[]` replace `dependencies: string[]` — support string (sort only) dan instance (typed ctx)
+- `MergeContributes<Deps>` extracts contributed types dari instance deps via phantom brand field `_contributes_type`
+- `definePlugin<Deps, TContributes>()` — overloaded: with `depends` → typed ctx, without → `BasePluginContext`
+- `PluginCircularDepError` — DFS 3-color detection, throws before boot with clear cycle path
+- Missing dep detection — warning + plugin disabled, no throw
+- `PluginLoader.override()` — partial override for bridge pattern
+- `PluginLoader.isLoaded()` + `getLoadOrder()` — introspection
+- Boot V2: circular check → missing warn → topo sort → resolve contributes → merge ctx → setup
+- Playground split: `plugins.ts` (all plugin defs), `checks.ts` (edge case tests), `index.ts` (runtime + chat)
+- Files: `packages/types/src/index.ts`, `packages/kit/src/index.ts`, `packages/core/src/plugins/dependency.ts`, `packages/core/src/plugins/loader.ts`, `packages/core/src/index.ts`, `plugins/jiku.social/src/index.ts`, `apps/playground/index.ts`, `apps/playground/plugins.ts`, `apps/playground/checks.ts`
+
 ## 2026-04-04 — Stream Architecture, AbortController, Model Providers
 
 - Tambah `createUIMessageStream` pattern dari AI SDK (inspired by SenkenNeo) ke `AgentRunner`

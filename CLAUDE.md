@@ -21,6 +21,13 @@
 
 ---
 
+## Bash Scope
+
+- **Never execute bash commands outside this codebase.** All shell commands must be scoped to `/Users/viandwi24/projects/self/jiku/` and its subdirectories.
+- Do not create temp files in `/tmp` or anywhere outside the project root.
+
+---
+
 ## Project Context — Read These First
 
 Before making any changes, always read the relevant docs:

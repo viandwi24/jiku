@@ -1,6 +1,7 @@
 export { JikuRuntime } from './runtime.ts'
 export { AgentRunner, JikuAccessError } from './runner.ts'
 export { PluginLoader } from './plugins/loader.ts'
+export { PluginCircularDepError } from './plugins/dependency.ts'
 export { MemoryStorageAdapter } from './storage/memory.ts'
 export { ModelProviders, createProviderDef } from './providers.ts'
 export { resolveScope } from './resolver/scope.ts'

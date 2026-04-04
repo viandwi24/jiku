@@ -98,7 +98,53 @@ export interface PluginMeta {
   description?: string
 }
 
-export interface PluginSetupContext {
+// --- Contributes ---
+
+export type ContributesValue = Record<string, unknown>
+
+/**
+ * Factory that produces the contributed context.
+ * Can be sync or async. Always a function — enables lazy init and proper type inference.
+ *
+ * @example
+ *   contributes: () => ({ server: { get, post } })
+ *   contributes: async () => { const c = await connect(); return { db: c } }
+ */
+export type Contributes<TValue extends ContributesValue> =
+  () => TValue | Promise<TValue>
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type PluginDependency = string | PluginDefinition<any>
+
+// --- Type utilities for ctx inference ---
+
+type UnionToIntersection<U> =
+  (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void
+    ? I
+    : never
+
+/**
+ * Extract TContributes from PluginDefinition via the phantom `_contributes_type` brand field.
+ * Using the brand (covariant position) instead of `setup` (contravariant) allows TypeScript
+ * to correctly narrow `infer C` to the specific TContributes, not the base ContributesValue.
+ * `PluginDependency` uses `PluginDefinition<any>` so TypeScript doesn't widen the generic
+ * param when adding instances to a `depends` array.
+ * Exclude<..., undefined> is required because optional `?: T` infers as `T | undefined`.
+ */
+type ExtractContributes<T> = T extends { readonly _contributes_type?: infer C }
+  ? Exclude<C, undefined>
+  : never
+
+export type MergeContributes<Deps extends PluginDependency[]> =
+  UnionToIntersection<
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ExtractContributes<Extract<Deps[number], PluginDefinition<any>>>
+  >
+
+// --- Base context always available in setup ---
+
+export interface BasePluginContext {
   tools: {
     register: (...tools: ToolDefinition[]) => void
   }
@@ -113,10 +159,35 @@ export interface PluginSetupContext {
   ) => void
 }
 
-export interface PluginDefinition {
+/**
+ * @deprecated Use BasePluginContext. PluginSetupContext kept for backward compat.
+ */
+export type PluginSetupContext = BasePluginContext
+
+export interface PluginDefinition<
+  TContributes extends ContributesValue = ContributesValue
+> {
   meta: PluginMeta
+  /** @deprecated use depends */
   dependencies?: string[]
-  setup: (ctx: PluginSetupContext) => void
+  depends?: PluginDependency[]
+  /**
+   * What this plugin exposes to dependents' ctx.
+   * Kept in covariant position so TypeScript can infer TContributes via _contributes_type.
+   */
+  contributes?: Contributes<TContributes>
+  /**
+   * Phantom brand — never assigned at runtime.
+   * Stores TContributes in covariant position so `Extract` + `infer` works correctly
+   * in MergeContributes, bypassing the contravariance of the `setup` parameter.
+   */
+  readonly _contributes_type?: TContributes
+  /**
+   * Plugin setup. Ctx includes BasePluginContext merged with contributes from instance deps.
+   * The exact ctx type is enforced in definePlugin's call signature, not here, to allow
+   * PluginDefinition<Specific> to be assignable to PluginDefinition<ContributesValue>.
+   */
+  setup: (ctx: BasePluginContext) => void
   onActivated?: (ctx: CallerContext) => void | Promise<void>
   onDeactivated?: () => void | Promise<void>
 }
@@ -349,6 +420,10 @@ export interface HookAPI {
 export interface PluginLoaderInterface {
   boot(): Promise<void>
   stop(): Promise<void>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  override(pluginId: string, newDef: Partial<PluginDefinition<any>>): void
+  isLoaded(id: string): boolean
+  getLoadOrder(): string[]
   getResolvedTools(): ResolvedTool[]
   getPromptSegments(): string[]
   resolveProviders(caller: CallerContext): Record<string, unknown>

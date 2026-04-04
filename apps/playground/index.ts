@@ -1,41 +1,70 @@
 /**
- * Jiku Playground — stream-aware demo
+ * Jiku Playground
+ *
+ * Single chat scenario demonstrating Plugin System V2:
+ *   - contributes (async init)
+ *   - depends instance → typed ctx
+ *   - depends string → sort only
+ *   - circular dep detection
+ *   - missing dep detection
+ *   - override / bridge pattern
+ *   - full runtime chat with stream
  *
  * Usage:
  *   OPENAI_API_KEY=sk-... bun run index.ts
  */
 
-import { JikuRuntime, PluginLoader, MemoryStorageAdapter, createProviderDef } from '@jiku/core'
+import {
+  JikuRuntime,
+  PluginLoader,
+  MemoryStorageAdapter,
+  createProviderDef,
+} from '@jiku/core'
 import { defineAgent } from '@jiku/kit'
-import type { JikuStreamChunk, PolicyRule, CallerContext } from '@jiku/types'
 import { createOpenAI } from '@ai-sdk/openai'
-import socialPlugin from '@jiku/plugin-social'
+import type { CallerContext, JikuStreamChunk, PolicyRule } from '@jiku/types'
+import {
+  DatabasePlugin,
+  SocialPlugin,
+  AnalyticsPlugin,
+  MockServerPlugin,
+  WebhookPlugin,
+} from './plugins.ts'
+import { runChecks } from './checks.ts'
 
 // ============================================================
-// Model provider setup
+// 1. Run V2 checks (circular dep, missing dep)
 // ============================================================
+
+await runChecks()
+
+// ============================================================
+// 2. Setup plugins with override bridge
+// ============================================================
+
+console.log('\n=== Runtime Setup ===\n')
+
 const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
+const registeredRoutes: { method: string; path: string }[] = []
 
-// ============================================================
-// Step 1 — Init plugin loader
-// ============================================================
 const plugins = new PluginLoader()
-plugins.register(socialPlugin)
+plugins.register(DatabasePlugin, SocialPlugin, AnalyticsPlugin, MockServerPlugin, WebhookPlugin)
 
-// ============================================================
-// Step 2 — Define agents
-// ============================================================
-const socialAgent = defineAgent({
-  meta: { id: 'social_manager', name: 'Social Media Manager' },
-  base_prompt: 'You are a social media manager. Help users manage their posts across platforms.',
-  allowed_modes: ['chat', 'task'],
-  provider_id: 'openai',
-  model_id: 'gpt-4o-mini',
+// Override bridge — replace noop server with actual recording
+plugins.override('@jiku/plugin-server', {
+  contributes: () => ({
+    server: {
+      get: (path: string, _handler: unknown) => {
+        registeredRoutes.push({ method: 'GET', path })
+      },
+    },
+  }),
 })
 
 // ============================================================
-// Step 3 — Define rules
+// 3. Rules — delete_post admin only
 // ============================================================
+
 const rules: PolicyRule[] = [
   {
     resource_type: 'tool',
@@ -44,133 +73,68 @@ const rules: PolicyRule[] = [
     subject: 'admin',
     effect: 'allow',
   },
-  {
-    resource_type: 'agent',
-    resource_id: 'social_manager:task',
-    subject_type: 'permission',
-    subject: 'social_manager:task',
-    effect: 'allow',
-  },
 ]
 
 // ============================================================
-// Step 4 — Init runtime
+// 4. Boot runtime
 // ============================================================
+
 const runtime = new JikuRuntime({
   plugins,
   storage: new MemoryStorageAdapter(),
   rules,
-  providers: {
-    openai: createProviderDef('openai', openai),
-  },
+  providers: { openai: createProviderDef('openai', openai) },
   default_provider: 'openai',
 })
 
-runtime.addAgent(socialAgent)
+runtime.addAgent(
+  defineAgent({
+    meta: { id: 'social_manager', name: 'Social Media Manager' },
+    base_prompt: 'You are a social media manager. Help users manage their posts across platforms.',
+    allowed_modes: ['chat', 'task'],
+    provider_id: 'openai',
+    model_id: 'gpt-4o-mini',
+  })
+)
+
 await runtime.boot()
 
-// ============================================================
-// Helper: consume stream and print output
-// ============================================================
-async function runAndPrint(
-  label: string,
-  caller: CallerContext,
-  input: string,
-  mode: 'chat' | 'task' = 'chat',
-) {
-  console.log(`\n========== ${label} ==========`)
-  console.log(`> ${input}\n`)
-
-  const { stream, run_id, conversation_id } = await runtime.run({
-    agent_id: 'social_manager',
-    caller,
-    mode,
-    input,
-  })
-
-  for await (const c of stream) {
-    if (c.type === 'text-delta') {
-      process.stdout.write(c.delta)
-    } else if (c.type === 'data-jiku-usage') {
-      console.log(`\n[usage] in=${c.data.input_tokens} out=${c.data.output_tokens}`)
-    } else if (c.type === 'data-jiku-tool-data') {
-      console.log(`\n[tool-data] ${c.data.tool_id}:`, JSON.stringify(c.data.data))
-    } else if (c.type === 'finish') {
-      if (c.finishReason === 'error') console.error('\n[error] stream finished with error')
-    }
-  }
-
-  console.log()
-  console.log(`[run_id=${run_id} conv=${conversation_id}]`)
-}
+console.log('Load order:', plugins.getLoadOrder())
+console.log('Registered routes:', registeredRoutes)
+console.log('Tools:', plugins.getResolvedTools().map(t => t.resolved_id))
 
 // ============================================================
-// Step 5 — Admin: list posts (chat)
+// 5. Chat run — admin with all permissions
 // ============================================================
-const adminCaller: CallerContext = {
+
+const caller: CallerContext = {
   user_id: 'user-admin',
   roles: ['admin'],
-  permissions: ['social_manager:task', 'jiku.social:post:write', 'jiku.social:post:delete'],
+  permissions: ['jiku.social:post:write', 'jiku.social:post:delete'],
   user_data: { name: 'Admin User', company_id: 'comp-123' },
 }
 
-await runAndPrint('Chat (Admin)', adminCaller, 'List all posts')
+console.log('\n=== Chat Run ===\n')
+console.log('> List all posts\n')
 
-// ============================================================
-// Step 6 — Member: limited tools
-// ============================================================
-const memberCaller: CallerContext = {
-  user_id: 'user-member',
-  roles: ['member'],
-  permissions: [],
-  user_data: { name: 'Regular Member', company_id: 'comp-123' },
-}
-
-await runAndPrint('Chat (Member)', memberCaller, 'List all posts')
-
-// ============================================================
-// Step 7 — Abort demo
-// ============================================================
-console.log('\n========== Abort Demo ==========')
-const abortController = new AbortController()
-const { stream: abortStream } = await runtime.run({
+const { stream, run_id, conversation_id } = await runtime.run({
   agent_id: 'social_manager',
-  caller: adminCaller,
+  caller,
   mode: 'chat',
-  input: 'List all posts and then create a new one about the weather',
-  abort_signal: abortController.signal,
+  input: 'List all posts',
 })
 
-let gotFirstDelta = false
-const abortReader = abortStream.getReader()
-while (true) {
-  const { done, value } = await abortReader.read()
-  if (done) break
-
-  const c = value as JikuStreamChunk
-  if (c.type === 'text-delta') {
-    process.stdout.write(c.delta)
-    if (!gotFirstDelta) {
-      gotFirstDelta = true
-      abortController.abort()
-    }
-  }
-  if (c.type === 'finish') {
-    console.log(`\n[finish reason=${c.finishReason ?? 'unknown'}]`)
-    break
+for await (const chunk of stream as AsyncIterable<JikuStreamChunk>) {
+  if (chunk.type === 'text-delta') {
+    process.stdout.write(chunk.delta)
+  } else if (chunk.type === 'data-jiku-usage') {
+    console.log(`\n[usage] in=${chunk.data.input_tokens} out=${chunk.data.output_tokens}`)
+  } else if (chunk.type === 'finish' && chunk.finishReason === 'error') {
+    console.error('\n[error] stream finished with error')
   }
 }
 
-// ============================================================
-// Step 8 — Task mode
-// ============================================================
-await runAndPrint('Task (Admin)', adminCaller, 'List all existing posts and summarize them', 'task')
-
-// ============================================================
-// Step 9 — Tool custom data demo (tool pushes via writer)
-// ============================================================
-console.log('\n========== Tool Custom Data Demo ==========')
-console.log('(Plugin tools can push custom data chunks via ctx.writer.write())')
+console.log(`\n[run_id=${run_id} conv=${conversation_id}]`)
 
 await runtime.stop()
 console.log('\n[done]')

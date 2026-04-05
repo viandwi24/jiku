@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
+  Activity,
   Bot,
   Brain,
   ChevronLeft,
@@ -93,6 +94,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     { href: '', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/agents', label: 'Agents', icon: Bot, badge: agentsData?.agents.length, exact: false },
     { href: '/chats', label: 'Chats', icon: MessageSquare },
+    { href: '/runs', label: 'Runs', icon: Activity },
     { href: '/memory', label: 'Memory', icon: Brain },
     { href: '/channels', label: 'Channels', icon: Webhook },
     { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },

@@ -31,44 +31,42 @@ export const connectors = pgTable('connectors', {
 export const connector_bindings = pgTable('connector_bindings', {
   id:                   uuid('id').primaryKey().defaultRandom(),
   connector_id:         uuid('connector_id').notNull().references(() => connectors.id, { onDelete: 'cascade' }),
-  agent_id:             uuid('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
   display_name:         text('display_name'),
 
-  // Source filter
-  source_type:          text('source_type').notNull().default('any'),
-  source_ref_keys:      jsonb('source_ref_keys'),       // null = match all
+  // ── Input ────────────────────────────────────────────────────────────────
+  source_type:          text('source_type').notNull().default('any'),  // any | private | group | channel
+  source_ref_keys:      jsonb('source_ref_keys'),                       // null = match all
 
-  // Trigger
-  trigger_source:       text('trigger_source').notNull().default('message'),
-  trigger_mode:         text('trigger_mode').notNull().default('always'),
+  trigger_source:       text('trigger_source').notNull().default('message'),  // message | event
+  trigger_mode:         text('trigger_mode').notNull().default('always'),     // always | mention | reply | command | keyword
   trigger_keywords:     text('trigger_keywords').array(),
   trigger_event_type:   text('trigger_event_type'),
   trigger_event_filter: jsonb('trigger_event_filter'),
 
-  // Adapter type
-  adapter_type:         text('adapter_type').notNull().default('conversation'),
+  // ── Output ───────────────────────────────────────────────────────────────
+  // output_adapter: which output adapter to use (conversation | task | <plugin-defined>)
+  output_adapter:       text('output_adapter').notNull().default('conversation'),
+  // output_config: adapter-specific config (e.g. { agent_id, conversation_mode } for conversation)
+  output_config:        jsonb('output_config').notNull().default({}),
 
-  // Security
-  require_approval:     boolean('require_approval').notNull().default(false),
+  // ── Security ─────────────────────────────────────────────────────────────
   rate_limit_rpm:       integer('rate_limit_rpm'),
-
-  // Context
-  context_window:       integer('context_window').notNull().default(10),
   include_sender_info:  boolean('include_sender_info').notNull().default(true),
 
   enabled:              boolean('enabled').notNull().default(true),
   created_at:           timestamp('created_at').notNull().defaultNow(),
 }, t => [
   index('idx_bindings_connector').on(t.connector_id),
-  index('idx_bindings_agent').on(t.agent_id),
 ])
 
 // ─────────────────────────────────────────────────────────────────────────────
 // connector_identities — external identity → Jiku mapping
+// binding_id is nullable: null = pairing request (no binding yet), non-null = fully bound
 // ─────────────────────────────────────────────────────────────────────────────
 export const connector_identities = pgTable('connector_identities', {
   id:                uuid('id').primaryKey().defaultRandom(),
-  binding_id:        uuid('binding_id').notNull().references(() => connector_bindings.id, { onDelete: 'cascade' }),
+  connector_id:      uuid('connector_id').notNull().references(() => connectors.id, { onDelete: 'cascade' }),
+  binding_id:        uuid('binding_id').references(() => connector_bindings.id, { onDelete: 'set null' }),
   external_ref_keys: jsonb('external_ref_keys').notNull(),  // { user_id: '123', username: '@john' }
   display_name:      text('display_name'),
   avatar_url:        text('avatar_url'),
@@ -80,6 +78,7 @@ export const connector_identities = pgTable('connector_identities', {
   last_seen_at:      timestamp('last_seen_at'),
   created_at:        timestamp('created_at').notNull().defaultNow(),
 }, t => [
+  index('idx_identity_connector').on(t.connector_id),
   index('idx_identity_binding').on(t.binding_id),
   index('idx_identity_conversation').on(t.conversation_id),
 ])
@@ -90,8 +89,8 @@ export const connector_identities = pgTable('connector_identities', {
 export const connector_events = pgTable('connector_events', {
   id:              uuid('id').primaryKey().defaultRandom(),
   connector_id:    uuid('connector_id').notNull().references(() => connectors.id, { onDelete: 'cascade' }),
-  binding_id:      uuid('binding_id').references(() => connector_bindings.id),
-  identity_id:     uuid('identity_id').references(() => connector_identities.id),
+  binding_id:      uuid('binding_id').references(() => connector_bindings.id, { onDelete: 'set null' }),
+  identity_id:     uuid('identity_id').references(() => connector_identities.id, { onDelete: 'set null' }),
   event_type:      text('event_type').notNull(),
   ref_keys:        jsonb('ref_keys').notNull(),
   target_ref_keys: jsonb('target_ref_keys'),
@@ -138,6 +137,24 @@ export const connector_message_events = pgTable('connector_message_events', {
   index('idx_msg_events_message').on(t.connector_message_id),
   foreignKey({ name: 'fk_cme_message', columns: [t.connector_message_id], foreignColumns: [connector_messages.id] }).onDelete('cascade'),
   foreignKey({ name: 'fk_cme_event',   columns: [t.connector_event_id],   foreignColumns: [connector_events.id] }),
+])
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connector_invite_codes — one-time or multi-use codes for auto-approving identities
+// ─────────────────────────────────────────────────────────────────────────────
+export const connector_invite_codes = pgTable('connector_invite_codes', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  connector_id: uuid('connector_id').notNull().references(() => connectors.id, { onDelete: 'cascade' }),
+  code:         text('code').notNull().unique(),
+  label:        text('label'),
+  max_uses:     integer('max_uses'),
+  use_count:    integer('use_count').notNull().default(0),
+  expires_at:   timestamp('expires_at'),
+  revoked:      boolean('revoked').notNull().default(false),
+  created_by:   uuid('created_by').references(() => users.id),
+  created_at:   timestamp('created_at').notNull().defaultNow(),
+}, t => [
+  index('idx_invite_connector').on(t.connector_id),
 ])
 
 // ─────────────────────────────────────────────────────────────────────────────

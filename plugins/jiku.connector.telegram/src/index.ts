@@ -1,6 +1,27 @@
 import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
 import type { ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
+import telegramifyMarkdown from 'telegramify-markdown'
+
+const TELEGRAM_MAX_LENGTH = 4000
+
+function splitMessage(text: string, maxLength = TELEGRAM_MAX_LENGTH): string[] {
+  if (text.length <= maxLength) return [text]
+  const chunks: string[] = []
+  let remaining = text
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining)
+      break
+    }
+    // Try to split on newline near the boundary
+    let splitAt = remaining.lastIndexOf('\n', maxLength)
+    if (splitAt <= 0) splitAt = maxLength
+    chunks.push(remaining.slice(0, splitAt))
+    remaining = remaining.slice(splitAt).replace(/^\n/, '')
+  }
+  return chunks
+}
 
 class TelegramAdapter extends ConnectorAdapter {
   readonly id = 'jiku.telegram'
@@ -133,19 +154,27 @@ class TelegramAdapter extends ConnectorAdapter {
     if (!chatId) return { success: false, error: 'Missing chat_id' }
 
     try {
-      const sent = await this.bot.api.sendMessage(
-        chatId,
-        content.text ?? '',
-        {
-          parse_mode: content.markdown ? 'Markdown' : undefined,
-          reply_parameters: replyToId ? { message_id: Number(replyToId) } : undefined,
-        }
-      )
+      const rawText = content.text ?? ''
+      const text = content.markdown ? telegramifyMarkdown(rawText, 'escape') : rawText
+      const chunks = splitMessage(text)
+      let lastSent: { message_id: number; chat: { id: number } } | null = null
+
+      for (let i = 0; i < chunks.length; i++) {
+        lastSent = await this.bot.api.sendMessage(
+          chatId,
+          chunks[i],
+          {
+            parse_mode: content.markdown ? 'MarkdownV2' : undefined,
+            reply_parameters: i === 0 && replyToId ? { message_id: Number(replyToId) } : undefined,
+          }
+        )
+      }
+
       return {
         success: true,
         ref_keys: {
-          message_id: String(sent.message_id),
-          chat_id: String(sent.chat.id),
+          message_id: String(lastSent!.message_id),
+          chat_id: String(lastSent!.chat.id),
         },
       }
     } catch (err) {
@@ -178,6 +207,14 @@ class TelegramAdapter extends ConnectorAdapter {
     if (!chatId || !messageId) return
     await this.bot.api.editMessageText(chatId, Number(messageId), content.text ?? '')
       .catch((err: unknown) => console.warn('[telegram] editMessage error:', err))
+  }
+
+  override async sendTyping(target: ConnectorTarget): Promise<void> {
+    if (!this.bot) return
+    const chatId = target.ref_keys['chat_id']
+    if (!chatId) return
+    await this.bot.api.sendChatAction(chatId, 'typing')
+      .catch((err: unknown) => console.warn('[telegram] sendTyping error:', err))
   }
 }
 

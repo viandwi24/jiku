@@ -1,13 +1,12 @@
 import { pgTable, uuid, varchar, text, timestamp, integer } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 import { agents } from './agents.ts'
-import { users } from './users.ts'
 
 export const agent_memories = pgTable('agent_memories', {
   id:           uuid('id').primaryKey().defaultRandom(),
   project_id:   uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   agent_id:     uuid('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
-  caller_id:    uuid('caller_id').references(() => users.id, { onDelete: 'set null' }),
+  caller_id:    text('caller_id'),  // can be user UUID or connector identity ref (e.g. "connector:xxx")
   scope:        varchar('scope', { length: 50 }).notNull(),
   tier:         varchar('tier', { length: 20 }).notNull().default('extended'),
   section:      varchar('section', { length: 100 }),

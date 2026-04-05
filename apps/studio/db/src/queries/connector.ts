@@ -7,6 +7,7 @@ import {
   connector_events,
   connector_messages,
   connector_message_events,
+  connector_invite_codes,
   user_identities,
 } from '../schema/connectors.ts'
 
@@ -89,7 +90,6 @@ export async function getActiveBindingsForProject(projectId: string) {
 
 export async function createBinding(data: {
   connector_id: string
-  agent_id: string
   display_name?: string
   source_type?: string
   source_ref_keys?: Record<string, string>
@@ -98,10 +98,9 @@ export async function createBinding(data: {
   trigger_keywords?: string[]
   trigger_event_type?: string
   trigger_event_filter?: Record<string, unknown>
-  adapter_type?: string
-  require_approval?: boolean
+  output_adapter?: string
+  output_config?: Record<string, unknown>
   rate_limit_rpm?: number
-  context_window?: number
   include_sender_info?: boolean
 }) {
   const rows = await db
@@ -111,9 +110,8 @@ export async function createBinding(data: {
       source_type: data.source_type ?? 'any',
       trigger_source: data.trigger_source ?? 'message',
       trigger_mode: data.trigger_mode ?? 'always',
-      adapter_type: data.adapter_type ?? 'conversation',
-      require_approval: data.require_approval ?? false,
-      context_window: data.context_window ?? 10,
+      output_adapter: data.output_adapter ?? 'conversation',
+      output_config: data.output_config ?? {},
       include_sender_info: data.include_sender_info ?? true,
     })
     .returning()
@@ -129,10 +127,9 @@ export async function updateBinding(id: string, data: Partial<{
   trigger_keywords: string[]
   trigger_event_type: string
   trigger_event_filter: Record<string, unknown>
-  adapter_type: string
-  require_approval: boolean
+  output_adapter: string
+  output_config: Record<string, unknown>
   rate_limit_rpm: number
-  context_window: number
   include_sender_info: boolean
   enabled: boolean
 }>) {
@@ -158,13 +155,26 @@ export async function getIdentitiesForBinding(bindingId: string) {
     .orderBy(desc(connector_identities.created_at))
 }
 
-export async function findIdentityByExternalId(bindingId: string, externalUserId: string) {
+export async function getPairingRequestsForConnector(connectorId: string) {
+  return db
+    .select()
+    .from(connector_identities)
+    .where(
+      and(
+        eq(connector_identities.connector_id, connectorId),
+        sql`${connector_identities.binding_id} is null`,
+      )
+    )
+    .orderBy(desc(connector_identities.created_at))
+}
+
+export async function findIdentityByExternalId(connectorId: string, externalUserId: string) {
   const rows = await db
     .select()
     .from(connector_identities)
     .where(
       and(
-        eq(connector_identities.binding_id, bindingId),
+        eq(connector_identities.connector_id, connectorId),
         sql`${connector_identities.external_ref_keys}->>'user_id' = ${externalUserId}`,
       )
     )
@@ -173,7 +183,8 @@ export async function findIdentityByExternalId(bindingId: string, externalUserId
 }
 
 export async function createIdentity(data: {
-  binding_id: string
+  connector_id: string
+  binding_id?: string | null
   external_ref_keys: Record<string, string>
   display_name?: string
   avatar_url?: string
@@ -181,12 +192,13 @@ export async function createIdentity(data: {
 }) {
   const rows = await db
     .insert(connector_identities)
-    .values({ ...data, status: data.status ?? 'pending' })
+    .values({ ...data, binding_id: data.binding_id ?? null, status: data.status ?? 'pending' })
     .returning()
   return rows[0]!
 }
 
 export async function updateIdentity(id: string, data: Partial<{
+  binding_id: string | null
   display_name: string
   avatar_url: string
   status: string
@@ -347,4 +359,78 @@ export async function findUserByIdentity(projectId: string, key: string, value: 
       )
     )
     .limit(10)
+}
+
+// ─── Invite Codes ────────────────────────────────────────────────────────────
+
+export async function getInviteCodesForConnector(connectorId: string) {
+  return db
+    .select()
+    .from(connector_invite_codes)
+    .where(eq(connector_invite_codes.connector_id, connectorId))
+    .orderBy(desc(connector_invite_codes.created_at))
+}
+
+export async function getInviteCodeByCode(code: string) {
+  const rows = await db
+    .select()
+    .from(connector_invite_codes)
+    .where(eq(connector_invite_codes.code, code))
+    .limit(1)
+  return rows[0] ?? null
+}
+
+export async function createInviteCode(data: {
+  connector_id: string
+  code: string
+  label?: string | null
+  max_uses?: number | null
+  expires_at?: Date | null
+  created_by?: string | null
+}) {
+  const [row] = await db
+    .insert(connector_invite_codes)
+    .values({
+      connector_id: data.connector_id,
+      code: data.code,
+      label: data.label ?? null,
+      max_uses: data.max_uses ?? null,
+      expires_at: data.expires_at ?? null,
+      created_by: data.created_by ?? null,
+    })
+    .returning()
+  return row!
+}
+
+export async function revokeInviteCode(id: string) {
+  const [row] = await db
+    .update(connector_invite_codes)
+    .set({ revoked: true })
+    .where(eq(connector_invite_codes.id, id))
+    .returning()
+  return row ?? null
+}
+
+export async function deleteInviteCode(id: string) {
+  await db.delete(connector_invite_codes).where(eq(connector_invite_codes.id, id))
+}
+
+/**
+ * Attempt to redeem an invite code.
+ * Returns the connector_id if successful, or null if invalid/expired/exhausted.
+ * Increments use_count atomically.
+ */
+export async function redeemInviteCode(code: string): Promise<string | null> {
+  const invite = await getInviteCodeByCode(code)
+  if (!invite) return null
+  if (invite.revoked) return null
+  if (invite.expires_at && invite.expires_at < new Date()) return null
+  if (invite.max_uses !== null && invite.use_count >= invite.max_uses) return null
+
+  await db
+    .update(connector_invite_codes)
+    .set({ use_count: sql`${connector_invite_codes.use_count} + 1` })
+    .where(eq(connector_invite_codes.id, invite.id))
+
+  return invite.connector_id
 }

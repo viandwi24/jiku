@@ -178,4 +178,6 @@ export abstract class ConnectorAdapter {
   deleteMessage?(target: ConnectorTarget): Promise<void>
   editMessage?(target: ConnectorTarget, content: ConnectorContent): Promise<void>
   getHistory?(refKeys: Record<string, string>, limit: number): Promise<ConnectorEvent[]>
+  /** Send a typing/processing indicator to the target chat */
+  sendTyping?(target: ConnectorTarget): Promise<void>
 }

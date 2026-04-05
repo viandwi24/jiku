@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, and, desc, asc, count, sql } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { conversations, messages, agents } from '../schema/index.ts'
 import type { NewConversation, NewMessage } from '../schema/index.ts'
@@ -41,13 +41,141 @@ export async function updateConversation(id: string, updates: {
   status?: string
   title?: string
   goal?: string
+  type?: string
+  metadata?: Record<string, unknown>
+  run_status?: string
+  started_at?: Date | null
+  finished_at?: Date | null
+  error_message?: string | null
 }) {
   const set: Record<string, unknown> = { updated_at: new Date() }
   if (updates.status !== undefined) set.status = updates.status
   if (updates.title !== undefined) set.title = updates.title
   if (updates.goal !== undefined) set.goal = updates.goal
+  if (updates.type !== undefined) set.type = updates.type
+  if (updates.metadata !== undefined) set.metadata = updates.metadata
+  if (updates.run_status !== undefined) set.run_status = updates.run_status
+  if (updates.started_at !== undefined) set.started_at = updates.started_at
+  if (updates.finished_at !== undefined) set.finished_at = updates.finished_at
+  if (updates.error_message !== undefined) set.error_message = updates.error_message
   await db.update(conversations).set(set).where(eq(conversations.id, id))
   return db.query.conversations.findFirst({ where: eq(conversations.id, id) })
+}
+
+export async function createTaskConversation(data: {
+  agent_id: string
+  project_id: string  // used to find agent later
+  type: 'task' | 'heartbeat'
+  caller_id: string | null
+  parent_conversation_id: string | null
+  metadata: Record<string, unknown>
+}) {
+  const [row] = await db.insert(conversations).values({
+    agent_id: data.agent_id,
+    user_id: data.caller_id ?? undefined,
+    type: data.type,
+    caller_id: data.caller_id ?? undefined,
+    parent_conversation_id: data.parent_conversation_id ?? undefined,
+    metadata: data.metadata,
+    run_status: 'idle',
+    status: 'active',
+    mode: 'task',
+  } as NewConversation).returning()
+  return row!
+}
+
+export interface ListConversationsParams {
+  project_id: string
+  type?: string
+  agent_id?: string
+  run_status?: string
+  page?: number
+  per_page?: number
+  sort?: 'created_at' | 'started_at' | 'finished_at'
+  order?: 'asc' | 'desc'
+}
+
+export async function listRunsByProject(params: ListConversationsParams) {
+  const page = params.page ?? 1
+  const perPage = Math.min(params.per_page ?? 20, 100)
+  const offset = (page - 1) * perPage
+  const sortCol = params.sort ?? 'created_at'
+  const orderDir = params.order ?? 'desc'
+
+  // Get all agent IDs for this project
+  const projectAgents = await db.query.agents.findMany({
+    where: eq(agents.project_id, params.project_id),
+    columns: { id: true },
+  })
+  const agentIds = projectAgents.map(a => a.id)
+
+  if (agentIds.length === 0) {
+    return { data: [], total: 0, page, per_page: perPage, total_pages: 0 }
+  }
+
+  const conditions = [inArray(conversations.agent_id, agentIds)]
+  if (params.type) conditions.push(eq(conversations.type, params.type))
+  if (params.agent_id) conditions.push(eq(conversations.agent_id, params.agent_id))
+  if (params.run_status) conditions.push(eq(conversations.run_status, params.run_status))
+
+  const where = conditions.length === 1 ? conditions[0]! : and(...conditions)
+
+  const msgCountSq = db
+    .select({ conversation_id: messages.conversation_id, cnt: count().as('cnt') })
+    .from(messages)
+    .groupBy(messages.conversation_id)
+    .as('msg_counts')
+
+  const sortExpr = sortCol === 'started_at'
+    ? (orderDir === 'desc' ? desc(conversations.started_at) : asc(conversations.started_at))
+    : sortCol === 'finished_at'
+      ? (orderDir === 'desc' ? desc(conversations.finished_at) : asc(conversations.finished_at))
+      : (orderDir === 'desc' ? desc(conversations.created_at) : asc(conversations.created_at))
+
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        id: conversations.id,
+        type: conversations.type,
+        run_status: conversations.run_status,
+        agent_id: conversations.agent_id,
+        agent_name: agents.name,
+        caller_id: conversations.caller_id,
+        parent_conversation_id: conversations.parent_conversation_id,
+        metadata: conversations.metadata,
+        started_at: conversations.started_at,
+        finished_at: conversations.finished_at,
+        error_message: conversations.error_message,
+        created_at: conversations.created_at,
+        message_count: sql<number>`coalesce(${msgCountSq.cnt}, 0)`,
+      })
+      .from(conversations)
+      .innerJoin(agents, eq(conversations.agent_id, agents.id))
+      .leftJoin(msgCountSq, eq(conversations.id, msgCountSq.conversation_id))
+      .where(where)
+      .orderBy(sortExpr)
+      .limit(perPage)
+      .offset(offset),
+
+    db.select({ cnt: count() }).from(conversations).where(where),
+  ])
+
+  const total = totalRows[0]?.cnt ?? 0
+  const totalPages = Math.ceil(total / perPage)
+
+  return {
+    data: rows.map(r => ({
+      ...r,
+      message_count: Number(r.message_count),
+      duration_ms: r.started_at && r.finished_at
+        ? r.finished_at.getTime() - r.started_at.getTime()
+        : null,
+    })),
+    total,
+    page,
+    per_page: perPage,
+    total_pages: totalPages,
+  }
 }
 
 export async function listConversationsByAgent(agentId: string) {

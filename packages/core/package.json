@@ -9,7 +9,8 @@
     "@jiku/types": "workspace:*",
     "@jiku/kit": "workspace:*",
     "ai": "^6.0.145",
-    "zod": "^4.3.6",
+    "zod": "3.25.76",
+    "zod-to-json-schema": "^3.25.2",
     "hookable": "^6.1.0"
   },
   "devDependencies": {

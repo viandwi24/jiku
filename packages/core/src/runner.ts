@@ -4,6 +4,7 @@ import {
   stepCountIs,
   tool,
   zodSchema,
+  jsonSchema,
   type ToolSet,
   type ModelMessage,
 } from 'ai'
@@ -38,6 +39,20 @@ import type { PluginLoader } from './plugins/loader.ts'
 import { estimateTokens, getModelContextWindow } from './utils/tokens.ts'
 import { compactMessages, applyCompactBoundary } from './compaction.ts'
 import { buildMemoryContext, formatMemorySection, formatPersonaSection } from './memory/builder.ts'
+
+/**
+ * Convert a tool input schema (Zod v3) to an AI SDK-compatible schema.
+ * Delegates to AI SDK's zodSchema() which handles v3 correctly via zod-to-json-schema internally.
+ */
+function toInputSchema(input: unknown) {
+  if (!input || typeof input !== 'object') {
+    return jsonSchema({ type: 'object' as const, properties: {} })
+  }
+  if ('_def' in (input as Record<string, unknown>)) {
+    return zodSchema(input as Parameters<typeof zodSchema>[0])
+  }
+  return jsonSchema(input as Parameters<typeof jsonSchema>[0])
+}
 
 export class JikuAccessError extends Error {
   constructor(message: string) {
@@ -315,7 +330,7 @@ export class AgentRunner {
 
           aiTools[resolvedTool.tool_name] = tool({
             description: resolvedTool.meta.description,
-            inputSchema: zodSchema(resolvedTool.input),
+            inputSchema: toInputSchema(resolvedTool.input),
             execute: async (args: unknown) => resolvedTool.execute(args, toolCtx),
           })
         }

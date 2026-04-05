@@ -277,6 +277,43 @@ export const api = {
       request<{ ok: boolean }>(`/api/agents/${agentId}/credentials`, { method: 'DELETE' }),
   },
 
+  runs: {
+    list: (projectId: string, params?: {
+      type?: string
+      agent_id?: string
+      run_status?: string
+      page?: number
+      per_page?: number
+      sort?: 'created_at' | 'started_at' | 'finished_at'
+      order?: 'asc' | 'desc'
+    }) => {
+      const qs = new URLSearchParams()
+      if (params?.type) qs.set('type', params.type)
+      if (params?.agent_id) qs.set('agent_id', params.agent_id)
+      if (params?.run_status) qs.set('run_status', params.run_status)
+      if (params?.page) qs.set('page', String(params.page))
+      if (params?.per_page) qs.set('per_page', String(params.per_page))
+      if (params?.sort) qs.set('sort', params.sort)
+      if (params?.order) qs.set('order', params.order)
+      const q = qs.toString()
+      return request<RunsListResult>(`/api/projects/${projectId}/runs${q ? `?${q}` : ''}`)
+    },
+    cancel: (convId: string) =>
+      request<{ ok: boolean }>(`/api/conversations/${convId}/cancel`, { method: 'POST' }),
+  },
+
+  heartbeat: {
+    get: (agentId: string) =>
+      request<HeartbeatConfig>(`/api/agents/${agentId}/heartbeat`),
+    update: (agentId: string, body: Partial<HeartbeatConfig>) =>
+      request<HeartbeatConfig>(`/api/agents/${agentId}/heartbeat`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    trigger: (agentId: string) =>
+      request<{ ok: boolean; conversation_id: string }>(`/api/agents/${agentId}/heartbeat/trigger`, { method: 'POST' }),
+  },
+
   connectors: {
     plugins: () => request<{ plugins: ConnectorPlugin[] }>('/api/connector-plugins'),
     list: (projectId: string) => request<{ connectors: ConnectorItem[] }>(`/api/projects/${projectId}/connectors`),
@@ -297,7 +334,7 @@ export const api = {
 
     bindings: {
       list: (connectorId: string) => request<{ bindings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/bindings`),
-      create: (connectorId: string, body: Partial<ConnectorBinding> & { agent_id: string }) =>
+      create: (connectorId: string, body: Partial<ConnectorBinding>) =>
         request<{ binding: ConnectorBinding }>(`/api/connectors/${connectorId}/bindings`, {
           method: 'POST',
           body: JSON.stringify(body),
@@ -319,6 +356,32 @@ export const api = {
           method: 'PATCH',
           body: JSON.stringify(body),
         }),
+    },
+
+    pairingRequests: {
+      list: (connectorId: string) =>
+        request<{ pairing_requests: ConnectorIdentity[] }>(`/api/connectors/${connectorId}/pairing-requests`),
+      approve: (connectorId: string, identityId: string, body: { output_adapter?: string; output_config: Record<string, unknown>; display_name?: string }) =>
+        request<{ identity: ConnectorIdentity; binding: ConnectorBinding }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/approve`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      reject: (connectorId: string, identityId: string) =>
+        request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/reject`, { method: 'POST' }),
+    },
+
+    inviteCodes: {
+      list: (connectorId: string) =>
+        request<{ invite_codes: ConnectorInviteCode[] }>(`/api/connectors/${connectorId}/invite-codes`),
+      create: (connectorId: string, body: { label?: string; max_uses?: number; expires_at?: string }) =>
+        request<{ invite_code: ConnectorInviteCode }>(`/api/connectors/${connectorId}/invite-codes`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      revoke: (connectorId: string, codeId: string) =>
+        request<{ invite_code: ConnectorInviteCode }>(`/api/connectors/${connectorId}/invite-codes/${codeId}/revoke`, { method: 'POST' }),
+      delete: (connectorId: string, codeId: string) =>
+        request<{ ok: boolean }>(`/api/connectors/${connectorId}/invite-codes/${codeId}`, { method: 'DELETE' }),
     },
 
     events: {
@@ -492,6 +555,39 @@ export interface ConversationItemWithAgent extends ConversationItem {
   updated_at: string | null
 }
 
+export interface RunRow {
+  id: string
+  type: string
+  run_status: string
+  agent_id: string
+  agent_name: string
+  caller_id: string | null
+  parent_conversation_id: string | null
+  metadata: Record<string, unknown>
+  message_count: number
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  error_message: string | null
+  created_at: string
+}
+
+export interface RunsListResult {
+  data: RunRow[]
+  total: number
+  page: number
+  per_page: number
+  total_pages: number
+}
+
+export interface HeartbeatConfig {
+  heartbeat_enabled: boolean
+  heartbeat_cron: string | null
+  heartbeat_prompt: string | null
+  heartbeat_last_run_at: string | null
+  heartbeat_next_run_at: string | null
+}
+
 export interface AdapterField {
   key: string
   label: string
@@ -627,7 +723,6 @@ export interface ConnectorItem {
 export interface ConnectorBinding {
   id: string
   connector_id: string
-  agent_id: string
   display_name?: string | null
   source_type: string
   source_ref_keys?: Record<string, string> | null
@@ -636,18 +731,27 @@ export interface ConnectorBinding {
   trigger_keywords?: string[] | null
   trigger_event_type?: string | null
   trigger_event_filter?: Record<string, unknown> | null
-  adapter_type: string
-  require_approval: boolean
+  output_adapter: string
+  output_config: Record<string, unknown>
   rate_limit_rpm?: number | null
-  context_window: number
   include_sender_info: boolean
   enabled: boolean
   created_at: string
 }
 
+export interface ConversationOutputConfig {
+  agent_id: string
+  conversation_mode?: 'persistent' | 'new'
+}
+
+export interface TaskOutputConfig {
+  agent_id: string
+}
+
 export interface ConnectorIdentity {
   id: string
-  binding_id: string
+  connector_id: string
+  binding_id?: string | null
   external_ref_keys: Record<string, string>
   display_name?: string | null
   avatar_url?: string | null
@@ -657,6 +761,19 @@ export interface ConnectorIdentity {
   mapped_user_id?: string | null
   conversation_id?: string | null
   last_seen_at?: string | null
+  created_at: string
+}
+
+export interface ConnectorInviteCode {
+  id: string
+  connector_id: string
+  code: string
+  label?: string | null
+  max_uses?: number | null
+  use_count: number
+  expires_at?: string | null
+  revoked: boolean
+  created_by?: string | null
   created_at: string
 }
 

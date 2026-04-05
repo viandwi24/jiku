@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, unique, integer, jsonb, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, unique, integer, jsonb, index, boolean } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 
 export const agents = pgTable('agents', {
@@ -17,6 +17,12 @@ export const agents = pgTable('agents', {
   persona_seed:         jsonb('persona_seed').default(null),
   /** Timestamp when persona seed was applied. null = not yet seeded. */
   persona_seeded_at:    timestamp('persona_seeded_at'),
+  // Plan 11: heartbeat fields
+  heartbeat_enabled:    boolean('heartbeat_enabled').notNull().default(false),
+  heartbeat_cron:       varchar('heartbeat_cron', { length: 100 }),
+  heartbeat_prompt:     text('heartbeat_prompt'),
+  heartbeat_last_run_at: timestamp('heartbeat_last_run_at'),
+  heartbeat_next_run_at: timestamp('heartbeat_next_run_at'),
   created_at:           timestamp('created_at').defaultNow(),
 }, t => [unique().on(t.project_id, t.slug)])
 

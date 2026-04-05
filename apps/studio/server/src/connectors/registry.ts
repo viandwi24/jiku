@@ -45,6 +45,14 @@ class ConnectorRegistry {
     if (!ctx) return null
     return this.adapters.get(ctx.adapterId) ?? null
   }
+
+  /** Lookup active context by plugin_id (adapter id) + projectId */
+  getActiveContextForPlugin(pluginId: string, projectId: string) {
+    for (const ctx of this.activeContexts.values()) {
+      if (ctx.adapterId === pluginId && ctx.projectId === projectId) return ctx
+    }
+    return null
+  }
 }
 
 export const connectorRegistry = new ConnectorRegistry()

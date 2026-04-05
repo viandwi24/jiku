@@ -8,6 +8,8 @@ import { buildMemoryTools } from '../memory/tools.ts'
 import { ensurePersonaSeeded } from '../memory/persona.ts'
 import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
+import { heartbeatScheduler } from '../task/heartbeat.ts'
+import { buildRunTaskTool } from '../task/tools.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -107,6 +109,11 @@ export class JikuRuntimeManager {
       // Build memory tools scoped to this agent's resolved config
       const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
 
+      // run_task built-in tool — always active
+      const runTaskTool = buildRunTaskTool(projectId, a.id, () => ({
+        user_id: 'system', roles: [], permissions: [], user_data: {},
+      }), () => undefined)
+
       runtime.addAgent(
         defineAgent({
           meta: { id: a.id, name: a.name },
@@ -115,11 +122,18 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
-          built_in_tools: [...memoryTools, ...connectorTools],
+          built_in_tools: [...memoryTools, ...connectorTools, runTaskTool],
         }),
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
       )
+
+      // Schedule heartbeat if enabled
+      if (a.heartbeat_enabled && a.heartbeat_cron) {
+        heartbeatScheduler.scheduleAgent(a.id, projectId).catch(err =>
+          console.warn(`[heartbeat] Failed to schedule agent ${a.id}:`, err)
+        )
+      }
     }
 
     this.runtimes.set(projectId, runtime)
@@ -176,6 +190,9 @@ export class JikuRuntimeManager {
       (agent.memory_config as AgentMemoryConfig | null) ?? null,
     )
     const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
+    const runTaskTool = buildRunTaskTool(projectId, agent.id, () => ({
+      user_id: 'system', roles: [], permissions: [], user_data: {},
+    }), () => undefined)
 
     runtime.addAgent(
       defineAgent({
@@ -185,11 +202,14 @@ export class JikuRuntimeManager {
         provider_id: DYNAMIC_PROVIDER_ID,
         model_id: DYNAMIC_MODEL_ID,
         compaction_threshold: agent.compaction_threshold ?? 80,
-        built_in_tools: memoryTools,
+        built_in_tools: [...memoryTools, runTaskTool],
       }),
       agentMemoryConfig,
       (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
     )
+
+    // Reschedule heartbeat if config changed
+    await heartbeatScheduler.rescheduleAgent(agent.id, projectId)
   }
 
   removeAgent(projectId: string, agentId: string): void {
@@ -313,6 +333,8 @@ export class JikuRuntimeManager {
   }
 
   async stopAll(): Promise<void> {
+    heartbeatScheduler.stopAll()
+
     await Promise.all(
       Array.from(this.runtimes.entries()).map(([, rt]) => rt.stop()),
     )

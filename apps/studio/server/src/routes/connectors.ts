@@ -12,9 +12,14 @@ import {
   updateBinding,
   deleteBinding,
   getIdentitiesForBinding,
+  getPairingRequestsForConnector,
   updateIdentity,
   getConnectorEvents,
   getConnectorMessages,
+  getInviteCodesForConnector,
+  createInviteCode,
+  revokeInviteCode,
+  deleteInviteCode,
 } from '@jiku-studio/db'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { routeConnectorEvent } from '../connectors/event-router.ts'
@@ -197,6 +202,110 @@ router.patch('/connectors/:id/bindings/:bid/identities/:iid', authMiddleware, as
     const identity = await updateIdentity(req.params['iid']!, updates)
     if (!identity) { res.status(404).json({ error: 'Not found' }); return }
     res.json({ identity })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// ─── Pairing Requests ────────────────────────────────────────────────────────
+
+/** GET /connectors/:id/pairing-requests — list pending identities with no binding */
+router.get('/connectors/:id/pairing-requests', authMiddleware, async (req, res) => {
+  try {
+    const requests = await getPairingRequestsForConnector(req.params['id']!)
+    res.json({ pairing_requests: requests })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/pairing-requests/:iid/approve — approve + auto-create binding */
+router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, async (req, res) => {
+  const { output_adapter, output_config, display_name } = req.body as {
+    output_adapter?: string
+    output_config?: Record<string, unknown>
+    display_name?: string
+  }
+  if (!output_config?.agent_id) { res.status(400).json({ error: 'output_config.agent_id required' }); return }
+  try {
+    const binding = await createBinding({
+      connector_id: req.params['id']!,
+      display_name: display_name ?? 'Auto (pairing)',
+      output_adapter: output_adapter ?? 'conversation',
+      output_config: output_config ?? {},
+    })
+    const identity = await updateIdentity(req.params['iid']!, {
+      binding_id: binding.id,
+      status: 'approved',
+      approved_at: new Date(),
+    })
+    if (!identity) { res.status(404).json({ error: 'Identity not found' }); return }
+    res.json({ identity, binding })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/pairing-requests/:iid/reject */
+router.post('/connectors/:id/pairing-requests/:iid/reject', authMiddleware, async (req, res) => {
+  try {
+    const identity = await updateIdentity(req.params['iid']!, { status: 'blocked' })
+    if (!identity) { res.status(404).json({ error: 'Identity not found' }); return }
+    res.json({ identity })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// ─── Invite Codes (connector-level) ─────────────────────────────────────────
+
+/** GET /connectors/:id/invite-codes */
+router.get('/connectors/:id/invite-codes', authMiddleware, async (req, res) => {
+  try {
+    const codes = await getInviteCodesForConnector(req.params['id']!)
+    res.json({ invite_codes: codes })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/invite-codes */
+router.post('/connectors/:id/invite-codes', authMiddleware, async (req, res) => {
+  const userId = res.locals['user_id'] as string
+  const { label, max_uses, expires_at } = req.body as { label?: string; max_uses?: number; expires_at?: string }
+  try {
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase()
+      + Math.random().toString(36).slice(2, 6).toUpperCase()
+    const invite = await createInviteCode({
+      connector_id: req.params['id']!,
+      code,
+      label: label ?? null,
+      max_uses: max_uses ?? null,
+      expires_at: expires_at ? new Date(expires_at) : null,
+      created_by: userId,
+    })
+    res.status(201).json({ invite_code: invite })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/invite-codes/:cid/revoke */
+router.post('/connectors/:id/invite-codes/:cid/revoke', authMiddleware, async (req, res) => {
+  try {
+    const invite = await revokeInviteCode(req.params['cid']!)
+    if (!invite) { res.status(404).json({ error: 'Not found' }); return }
+    res.json({ invite_code: invite })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** DELETE /connectors/:id/invite-codes/:cid */
+router.delete('/connectors/:id/invite-codes/:cid', authMiddleware, async (req, res) => {
+  try {
+    await deleteInviteCode(req.params['cid']!)
+    res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }

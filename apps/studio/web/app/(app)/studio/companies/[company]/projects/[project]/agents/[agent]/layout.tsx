@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
+  Activity,
   Bot,
   Brain,
   Cpu,
@@ -35,6 +36,7 @@ export default function AgentLayout({ children, params }: LayoutProps) {
     { value: 'persona', label: 'persona', icon: Sparkles, href: `${base}/persona` },
     { value: 'tools', label: 'tools', icon: Wrench, href: `${base}/tools` },
     { value: 'memory', label: 'memory', icon: Brain, href: `${base}/memory` },
+    { value: 'heartbeat', label: 'heartbeat', icon: Activity, href: `${base}/heartbeat` },
     { value: 'permissions', label: 'permissions', icon: Shield, href: `${base}/permissions` },
   ]
 

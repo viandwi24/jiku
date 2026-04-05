@@ -7,8 +7,54 @@ import {
   logConnectorEvent,
   logConnectorMessage,
   createConversation,
+  redeemInviteCode,
+  getConnectorById,
 } from '@jiku-studio/db'
 import { connectorRegistry } from './registry.ts'
+
+/**
+ * Try to handle an invite code redemption for a message event.
+ * Detects `/start <code>` or `/join <code>` patterns.
+ * If valid code → auto-approve the identity for the matching binding.
+ * Returns true if the event was handled as a code redemption (should not be routed further).
+ */
+async function tryRedeemInviteCode(event: ConnectorEvent, connectorUuid: string): Promise<boolean> {
+  if (event.type !== 'message') return false
+  const text = (event.content?.text ?? '').trim()
+  const match = text.match(/^\/(?:start|join)\s+([A-Za-z0-9_-]{4,64})$/)
+  if (!match) return false
+
+  const code = match[1]!
+  const redeemedConnectorId = await redeemInviteCode(code)
+  // Code must belong to this connector
+  if (!redeemedConnectorId || redeemedConnectorId !== connectorUuid) return false
+
+  const externalUserId = event.sender.external_id
+  let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+
+  if (!identity) {
+    identity = await createIdentity({
+      connector_id: connectorUuid,
+      binding_id: null,
+      external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
+      display_name: event.sender.display_name ?? event.sender.username,
+      status: 'approved',
+    })
+    await updateIdentity(identity.id, { approved_at: new Date() })
+  } else if (identity.status !== 'approved') {
+    await updateIdentity(identity.id, { status: 'approved', approved_at: new Date() })
+  }
+
+  const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
+  if (adapter) {
+    adapter.sendMessage(
+      { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+      { text: '✅ Access granted! You can now chat with the agent.' },
+    ).catch(() => {})
+  }
+
+  return true
+}
 
 type RouteResult = 'routed' | 'dropped' | 'pending_approval' | 'rate_limited'
 
@@ -130,22 +176,55 @@ export async function routeConnectorEvent(
 ): Promise<RouteResult> {
   const start = Date.now()
 
+  // Resolve the connector UUID from the active context (event.connector_id is plugin_id)
+  const activeCtx = connectorRegistry.getActiveContextForPlugin(event.connector_id, projectId)
+  const connectorUuid = activeCtx?.connectorId ?? null
+
+  // 0. Invite code redemption — intercept /start <code> or /join <code>
+  if (connectorUuid) {
+    const redeemed = await tryRedeemInviteCode(event, connectorUuid)
+    if (redeemed) return 'routed'
+  }
+
   // 1. Find matching bindings
   const bindingRows = await getActiveBindingsForProject(projectId)
   const matchingBindings = bindingRows.filter(({ binding, connector }) =>
     connector.plugin_id === event.connector_id && matchesTrigger(event, binding as ConnectorBinding)
   )
 
+  // 1b. No matching binding → create pairing request and notify user
   if (matchingBindings.length === 0) {
-    await logConnectorEvent({
-      connector_id: event.connector_id,
-      event_type: event.type,
-      ref_keys: event.ref_keys,
-      payload: event as unknown as Record<string, unknown>,
-      status: 'dropped',
-      drop_reason: 'no_matching_binding',
-    })
-    return 'dropped'
+    if (connectorUuid && event.type === 'message') {
+      const externalUserId = event.sender.external_id
+      let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+      if (!identity) {
+        identity = await createIdentity({
+          connector_id: connectorUuid,
+          binding_id: null,
+          external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
+          display_name: event.sender.display_name ?? event.sender.username,
+          status: 'pending',
+        })
+        const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
+        if (adapter) {
+          adapter.sendMessage(
+            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+            { text: '👋 Your access request has been sent. Please wait for admin approval.' },
+          ).catch(() => {})
+        }
+      }
+      await logConnectorEvent({
+        connector_id: connectorUuid,
+        identity_id: identity.id,
+        event_type: event.type,
+        ref_keys: event.ref_keys,
+        payload: event as unknown as Record<string, unknown>,
+        status: 'pending_approval',
+        drop_reason: 'no_binding',
+        processing_ms: Date.now() - start,
+      })
+    }
+    return 'pending_approval'
   }
 
   let result: RouteResult = 'dropped'
@@ -153,20 +232,28 @@ export async function routeConnectorEvent(
   for (const { binding, connector } of matchingBindings) {
     const typedBinding = binding as ConnectorBinding
 
-    // 2. Find or create identity
+    // 2. Find or create identity — now keyed by connector_id
     const externalUserId = event.sender.external_id
-    let identity = await findIdentityByExternalId(typedBinding.id, externalUserId)
+    let identity = await findIdentityByExternalId(connector.id, externalUserId)
+    let isNewIdentity = false
 
     if (!identity) {
+      isNewIdentity = true
       identity = await createIdentity({
+        connector_id: connector.id,
         binding_id: typedBinding.id,
         external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
         display_name: event.sender.display_name ?? event.sender.username,
-        status: typedBinding.require_approval ? 'pending' : 'approved',
+        status: 'approved',
       })
     } else {
-      // Update last seen
-      await updateIdentity(identity.id, { last_seen_at: new Date() })
+      // Assign binding if identity was a pairing request (no binding yet)
+      if (!identity.binding_id) {
+        await updateIdentity(identity.id, { binding_id: typedBinding.id, last_seen_at: new Date() })
+        identity = { ...identity, binding_id: typedBinding.id }
+      } else {
+        await updateIdentity(identity.id, { last_seen_at: new Date() })
+      }
     }
 
     const typedIdentity = identity as ConnectorIdentity
@@ -198,6 +285,15 @@ export async function routeConnectorEvent(
         status: 'pending_approval',
         processing_ms: Date.now() - start,
       })
+      if (isNewIdentity) {
+        const adapter = connectorRegistry.getAdapterForConnector(connector.id)
+        if (adapter) {
+          adapter.sendMessage(
+            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+            { text: '👋 Your access request has been sent. Please wait for admin approval.' },
+          ).catch(() => {})
+        }
+      }
       result = 'pending_approval'
       continue
     }
@@ -238,12 +334,12 @@ export async function routeConnectorEvent(
     // 6. Build caller
     const caller = buildConnectorCaller(typedIdentity, typedBinding, event)
 
-    // 7. Execute adapter
-    if (typedBinding.adapter_type === 'conversation') {
+    // 7. Execute output adapter
+    if (typedBinding.output_adapter === 'conversation') {
       executeConversationAdapter(event, typedBinding, typedIdentity, caller, connector.id, projectId, runtimeManager).catch(err =>
         console.error('[connector] conversation adapter error:', err)
       )
-    } else if (typedBinding.adapter_type === 'task') {
+    } else if (typedBinding.output_adapter === 'task') {
       executeTaskAdapter(event, typedBinding, caller, projectId, runtimeManager).catch(err =>
         console.error('[connector] task adapter error:', err)
       )
@@ -255,6 +351,9 @@ export async function routeConnectorEvent(
   return result
 }
 
+// In-memory set of conversation IDs currently being processed
+const runningConversations = new Set<string>()
+
 async function executeConversationAdapter(
   event: ConnectorEvent,
   binding: ConnectorBinding,
@@ -264,83 +363,109 @@ async function executeConversationAdapter(
   projectId: string,
   runtimeManager: import('../runtime/manager.ts').JikuRuntimeManager,
 ): Promise<void> {
-  // Get or create conversation for this identity
-  let conversationId = identity.conversation_id ?? undefined
-  if (!conversationId) {
+  const cfg = binding.output_config as { agent_id?: string; conversation_mode?: string }
+  const agentId = cfg.agent_id
+  const conversationMode = cfg.conversation_mode ?? 'persistent'
+  if (!agentId) { console.error('[connector] conversation adapter: missing agent_id in output_config'); return }
+
+  const connectorAdapter = connectorRegistry.getAdapterForConnector(connectorId)
+
+  let conversationId: string
+  if (conversationMode === 'persistent') {
+    if (identity.conversation_id) {
+      conversationId = identity.conversation_id
+    } else {
+      const conv = await createConversation({
+        project_id: projectId,
+        agent_id: agentId,
+        title: `${event.sender.display_name ?? event.sender.external_id} (connector)`,
+      })
+      conversationId = conv.id
+      await updateIdentity(identity.id, { conversation_id: conversationId })
+    }
+  } else {
     const conv = await createConversation({
       project_id: projectId,
-      agent_id: binding.agent_id,
+      agent_id: agentId,
       title: `${event.sender.display_name ?? event.sender.external_id} (connector)`,
     })
     conversationId = conv.id
-    await updateIdentity(identity.id, { conversation_id: conversationId })
   }
 
-  // Build context injection
-  const contextString = buildConnectorContextString(event, binding, identity)
-
-  // Log inbound message
-  await logConnectorMessage({
-    connector_id: connectorId,
-    conversation_id: conversationId,
-    direction: 'inbound',
-    ref_keys: event.ref_keys,
-    content_snapshot: event.content?.text,
-    status: 'sent',
-  })
-
-  // Build the input message — prepend connector context
-  const inputText = event.type === 'message'
-    ? (event.content?.text ?? '(no text content)')
-    : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
-
-  const input = contextString
-    ? `${contextString}\n\n${inputText}`
-    : inputText
-
-  // Run the agent
-  const stream = await runtimeManager.run(projectId, {
-    agent_id: binding.agent_id,
-    conversation_id: conversationId,
-    caller,
-    mode: 'chat',
-    input,
-  })
-
-  // Drain stream and collect text
-  let responseText = ''
-  const reader = stream.stream.getReader()
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value.type === 'text-delta') {
-        responseText += value.textDelta
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
-
-  if (!responseText) return
-
-  // Send response via connector adapter
-  const adapter = connectorRegistry.getAdapterForConnector(connectorId)
-  if (adapter) {
-    const sendResult = await adapter.sendMessage(
+  // Guard: already running → notify and skip
+  if (runningConversations.has(conversationId)) {
+    connectorAdapter?.sendMessage(
       { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-      { text: responseText, markdown: true }
-    )
+      { text: '⏳ Agent is still processing your previous message. Please wait a moment.' },
+    ).catch(() => {})
+    return
+  }
 
-    // Log outbound message
+  runningConversations.add(conversationId)
+
+  // Send typing indicator; repeat every 4s while processing (Telegram typing lasts ~5s)
+  connectorAdapter?.sendTyping?.({ ref_keys: event.ref_keys }).catch(() => {})
+  const typingInterval = connectorAdapter?.sendTyping
+    ? setInterval(() => {
+        connectorAdapter.sendTyping!({ ref_keys: event.ref_keys }).catch(() => {})
+      }, 4000)
+    : null
+
+  try {
+    const contextString = buildConnectorContextString(event, binding, identity)
     await logConnectorMessage({
       connector_id: connectorId,
       conversation_id: conversationId,
-      direction: 'outbound',
-      ref_keys: sendResult.ref_keys ?? event.ref_keys,
-      content_snapshot: responseText,
-      status: sendResult.success ? 'sent' : 'failed',
+      direction: 'inbound',
+      ref_keys: event.ref_keys,
+      content_snapshot: event.content?.text,
+      status: 'sent',
     })
+
+    const inputText = event.type === 'message'
+      ? (event.content?.text ?? '(no text content)')
+      : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
+    const input = contextString ? `${contextString}\n\n${inputText}` : inputText
+
+    const stream = await runtimeManager.run(projectId, {
+      agent_id: agentId,
+      conversation_id: conversationId,
+      caller,
+      mode: 'chat',
+      input,
+    })
+
+    let responseText = ''
+    const reader = stream.stream.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value.type === 'text-delta') responseText += (value as { delta?: string; textDelta?: string }).delta ?? (value as { delta?: string; textDelta?: string }).textDelta ?? ''
+      }
+    } finally {
+      reader.releaseLock()
+    }
+
+    if (!responseText) return
+
+    if (connectorAdapter) {
+      const sendResult = await connectorAdapter.sendMessage(
+        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+        { text: responseText, markdown: true }
+      )
+      await logConnectorMessage({
+        connector_id: connectorId,
+        conversation_id: conversationId,
+        direction: 'outbound',
+        ref_keys: sendResult.ref_keys ?? event.ref_keys,
+        content_snapshot: responseText,
+        status: sendResult.success ? 'sent' : 'failed',
+      })
+    }
+  } finally {
+    if (typingInterval) clearInterval(typingInterval)
+    runningConversations.delete(conversationId)
   }
 }
 
@@ -351,19 +476,21 @@ async function executeTaskAdapter(
   projectId: string,
   runtimeManager: import('../runtime/manager.ts').JikuRuntimeManager,
 ): Promise<void> {
+  const cfg = binding.output_config as { agent_id?: string }
+  const agentId = cfg.agent_id
+  if (!agentId) { console.error('[connector] task adapter: missing agent_id in output_config'); return }
+
   const conv = await createConversation({
     project_id: projectId,
-    agent_id: binding.agent_id,
+    agent_id: agentId,
     title: `Task from ${event.sender.display_name ?? event.sender.external_id}`,
   })
 
-  const inputText = event.content?.text ?? `[${event.type}]`
-
   await runtimeManager.run(projectId, {
-    agent_id: binding.agent_id,
+    agent_id: agentId,
     conversation_id: conv.id,
     caller,
     mode: 'task',
-    input: inputText,
+    input: event.content?.text ?? `[${event.type}]`,
   })
 }

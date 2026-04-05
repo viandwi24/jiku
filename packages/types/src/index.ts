@@ -5,6 +5,55 @@
 export type AgentMode = 'chat' | 'task'
 
 // ============================================================
+// CONVERSATION TYPES (Plan 11)
+// ============================================================
+
+export type ConversationType = 'chat' | 'task' | 'heartbeat' | string
+export type ConversationRunStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface ChatMetadata {
+  // reserved for future use
+}
+
+export interface TaskMetadata {
+  goal: string
+  spawned_by_tool_call_id?: string
+  timeout_ms?: number
+  output?: string
+  progress_log?: Array<{ message: string; percent?: number; at: string }>
+}
+
+export interface HeartbeatMetadata {
+  scheduled_at: string
+  trigger: 'cron' | 'manual'
+}
+
+export interface ConversationRow {
+  id: string
+  type: string
+  run_status: string
+  agent_id: string
+  agent_name: string
+  caller_id: string | null
+  parent_conversation_id: string | null
+  metadata: Record<string, unknown>
+  message_count: number
+  started_at: Date | null
+  finished_at: Date | null
+  duration_ms: number | null
+  error_message: string | null
+  created_at: Date
+}
+
+export interface ListConversationsResult {
+  data: ConversationRow[]
+  total: number
+  page: number
+  per_page: number
+  total_pages: number
+}
+
+// ============================================================
 // TOOL
 // ============================================================
 
@@ -742,11 +791,20 @@ export interface ConnectorContext {
   onEvent(event: ConnectorEvent): Promise<void>
 }
 
+/** Output adapter config shapes */
+export interface ConversationOutputConfig {
+  agent_id: string
+  conversation_mode?: 'persistent' | 'new'
+}
+
+export interface TaskOutputConfig {
+  agent_id: string
+}
+
 /** Binding record from DB */
 export interface ConnectorBinding {
   id: string
   connector_id: string
-  agent_id: string
   display_name?: string | null
   source_type: 'private' | 'group' | 'channel' | 'any'
   source_ref_keys?: Record<string, string> | null
@@ -755,10 +813,9 @@ export interface ConnectorBinding {
   trigger_keywords?: string[] | null
   trigger_event_type?: string | null
   trigger_event_filter?: Record<string, unknown> | null
-  adapter_type: 'conversation' | 'task' | 'notify'
-  require_approval: boolean
+  output_adapter: string
+  output_config: Record<string, unknown>
   rate_limit_rpm?: number | null
-  context_window: number
   include_sender_info: boolean
   enabled: boolean
   created_at: Date

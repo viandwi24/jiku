@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-05 — Plan 11 Task Mode, Heartbeat & Run History
+
+- **DB schema**: Extended `conversations` table with `type`, `metadata`, `run_status`, `caller_id`, `parent_conversation_id`, `started_at`, `finished_at`, `error_message` (nullable `user_id`). Extended `agents` with `heartbeat_enabled`, `heartbeat_cron`, `heartbeat_prompt`, `heartbeat_last_run_at`, `heartbeat_next_run_at`.
+- **DB queries**: `createTaskConversation`, `listRunsByProject` (server-side paginated with agent join + message count).
+- **Types** (`@jiku/types`): `ConversationType`, `ConversationRunStatus`, `TaskMetadata`, `HeartbeatMetadata`, `ConversationRow`, `ListConversationsResult`.
+- **Server task runner** (`apps/studio/server/src/task/runner.ts`): `runTaskConversation`, `spawnTask`, `buildCaller`.
+- **Task tools** (`apps/studio/server/src/task/tools.ts`): `buildRunTaskTool` (run_task — always active in chat+task), `buildTaskLifecycleTools` (task_complete, task_fail).
+- **HeartbeatScheduler** (`apps/studio/server/src/task/heartbeat.ts`): setTimeout-based scheduler, `scheduleAgent`, `triggerHeartbeat`, `rescheduleAgent`, `stopAll`. Integrated into `RuntimeManager` wakeUp/syncAgent/stopAll.
+- **Server routes**: `GET /api/projects/:pid/runs`, `POST /api/conversations/:id/cancel`, `GET/PATCH /api/agents/:aid/heartbeat`, `POST /api/agents/:aid/heartbeat/trigger`.
+- **Web**: Run History page (`/runs`) with type/status filters and pagination. Run Detail page (`/runs/[conv]`). Heartbeat settings tab in agent layout. "Runs" added to project sidebar. `api.runs` and `api.heartbeat` API client namespaces.
+- Files: `apps/studio/server/src/task/runner.ts`, `tools.ts`, `heartbeat.ts`, `routes/runs.ts`, `routes/heartbeat.ts`. Web: `runs/page.tsx`, `runs/[conv]/page.tsx`, `agents/[agent]/heartbeat/page.tsx`.
+
 ## 2026-04-05 — Plan 10 Channels & Connector System
 
 **Changed:** Full implementation of the Channels & Connector System (Plan 10).

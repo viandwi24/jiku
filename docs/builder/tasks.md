@@ -1,11 +1,9 @@
 ## Backlog
 
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
-- [ ] Connect `@jiku/core` JikuRuntime to `JikuRuntimeManager` (chat now uses Vercel AI SDK via buildProvider, but runtime is still separate)
-- [ ] DB migrations — run `drizzle-kit generate` + `migrate` to generate and apply migrations
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
 - [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
-- [ ] Tambah built-in plugins — jiku.cron, jiku.skills
+- [ ] Tambah built-in plugins — jiku.cron, jiku.skills (PluginLoader saat ini kosong di studio)
 - [ ] Invite member feature (currently only owner can be member)
 
 ## Done
@@ -22,3 +20,13 @@
 - [x] Migrate shadcn UI + ai-elements into @jiku/ui (packages/ui/src/components/) — completed 2026-04-04
 - [x] Write Plan 3 + 3.5 implementation reports — completed 2026-04-04
 - [x] Fix create project 500 error (middleware path mismatch in projects route) — completed 2026-04-04
+- [x] Credentials system end-to-end (Plan 4): DB schema, AES-256-GCM encryption, adapters, API routes, UI — completed 2026-04-05
+- [x] Connect `@jiku/core` JikuRuntime to `JikuRuntimeManager` — one JikuRuntime per project, dynamic provider pattern — completed 2026-04-05
+- [x] Chat migration: WebSocket → HTTP streaming via Vercel AI SDK + JikuRuntime — completed 2026-04-05
+- [x] StudioStorageAdapter: implement full JikuStorageAdapter interface (conversations, messages as MessageContent[], plugin KV) — completed 2026-04-05
+- [x] Plugin KV store: persist in `plugin_kv` DB table instead of in-memory — completed 2026-04-05
+- [x] DB migrations: generated `0001_lumpy_ezekiel.sql`, pushed to DB — completed 2026-04-05
+- [x] buildProvider(): support openai, anthropic, openrouter, ollama via @ai-sdk/* — completed 2026-04-05
+- [x] UX fix: show error bubble in ChatInterface when server returns error (e.g. no credential assigned) — completed 2026-04-05
+- [x] Plan 5 — Studio Web UI/UX Overhaul: sidebar, chat system, agent tabs, settings tabs, error boundaries, empty states, toast — completed 2026-04-05
+- [x] Chat history fix: content→parts migration, AI SDK v6 `messages` option, `!historyData` guard — completed 2026-04-05

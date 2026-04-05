@@ -111,17 +111,17 @@ export class AgentRunner {
     const history = await this.storage.getMessages(conversation_id)
     const messages: ModelMessage[] = []
     for (const m of history) {
-      const text = m.content.find(c => c.type === 'text')
+      const text = m.parts.find(p => p.type === 'text')
       if (!text || text.type !== 'text') continue
-      if (m.role === 'user') messages.push({ role: 'user', content: text.text })
-      else if (m.role === 'assistant') messages.push({ role: 'assistant', content: text.text })
+      if (m.role === 'user') messages.push({ role: 'user', content: (text as { type: 'text'; text: string }).text })
+      else if (m.role === 'assistant') messages.push({ role: 'assistant', content: (text as { type: 'text'; text: string }).text })
     }
     messages.push({ role: 'user', content: input })
 
     await this.storage.addMessage(conversation_id, {
       conversation_id,
       role: 'user',
-      content: [{ type: 'text', text: input }],
+      parts: [{ type: 'text', text: input }],
     })
 
     // 5. Build runtime context (shared across the run)
@@ -204,7 +204,7 @@ export class AgentRunner {
           await storage.addMessage(conversation_id, {
             conversation_id,
             role: 'assistant',
-            content: [{ type: 'text', text: finalText }],
+            parts: [{ type: 'text', text: finalText }],
           })
         }
 

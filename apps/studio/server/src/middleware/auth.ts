@@ -1,5 +1,4 @@
-import type { Context, Next } from 'hono'
-import { createMiddleware } from 'hono/factory'
+import type { Request, Response, NextFunction } from 'express'
 import { SignJWT, jwtVerify } from 'jose'
 import { env } from '../env.ts'
 
@@ -22,19 +21,21 @@ export async function verifyJwt(token: string): Promise<Record<string, unknown> 
   }
 }
 
-export const authMiddleware = createMiddleware(async (c: Context, next: Next) => {
-  const authHeader = c.req.header('Authorization')
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'Unauthorized' }, 401)
+    res.status(401).json({ error: 'Unauthorized' })
+    return
   }
 
   const token = authHeader.slice(7)
   const payload = await verifyJwt(token)
 
   if (!payload || typeof payload.user_id !== 'string') {
-    return c.json({ error: 'Invalid token' }, 401)
+    res.status(401).json({ error: 'Invalid token' })
+    return
   }
 
-  c.set('user_id', payload.user_id)
-  await next()
-})
+  res.locals['user_id'] = payload.user_id
+  next()
+}

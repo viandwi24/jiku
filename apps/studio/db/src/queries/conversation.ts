@@ -1,6 +1,6 @@
 import { eq, inArray } from 'drizzle-orm'
 import { db } from '../client.ts'
-import { conversations, messages } from '../schema/index.ts'
+import { conversations, messages, agents } from '../schema/index.ts'
 import type { NewConversation, NewMessage } from '../schema/index.ts'
 
 export async function getConversationsByAgent(agentId: string, userId: string) {
@@ -60,4 +60,48 @@ export async function listConversationsByAgent(agentId: string) {
 export async function deleteMessagesByIds(ids: string[]) {
   if (ids.length === 0) return
   await db.delete(messages).where(inArray(messages.id, ids))
+}
+
+export async function getConversationsByProject(projectId: string, userId: string) {
+  const rows = await db.query.conversations.findMany({
+    where: (t, { and, eq: eqFn }) => and(eqFn(t.user_id, userId)),
+    with: {
+      agent: true,
+      messages: {
+        orderBy: (t, { desc }) => [desc(t.created_at)],
+        limit: 1,
+      },
+    },
+    orderBy: (t, { desc }) => [desc(t.updated_at)],
+  })
+
+  // Filter to conversations whose agent belongs to this project
+  return rows.filter(r => r.agent.project_id === projectId).map(r => ({
+    ...r,
+    agent: { id: r.agent.id, name: r.agent.name, slug: r.agent.slug },
+    last_message: extractLastMessageText(r.messages[0]),
+    messages: undefined,
+  }))
+}
+
+export async function getConversationWithAgent(convId: string) {
+  const row = await db.query.conversations.findFirst({
+    where: eq(conversations.id, convId),
+    with: { agent: true },
+  })
+  if (!row) return null
+  return {
+    ...row,
+    agent: { id: row.agent.id, name: row.agent.name, slug: row.agent.slug },
+  }
+}
+
+function extractLastMessageText(msg: typeof messages.$inferSelect | undefined): string | null {
+  if (!msg) return null
+  const parts = msg.parts
+  if (Array.isArray(parts)) {
+    const textPart = (parts as { type: string; text?: string }[]).find(p => p.type === 'text')
+    return textPart?.text?.slice(0, 120) ?? null
+  }
+  return null
 }

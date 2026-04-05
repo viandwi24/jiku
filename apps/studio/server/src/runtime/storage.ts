@@ -12,7 +12,7 @@ import {
   pluginKvDelete,
   pluginKvKeys,
 } from '@jiku-studio/db'
-import type { JikuStorageAdapter, Conversation, Message, MessageContent } from '@jiku/types'
+import type { JikuStorageAdapter, Conversation, Message, MessagePart } from '@jiku/types'
 
 function toJikuConversation(row: {
   id: string
@@ -40,17 +40,16 @@ function toJikuMessage(row: {
   id: string
   conversation_id: string
   role: string
-  content: unknown
+  parts: unknown
   created_at: Date | null
 }): Message {
-  // content in DB is jsonb — could be a string (legacy) or MessageContent[] (new format)
-  let content: MessageContent[]
-  if (typeof row.content === 'string') {
-    content = [{ type: 'text', text: row.content }]
-  } else if (Array.isArray(row.content)) {
-    content = row.content as MessageContent[]
+  let parts: MessagePart[]
+  if (Array.isArray(row.parts)) {
+    parts = row.parts as MessagePart[]
+  } else if (typeof row.parts === 'string') {
+    parts = [{ type: 'text', text: row.parts }]
   } else {
-    content = [{ type: 'text', text: String(row.content) }]
+    parts = [{ type: 'text', text: String(row.parts) }]
   }
 
   const role = row.role === 'assistant' ? 'assistant'
@@ -61,7 +60,7 @@ function toJikuMessage(row: {
     id: row.id,
     conversation_id: row.conversation_id,
     role,
-    content,
+    parts,
     created_at: row.created_at ?? new Date(),
   }
 }
@@ -115,7 +114,7 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
     const row = await addMessage({
       conversation_id: conversationId,
       role: message.role,
-      content: message.content,   // stored as jsonb array of MessageContent
+      parts: message.parts,
     })
     return toJikuMessage(row)
   }

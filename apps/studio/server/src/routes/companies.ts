@@ -1,67 +1,54 @@
-import { Hono } from 'hono'
-import { getCompaniesByUserId, createCompany, getCompanyBySlug, getCompanyById, updateCompany, deleteCompany, seedCompanySystemRoles, addMember } from '@jiku-studio/db'
+import { Router } from 'express'
+import { getCompaniesByUserId, createCompany, getCompanyBySlug, updateCompany, deleteCompany, seedCompanySystemRoles, addMember } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { uniqueSlug } from '../utils/slug.ts'
-import type { AppVariables } from '../types.ts'
 
-const router = new Hono<{ Variables: AppVariables }>()
+const router = Router()
+router.use(authMiddleware)
 
-router.use('*', authMiddleware)
-
-router.get('/', async (c) => {
-  const userId = c.get('user_id')
+router.get('/', async (req, res) => {
+  const userId = res.locals['user_id'] as string
   const companies = await getCompaniesByUserId(userId)
-  return c.json({ companies })
+  res.json({ companies })
 })
 
-router.post('/', async (c) => {
-  const userId = c.get('user_id')
-  const body = await c.req.json<{ name: string; slug?: string }>()
+router.post('/', async (req, res) => {
+  const userId = res.locals['user_id'] as string
+  const { name, slug: rawSlug } = req.body as { name: string; slug?: string }
 
-  const slug = await uniqueSlug(
-    body.slug ?? body.name,
-    async (s) => !!(await getCompanyBySlug(s)),
-  )
-
-  const company = await createCompany({ name: body.name, slug, owner_id: userId })
+  const slug = await uniqueSlug(rawSlug ?? name, async (s) => !!(await getCompanyBySlug(s)))
+  const company = await createCompany({ name, slug, owner_id: userId })
 
   const systemRoles = await seedCompanySystemRoles(company.id)
   const ownerRole = systemRoles.find(r => r.name === 'Owner')!
-
   await addMember(company.id, userId, ownerRole.id)
 
-  return c.json({ company }, 201)
+  res.status(201).json({ company })
 })
 
-router.patch('/:slug', async (c) => {
-  const slug = c.req.param('slug')
-  const company = await getCompanyBySlug(slug)
-  if (!company) return c.json({ error: 'Company not found' }, 404)
+router.patch('/:slug', async (req, res) => {
+  const company = await getCompanyBySlug(req.params['slug']!)
+  if (!company) { res.status(404).json({ error: 'Company not found' }); return }
 
-  const body = await c.req.json<{ name?: string; slug?: string }>()
-
-  // Ensure new slug is unique (if changing)
-  let newSlug = body.slug
+  const { name, slug: newSlug } = req.body as { name?: string; slug?: string }
   if (newSlug && newSlug !== company.slug) {
     const existing = await getCompanyBySlug(newSlug)
-    if (existing) return c.json({ error: 'Slug already taken' }, 409)
+    if (existing) { res.status(409).json({ error: 'Slug already taken' }); return }
   }
 
   const updated = await updateCompany(company.id, {
-    ...(body.name !== undefined ? { name: body.name } : {}),
+    ...(name !== undefined ? { name } : {}),
     ...(newSlug !== undefined ? { slug: newSlug } : {}),
   })
-
-  return c.json({ company: updated })
+  res.json({ company: updated })
 })
 
-router.delete('/:slug', async (c) => {
-  const slug = c.req.param('slug')
-  const company = await getCompanyBySlug(slug)
-  if (!company) return c.json({ error: 'Company not found' }, 404)
+router.delete('/:slug', async (req, res) => {
+  const company = await getCompanyBySlug(req.params['slug']!)
+  if (!company) { res.status(404).json({ error: 'Company not found' }); return }
 
   await deleteCompany(company.id)
-  return c.json({ ok: true })
+  res.json({ ok: true })
 })
 
 export { router as companiesRouter }

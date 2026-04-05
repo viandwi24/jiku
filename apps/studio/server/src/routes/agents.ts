@@ -1,46 +1,25 @@
-import { Hono } from 'hono'
-import {
-  getAgentsByProjectId,
-  createAgent,
-  updateAgent,
-  deleteAgent,
-  getProjectById,
-  getAgentById,
-  getAgentBySlug,
-} from '@jiku-studio/db'
+import { Router } from 'express'
+import { getAgentsByProjectId, createAgent, updateAgent, deleteAgent, getProjectById, getAgentById, getAgentBySlug } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { generateSlug, uniqueSlug } from '../utils/slug.ts'
-import type { AppVariables } from '../types.ts'
 
-const router = new Hono<{ Variables: AppVariables }>()
+const router = Router()
+router.use(authMiddleware)
 
-router.use('*', authMiddleware)
-
-router.get('/projects/:pid/agents', async (c) => {
-  const projectId = c.req.param('pid')
-  const agents = await getAgentsByProjectId(projectId)
-  return c.json({ agents })
+router.get('/projects/:pid/agents', async (req, res) => {
+  const agents = await getAgentsByProjectId(req.params['pid']!)
+  res.json({ agents })
 })
 
-router.post('/projects/:pid/agents', async (c) => {
-  const projectId = c.req.param('pid')
-  const body = await c.req.json<{
-    name: string
-    description?: string
-    base_prompt: string
-    allowed_modes?: string[]
-    slug?: string
-  }>()
+router.post('/projects/:pid/agents', async (req, res) => {
+  const projectId = req.params['pid']!
+  const body = req.body as { name: string; description?: string; base_prompt: string; allowed_modes?: string[]; slug?: string }
 
   const project = await getProjectById(projectId)
-  if (!project) return c.json({ error: 'Project not found' }, 404)
+  if (!project) { res.status(404).json({ error: 'Project not found' }); return }
 
-  const slug = await uniqueSlug(
-    body.slug ?? body.name,
-    async (s) => !!(await getAgentBySlug(projectId, s)),
-  )
-
+  const slug = await uniqueSlug(body.slug ?? body.name, async (s) => !!(await getAgentBySlug(projectId, s)))
   const agent = await createAgent({
     project_id: projectId,
     name: body.name,
@@ -51,35 +30,26 @@ router.post('/projects/:pid/agents', async (c) => {
   })
 
   await runtimeManager.syncAgent(projectId, agent.id)
-
-  return c.json({ agent }, 201)
+  res.status(201).json({ agent })
 })
 
-router.patch('/agents/:aid', async (c) => {
-  const agentId = c.req.param('aid')
-  const body = await c.req.json<Partial<{
-    name: string
-    description: string
-    base_prompt: string
-    allowed_modes: string[]
-    slug: string
-  }>>()
+router.patch('/agents/:aid', async (req, res) => {
+  const agentId = req.params['aid']!
+  const body = req.body as Partial<{ name: string; description: string; base_prompt: string; allowed_modes: string[]; slug: string }>
 
   const agent = await updateAgent(agentId, body)
   await runtimeManager.syncAgent(agent.project_id, agentId)
-
-  return c.json({ agent })
+  res.json({ agent })
 })
 
-router.delete('/agents/:aid', async (c) => {
-  const agentId = c.req.param('aid')
+router.delete('/agents/:aid', async (req, res) => {
+  const agentId = req.params['aid']!
   const agent = await getAgentById(agentId)
-  if (!agent) return c.json({ error: 'Agent not found' }, 404)
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
 
   await deleteAgent(agentId)
   runtimeManager.removeAgent(agent.project_id, agentId)
-
-  return c.json({ ok: true })
+  res.json({ ok: true })
 })
 
 export { router as agentsRouter }

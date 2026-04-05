@@ -11,7 +11,7 @@ interface CompanyCardProps {
 
 export function CompanyCard({ company }: CompanyCardProps) {
   return (
-    <Link href={`/${company.slug}`}>
+    <Link href={`/studio/companies/${company.slug}`}>
       <Card className="cursor-pointer hover:shadow-md transition-shadow h-full">
         <CardHeader>
           <div className="flex items-center gap-2 mb-1">

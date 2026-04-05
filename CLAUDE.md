@@ -26,6 +26,11 @@
 - **Never execute bash commands outside this codebase.** All shell commands must be scoped to `/Users/viandwi24/projects/self/jiku/` and its subdirectories.
 - Do not create temp files in `/tmp` or anywhere outside the project root.
 
+## Environment Files
+
+- **Never read `.env` files.** Use `.env.example` files only for understanding required environment variables.
+- If you need the DB connection string or other secrets, ask the user or refer to `.env.example`.
+
 ---
 
 ## Project Context — Read These First

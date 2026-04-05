@@ -316,15 +316,17 @@ export interface Message {
   id: string
   conversation_id: string
   role: 'user' | 'assistant' | 'tool'
-  content: MessageContent[]
+  parts: MessagePart[]
   created_at: Date
 }
 
-export type MessageContent =
+export type MessagePart =
   | { type: 'text'; text: string }
-  | { type: 'tool_call'; tool_id: string; args: unknown }
-  | { type: 'tool_result'; tool_id: string; result: unknown }
-  | { type: 'data'; name: string; value: unknown }
+  | { type: 'tool-invocation'; toolInvocationId: string; toolName: string; args: unknown; state: 'call' | 'partial-call' | 'result'; result?: unknown }
+  | { type: string; [key: string]: unknown }
+
+/** @deprecated Use MessagePart */
+export type MessageContent = MessagePart
 
 // ============================================================
 // MODEL PROVIDER

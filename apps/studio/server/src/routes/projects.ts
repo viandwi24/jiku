@@ -1,61 +1,50 @@
-import { Hono } from 'hono'
+import { Router } from 'express'
 import { getProjectsByCompanyId, getProjectById, createProject, updateProject, deleteProject, getProjectBySlug } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { uniqueSlug } from '../utils/slug.ts'
-import type { AppVariables } from '../types.ts'
 
-const router = new Hono<{ Variables: AppVariables }>()
+const router = Router()
+router.use(authMiddleware)
 
-router.use('/companies/:cid/*', authMiddleware)
-router.use('/projects/:pid', authMiddleware)
-
-router.get('/companies/:cid/projects', async (c) => {
-  const companyId = c.req.param('cid')
-  const projects = await getProjectsByCompanyId(companyId)
-  return c.json({ projects })
+router.get('/companies/:cid/projects', async (req, res) => {
+  const projects = await getProjectsByCompanyId(req.params['cid']!)
+  res.json({ projects })
 })
 
-router.post('/companies/:cid/projects', async (c) => {
-  const companyId = c.req.param('cid')
-  const body = await c.req.json<{ name: string; slug?: string }>()
+router.post('/companies/:cid/projects', async (req, res) => {
+  const companyId = req.params['cid']!
+  const { name, slug: rawSlug } = req.body as { name: string; slug?: string }
 
-  const slug = await uniqueSlug(
-    body.slug ?? body.name,
-    async (s) => !!(await getProjectBySlug(companyId, s)),
-  )
-
-  const project = await createProject({ company_id: companyId, name: body.name, slug })
+  const slug = await uniqueSlug(rawSlug ?? name, async (s) => !!(await getProjectBySlug(companyId, s)))
+  const project = await createProject({ company_id: companyId, name, slug })
   await runtimeManager.wakeUp(project.id)
-  return c.json({ project }, 201)
+  res.status(201).json({ project })
 })
 
-router.patch('/projects/:pid', async (c) => {
-  const projectId = c.req.param('pid')
+router.patch('/projects/:pid', async (req, res) => {
+  const projectId = req.params['pid']!
   const project = await getProjectById(projectId)
-  if (!project) return c.json({ error: 'Project not found' }, 404)
+  if (!project) { res.status(404).json({ error: 'Project not found' }); return }
 
-  const body = await c.req.json<{ name?: string; slug?: string }>()
-
-  // Ensure new slug is unique within company
-  if (body.slug && body.slug !== project.slug) {
-    const existing = await getProjectBySlug(project.company_id, body.slug)
-    if (existing) return c.json({ error: 'Slug already taken' }, 409)
+  const { name, slug } = req.body as { name?: string; slug?: string }
+  if (slug && slug !== project.slug) {
+    const existing = await getProjectBySlug(project.company_id, slug)
+    if (existing) { res.status(409).json({ error: 'Slug already taken' }); return }
   }
 
   const updated = await updateProject(projectId, {
-    ...(body.name !== undefined ? { name: body.name } : {}),
-    ...(body.slug !== undefined ? { slug: body.slug } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(slug !== undefined ? { slug } : {}),
   })
-
-  return c.json({ project: updated })
+  res.json({ project: updated })
 })
 
-router.delete('/companies/:cid/projects/:pid', async (c) => {
-  const projectId = c.req.param('pid')
+router.delete('/companies/:cid/projects/:pid', async (req, res) => {
+  const projectId = req.params['pid']!
   await deleteProject(projectId)
   runtimeManager.sleep(projectId)
-  return c.json({ ok: true })
+  res.json({ ok: true })
 })
 
 export { router as projectsRouter }

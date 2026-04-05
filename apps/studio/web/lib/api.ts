@@ -125,11 +125,17 @@ export const api = {
 
   conversations: {
     list: (agentId: string) => request<{ conversations: ConversationItem[] }>(`/api/agents/${agentId}/conversations`),
+    listProject: (projectId: string) =>
+      request<{ conversations: ConversationItemWithAgent[] }>(`/api/projects/${projectId}/conversations`),
+    get: (convId: string) =>
+      request<{ conversation: ConversationItemWithAgent }>(`/api/conversations/${convId}`),
     create: (agentId: string, body?: { mode?: string }) =>
       request<{ conversation: ConversationItem }>(`/api/agents/${agentId}/conversations`, {
         method: 'POST',
         body: JSON.stringify(body ?? {}),
       }),
+    messages: (convId: string) =>
+      request<{ messages: { id: string; role: string; parts: { type: string; [key: string]: unknown }[]; created_at: string | null }[] }>(`/api/conversations/${convId}/messages`),
   },
 
   credentials: {
@@ -270,6 +276,12 @@ export interface ConversationItem {
   title: string | null
   status: string
   created_at: string | null
+}
+
+export interface ConversationItemWithAgent extends ConversationItem {
+  agent: { id: string; name: string; slug: string }
+  last_message: string | null
+  updated_at: string | null
 }
 
 export interface AdapterField {

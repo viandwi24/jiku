@@ -18,7 +18,7 @@ export const messages = pgTable('messages', {
   id:              uuid('id').primaryKey().defaultRandom(),
   conversation_id: uuid('conversation_id').references(() => conversations.id).notNull(),
   role:            varchar('role', { length: 20 }).notNull(),
-  content:         jsonb('content').notNull(),
+  parts:           jsonb('parts').notNull(),
   created_at:      timestamp('created_at').defaultNow(),
 })
 

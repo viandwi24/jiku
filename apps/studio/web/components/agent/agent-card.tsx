@@ -1,9 +1,15 @@
 'use client'
 
 import Link from 'next/link'
-import { Bot, Settings } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardDescription } from '@jiku/ui'
-import { Button } from '@jiku/ui'
+import { Bot, MessageSquare, Settings } from 'lucide-react'
+import {
+  Avatar,
+  AvatarFallback,
+  Button,
+  Card,
+  CardContent,
+  CardFooter,
+} from '@jiku/ui'
 import type { Agent } from '@/lib/api'
 
 interface AgentCardProps {
@@ -13,28 +19,40 @@ interface AgentCardProps {
 }
 
 export function AgentCard({ agent, companySlug, projectSlug }: AgentCardProps) {
-  const basePath = `/${companySlug}/${projectSlug}/agents/${agent.slug}`
+  const basePath = `/studio/companies/${companySlug}/projects/${projectSlug}/agents/${agent.slug}`
+  const chatHref = `/studio/companies/${companySlug}/projects/${projectSlug}/chats?agent=${agent.slug}`
+
   return (
-    <Card className="hover:shadow-md transition-shadow">
-      <CardHeader>
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2">
-            <Bot className="w-4 h-4 text-primary" />
-            <CardTitle className="text-sm">{agent.name}</CardTitle>
+    <Card className="group hover:shadow-sm transition-shadow">
+      <CardContent className="pt-4 pb-3">
+        <div className="flex items-start gap-3">
+          <Avatar className="h-9 w-9 mt-0.5 shrink-0">
+            <AvatarFallback className="text-sm bg-primary/10 text-primary font-medium">
+              {agent.name.slice(0, 2).toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-sm truncate">{agent.name}</p>
+            {agent.description && (
+              <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{agent.description}</p>
+            )}
           </div>
-          <Link href={`${basePath}/settings`}>
-            <Button variant="ghost" size="icon" className="h-6 w-6">
-              <Settings className="w-3.5 h-3.5" />
-            </Button>
-          </Link>
         </div>
-        {agent.description && (
-          <CardDescription className="text-xs mt-1 line-clamp-2">{agent.description}</CardDescription>
-        )}
-        <Link href={basePath}>
-          <Button size="sm" className="w-full mt-2">Chat</Button>
-        </Link>
-      </CardHeader>
+      </CardContent>
+      <CardFooter className="pt-0 gap-2">
+        <Button asChild size="sm" className="flex-1">
+          <Link href={chatHref}>
+            <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
+            Chat
+          </Link>
+        </Button>
+        <Button asChild size="sm" variant="outline" className="flex-1">
+          <Link href={basePath}>
+            <Bot className="h-3.5 w-3.5 mr-1.5" />
+            Overview
+          </Link>
+        </Button>
+      </CardFooter>
     </Card>
   )
 }

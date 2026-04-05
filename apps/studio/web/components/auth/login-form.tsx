@@ -24,7 +24,7 @@ export function LoginForm() {
     try {
       const { token, user } = await api.auth.login({ email, password })
       setAuth(user, token)
-      router.push('/home')
+      router.push('/studio')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {

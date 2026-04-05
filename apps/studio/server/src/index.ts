@@ -1,7 +1,5 @@
-import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
+import express from 'express'
+import cors from 'cors'
 import { authRouter } from './routes/auth.ts'
 import { companiesRouter } from './routes/companies.ts'
 import { projectsRouter } from './routes/projects.ts'
@@ -13,23 +11,38 @@ import { chatRouter } from './routes/chat.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { checkDbConnection, seedPermissions, getAllProjects } from '@jiku-studio/db'
 import { env } from './env.ts'
-import type { AppVariables } from './types.ts'
 
-const app = new Hono<{ Variables: AppVariables }>()
+const app = express()
 
-app.use('*', cors({ origin: '*' }))
-app.use('*', logger())
+app.use(cors())
+app.use(express.json())
 
-app.route('/api/auth', authRouter)
-app.route('/api/companies', companiesRouter)
-app.route('/api', projectsRouter)
-app.route('/api', agentsRouter)
-app.route('/api', policiesRouter)
-app.route('/api', conversationsRouter)
-app.route('/api', credentialsRouter)
-app.route('/api', chatRouter)
+app.use('/api/auth', authRouter)
+app.use('/api/companies', companiesRouter)
+app.use('/api', projectsRouter)
+app.use('/api', agentsRouter)
+app.use('/api', policiesRouter)
+app.use('/api', conversationsRouter)
+app.use('/api', credentialsRouter)
+app.use('/api', chatRouter)
 
-app.get('/health', (c) => c.json({ ok: true }))
+app.get('/health', (_req, res) => res.json({ ok: true }))
+
+// Global error handler
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : 'Internal server error'
+  const status = (err as { status?: number }).status ?? 500
+  console.error(`[jiku] Error ${status}:`, err)
+  res.status(status).json({ error: message })
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[jiku] Unhandled rejection:', reason)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('[jiku] Uncaught exception:', err)
+})
 
 async function bootstrap() {
   await checkDbConnection()
@@ -39,7 +52,7 @@ async function bootstrap() {
   await Promise.all(projects.map(p => runtimeManager.wakeUp(p.id)))
   console.log(`[jiku] Booted ${projects.length} project runtimes`)
 
-  serve({ fetch: app.fetch, port: env.PORT }, () => {
+  app.listen(env.PORT, () => {
     console.log('[jiku] Studio Server ready on :' + env.PORT)
   })
 
@@ -62,5 +75,3 @@ bootstrap().catch((err) => {
   }
   process.exit(1)
 })
-
-export default app

@@ -26,7 +26,7 @@ export function RegisterForm() {
     try {
       const { token, user } = await api.auth.register({ name, email, password })
       setAuth(user, token)
-      router.push('/home')
+      router.push('/studio')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed')
     } finally {

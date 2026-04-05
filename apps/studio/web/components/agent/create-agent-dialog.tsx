@@ -1,21 +1,23 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Button } from '@jiku/ui'
-import { Input } from '@jiku/ui'
-import { Label } from '@jiku/ui'
-import { Textarea } from '@jiku/ui'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@jiku/ui'
+import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Input, Label } from '@jiku/ui'
 import { Plus } from 'lucide-react'
 
-export function CreateAgentDialog({ projectId }: { projectId: string }) {
+interface CreateAgentDialogProps {
+  projectId: string
+  companySlug: string
+  projectSlug: string
+}
+
+export function CreateAgentDialog({ projectId, companySlug, projectSlug }: CreateAgentDialogProps) {
   const qc = useQueryClient()
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [basePrompt, setBasePrompt] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -24,17 +26,16 @@ export function CreateAgentDialog({ projectId }: { projectId: string }) {
     setError('')
     setLoading(true)
     try {
-      await api.agents.create(projectId, {
+      const res = await api.agents.create(projectId, {
         name,
-        description: description || null,
-        base_prompt: basePrompt,
+        description: null,
+        base_prompt: '',
         allowed_modes: ['chat'],
       })
       await qc.invalidateQueries({ queryKey: ['agents', projectId] })
       setOpen(false)
       setName('')
-      setDescription('')
-      setBasePrompt('')
+      router.push(`/studio/companies/${companySlug}/projects/${projectSlug}/agents/${res.agent.slug}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create agent')
     } finally {
@@ -50,33 +51,27 @@ export function CreateAgentDialog({ projectId }: { projectId: string }) {
           New Agent
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Create Agent</DialogTitle>
+          <DialogTitle>New Agent</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label>Name</Label>
-            <Input value={name} onChange={e => setName(e.target.value)} placeholder="Social Media Manager" required />
-          </div>
-          <div className="space-y-2">
-            <Label>Description</Label>
-            <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this agent do?" />
-          </div>
-          <div className="space-y-2">
-            <Label>System Prompt</Label>
-            <Textarea
-              value={basePrompt}
-              onChange={e => setBasePrompt(e.target.value)}
-              placeholder="You are a helpful AI agent..."
-              rows={4}
+            <Input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Social Media Manager"
+              autoFocus
               required
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={loading}>{loading ? 'Creating...' : 'Create'}</Button>
+            <Button type="submit" disabled={loading || !name.trim()}>
+              {loading ? 'Creating...' : 'Create'}
+            </Button>
           </div>
         </form>
       </DialogContent>

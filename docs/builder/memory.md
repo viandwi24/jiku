@@ -84,3 +84,46 @@ Jangan pakai alias `@/` di dalam packages/ui — tidak ada Next.js tsconfig path
 ## apps/studio/web masih punya salinan lokal ui/ dan ai-elements/
 
 Setelah migration ke @jiku/ui, `apps/studio/web/components/ui/` dan `ai-elements/` masih ada. Import di web belum diupdate. Task terpisah diperlukan untuk switch import ke `@jiku/ui` dan hapus lokal copies.
+
+## @ai-sdk/react v3 useChat API (AI SDK v6 companion)
+
+- Import: `import { useChat } from '@ai-sdk/react'` (bukan `ai/react`)
+- Transport: `new DefaultChatTransport({ api, headers, prepareSendMessagesRequest })` dari `import { DefaultChatTransport } from 'ai'`
+- `sendMessage({ text })` untuk kirim pesan (bukan `append`)
+- `status`: `'ready' | 'submitted' | 'streaming' | 'error'`
+- `message.parts[]` array (bukan `message.content` string) — render iterating parts
+- `error` field ada saat request gagal — tampilkan ke user
+
+## Dynamic provider pattern (studio)
+
+Satu `__studio__` provider di-register saat `wakeUp()`. `getModel(cacheKey)` reads dari `modelCache: Map<string, LanguageModel>`. Sebelum `runtime.run()`, cache diisi; setelah stream habis/cancel, cache dihapus. Key format: `agentId:timestamp:random` untuk menghindari collision concurrent requests.
+
+## Message storage: parts[] di DB (bukan content[])
+
+Messages disimpan dengan kolom `parts: MessagePart[]` (jsonb array) — aligned dengan AI SDK v6 `UIMessage.parts`. Kolom ini di-rename dari `content` → requires `bun run db:push` saat pertama kali migrate.
+
+`toJikuMessage()` di `StudioStorageAdapter` membaca `row.parts` dan return `Message` dengan `parts` field.
+
+## AI SDK v6 useChat: option `messages` bukan `initialMessages`
+
+`useChat({ messages: initialMessages, ... })` — option name di AI SDK v6 adalah `messages` (bukan `initialMessages` seperti di versi lama). Kalau salah nama option, history tidak load dan tidak ada error — silent bug.
+
+## TanStack Query + historyData guard pattern
+
+`historyData` bisa `undefined` saat `historyLoading === false` (initial state sebelum query pertama jalan). Guard yang benar:
+```ts
+if (convLoading || historyLoading || !historyData) return <Loading />
+```
+Tanpa `|| !historyData`, `ChatView` akan mount dengan `undefined` data.
+
+## @openrouter/ai-sdk-provider (bukan @ai-sdk/openrouter)
+
+Package npm yang benar adalah `@openrouter/ai-sdk-provider`, bukan `@ai-sdk/openrouter`. Yang terakhir tidak ada di npm.
+
+## drizzle-orm import hanya dari @jiku-studio/db
+
+`@jiku-studio/server` tidak punya `drizzle-orm` sebagai dependency. Semua query DB harus diimplementasi di `@jiku-studio/db` dan di-export dari `index.ts`. Server hanya import fungsi-fungsi query, tidak pernah import `drizzle-orm` atau schema langsung.
+
+## Wrap stream untuk cleanup after full consume
+
+`modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).

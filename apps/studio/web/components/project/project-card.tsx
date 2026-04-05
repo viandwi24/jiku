@@ -12,7 +12,7 @@ interface ProjectCardProps {
 
 export function ProjectCard({ project, companySlug }: ProjectCardProps) {
   return (
-    <Link href={`/${companySlug}/${project.slug}`}>
+    <Link href={`/studio/companies/${companySlug}/projects/${project.slug}`}>
       <Card className="cursor-pointer hover:shadow-md transition-shadow h-full">
         <CardHeader>
           <div className="mb-1">

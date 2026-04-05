@@ -1,29 +1,44 @@
-import { Hono } from 'hono'
-import { getConversationsByAgent, createConversation } from '@jiku-studio/db'
+import { Router } from 'express'
+import { getConversationsByAgent, createConversation, getConversationsByProject, getConversationWithAgent, getMessages } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
-import type { AppVariables } from '../types.ts'
 
-const router = new Hono<{ Variables: AppVariables }>()
+const router = Router()
+router.use(authMiddleware)
 
-router.use('*', authMiddleware)
-
-router.get('/agents/:aid/conversations', async (c) => {
-  const agentId = c.req.param('aid')
-  const userId = c.get('user_id')
-  const conversations = await getConversationsByAgent(agentId, userId)
-  return c.json({ conversations })
+router.get('/projects/:pid/conversations', async (req, res) => {
+  const userId = res.locals['user_id'] as string
+  const conversations = await getConversationsByProject(req.params['pid']!, userId)
+  res.json({ conversations })
 })
 
-router.post('/agents/:aid/conversations', async (c) => {
-  const agentId = c.req.param('aid')
-  const userId = c.get('user_id')
-  const body = await c.req.json<{ mode?: string }>().catch(() => ({}))
+router.get('/conversations/:id', async (req, res) => {
+  const conversation = await getConversationWithAgent(req.params['id']!)
+  if (!conversation) { res.status(404).json({ error: 'Conversation not found' }); return }
+  res.json({ conversation })
+})
+
+router.get('/conversations/:id/messages', async (req, res) => {
+  const messages = await getMessages(req.params['id']!)
+  res.json({ messages })
+})
+
+router.get('/agents/:aid/conversations', async (req, res) => {
+  const userId = res.locals['user_id'] as string
+  const conversations = await getConversationsByAgent(req.params['aid']!, userId)
+  res.json({ conversations })
+})
+
+router.post('/agents/:aid/conversations', async (req, res) => {
+  const userId = res.locals['user_id'] as string
+  const agentId = req.params['aid']!
+  const { mode } = (req.body ?? {}) as { mode?: string }
+
   const conversation = await createConversation({
     agent_id: agentId,
     user_id: userId,
-    mode: (body as { mode?: string }).mode ?? 'chat',
+    mode: mode ?? 'chat',
   })
-  return c.json({ conversation }, 201)
+  res.status(201).json({ conversation })
 })
 
 export { router as conversationsRouter }

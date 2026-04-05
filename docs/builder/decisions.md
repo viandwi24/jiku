@@ -1,5 +1,15 @@
 # Decisions
 
+## ADR-018 — MemoryPreviewSheet reuses previewRun() instead of a dedicated API route
+
+**Context:** The Memory Preview Sheet needs to show memories injected into the current session. A dedicated `/api/conversations/:id/memory-preview` route was considered, but `previewRun()` already returns `ContextSegment[]` which includes a `source: 'memory'` segment containing the full injected memory text.
+
+**Decision:** No new API route. `MemoryPreviewSheet` reads from the existing `['preview', agentId, conversationId]` TanStack Query cache (same key as `ContextBar`). The memory segment's `.content` is parsed client-side by `parseMemorySection()` which splits on markdown headings and bullet lines.
+
+**Consequences:** Zero extra network requests; memory preview is always in sync with context preview. Downside: parsing is brittle if `formatMemorySection()` output format changes — both must be kept in sync manually.
+
+---
+
 ## ADR-017 — getMemories agent_id is optional (runtime_global has no agent scope)
 
 **Context:** `runtime_global` memories belong to the project, not to any specific agent. When the runner loads `runtime_global` scope, it does not pass an `agent_id`. The original `GetMemoriesParams` had `agent_id: string` (required), causing `WHERE agent_id = ''` which always returns empty results and errors on the DB side.

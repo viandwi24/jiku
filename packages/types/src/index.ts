@@ -64,6 +64,11 @@ export interface JikuDataTypes {
     tool_id: string
     data: unknown
   }
+  'jiku-compact': {
+    summary: string
+    removed_count: number
+    token_saved: number
+  }
 }
 
 /**
@@ -208,6 +213,8 @@ export interface AgentDefinition {
   allowed_modes: AgentMode[]
   provider_id?: string
   model_id?: string
+  /** Context compaction threshold percentage (0–100). 0 = disabled. Default 80. */
+  compaction_threshold?: number
 }
 
 // ============================================================
@@ -426,6 +433,52 @@ export interface ResolvedScope {
 }
 
 // ============================================================
+// CONTEXT PREVIEW
+// ============================================================
+
+export interface ContextSegment {
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'tool_hint'
+  label: string
+  content: string
+  token_estimate: number
+}
+
+export interface ConversationContext {
+  segments: ContextSegment[]
+  total_tokens: number
+  history_tokens: number
+  grand_total: number
+  model_context_window: number
+  usage_percent: number
+}
+
+export interface PreviewRunResult {
+  context: ConversationContext
+  active_tools: {
+    id: string
+    name: string
+    permission: string
+    has_prompt: boolean
+    token_estimate: number
+  }[]
+  active_plugins: {
+    id: string
+    name: string
+    segments: { label: string; token_estimate: number }[]
+  }[]
+  system_prompt: string
+  warnings: string[]
+  /** Number of compaction checkpoints that have occurred for this conversation. */
+  compaction_count: number
+  /** Active model/provider info — populated by the studio layer, optional in core. */
+  model_info?: {
+    provider_id: string
+    provider_name: string
+    model_id: string
+  }
+}
+
+// ============================================================
 // ADAPTERS
 // ============================================================
 
@@ -438,6 +491,8 @@ export interface JikuStorageAdapter {
   getMessages(conversation_id: string, opts?: { limit?: number; offset?: number }): Promise<Message[]>
   addMessage(conversation_id: string, message: Omit<Message, 'id' | 'created_at'>): Promise<Message>
   deleteMessages(conversation_id: string, ids: string[]): Promise<void>
+  /** Replace all messages in a conversation — used for compaction checkpointing. */
+  replaceMessages(conversation_id: string, messages: Omit<Message, 'id' | 'created_at'>[]): Promise<Message[]>
 
   pluginGet(scope: string, key: string): Promise<unknown>
   pluginSet(scope: string, key: string, value: unknown): Promise<void>

@@ -1,19 +1,22 @@
 'use client'
 
-import { use, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { use, useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import { isToolUIPart, isTextUIPart, isStaticToolUIPart, getToolName } from 'ai'
 import type { UIMessage } from 'ai'
 import { api } from '@/lib/api'
 import { getToken } from '@/lib/auth'
+import { useConversationObserver } from '@/hooks/use-conversation-observer'
 import { Avatar, AvatarFallback, Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@jiku/ui/components/ai-elements/conversation.tsx'
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
 import { PromptInput, PromptInputFooter, PromptInputSubmit, PromptInputTextarea } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
-import { Tool, ToolContent, ToolHeader } from '@jiku/ui/components/ai-elements/tool.tsx'
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
 import { Bot } from 'lucide-react'
+import { ContextBar } from '@/components/chat/context-bar'
+import { CompactionIndicator } from '@/components/chat/compaction-indicator'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
@@ -61,12 +64,21 @@ export default function ConversationPage({ params }: PageProps) {
 
 interface ChatViewProps {
   convId: string
-  conversation: { agent: { name: string }; title?: string | null; status: string } | null
+  conversation: { agent: { id: string; name: string }; title?: string | null; status: string } | null
   initialMessages: UIMessage[]
 }
 
+interface CompactionEvent {
+  summary: string
+  removed_count: number
+  token_saved: number
+}
+
 function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
-  const { messages, sendMessage, status, error } = useChat({
+  const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
+  const qc = useQueryClient()
+
+  const { messages, sendMessage, status, error, setMessages } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `${API_URL}/api/conversations/${convId}/chat`,
@@ -75,6 +87,49 @@ function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
       }),
     }),
   })
+
+  const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // Detect jiku-compact data parts in assistant messages
+  useEffect(() => {
+    const lastMsg = messages[messages.length - 1]
+    if (!lastMsg || lastMsg.role !== 'assistant') return
+    for (const part of lastMsg.parts) {
+      if (part.type === 'data-jiku-compact') {
+        const d = (part as { type: string; data: CompactionEvent }).data
+        setCompactionEvents(prev => {
+          // deduplicate by checking if same event already recorded
+          const key = `${d.removed_count}:${d.token_saved}`
+          if (prev.some(e => `${e.removed_count}:${e.token_saved}` === key)) return prev
+          return [...prev, d]
+        })
+      }
+    }
+  }, [messages])
+
+  // Observer: check if conversation is running on mount, attach as SSE observer
+  const { attach } = useConversationObserver({
+    conversationId: convId,
+    onDone: async () => {
+      // Reload messages from server after observed run completes
+      const fresh = await api.conversations.messages(convId)
+      setMessages(fresh.messages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        parts: m.parts as UIMessage['parts'],
+        metadata: {},
+      })))
+      qc.invalidateQueries({ queryKey: ['conversations'] })
+    },
+  })
+
+  useEffect(() => {
+    // Check if already running — if so attach as observer
+    api.conversations.status(convId).then(({ running }) => {
+      if (running) attach()
+    }).catch(() => { /* ignore */ })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId])
 
   useEffect(() => {
     const pending = sessionStorage.getItem('pending_message')
@@ -85,7 +140,13 @@ function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId])
 
-  const isStreaming = status === 'streaming' || status === 'submitted'
+  // Refresh sidebar after each turn
+  useEffect(() => {
+    if (!isStreaming) {
+      qc.invalidateQueries({ queryKey: ['conversations'] })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming])
 
   function handleSend({ text }: { text: string; files: unknown[] }) {
     if (!text.trim() || isStreaming) return
@@ -121,36 +182,61 @@ function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
             </Empty>
           )}
 
+          {/* Compaction events from this session */}
+          {compactionEvents.map((ev, i) => (
+            <CompactionIndicator
+              key={`compact-${i}`}
+              summary={ev.summary}
+              removedCount={ev.removed_count}
+              tokenSaved={ev.token_saved}
+            />
+          ))}
+
           {messages.map(msg => (
             <Message key={msg.id} from={msg.role}>
               <MessageContent>
-                {msg.parts.map((part, i) => {
-                  if (isTextUIPart(part)) {
-                    return msg.role === 'assistant'
-                      ? <MessageResponse key={i}>{part.text}</MessageResponse>
-                      : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
-                  }
-                  if (isToolUIPart(part)) {
-                    const toolName = getToolName(part)
-                    return (
-                      <Tool key={i}>
-                        {isStaticToolUIPart(part) ? (
-                          <ToolHeader type={part.type} state={part.state} />
-                        ) : (
-                          <ToolHeader type={part.type} state={part.state} toolName={toolName} />
-                        )}
-                        <ToolContent>
-                          {'output' in part && part.output !== undefined && (
-                            <pre className="text-xs overflow-auto max-h-40 p-2">
-                              {JSON.stringify(part.output, null, 2)}
-                            </pre>
+                {/* Show checkpoint summaries inline */}
+                {msg.role === 'assistant' && msg.parts.some(p =>
+                  p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]')
+                ) ? (
+                  <CompactionIndicator
+                    summary={(() => {
+                      const part = msg.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
+                      return part?.text.replace('[Context Summary]\n', '') ?? ''
+                    })()}
+                    removedCount={0}
+                    tokenSaved={0}
+                  />
+                ) : (
+                  msg.parts.map((part, i) => {
+                    if (isTextUIPart(part)) {
+                      return msg.role === 'assistant'
+                        ? <MessageResponse key={i}>{part.text}</MessageResponse>
+                        : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
+                    }
+                    if (isToolUIPart(part)) {
+                      const toolName = getToolName(part)
+                      return (
+                        <Tool key={i}>
+                          {isStaticToolUIPart(part) ? (
+                            <ToolHeader type={part.type} state={part.state} />
+                          ) : (
+                            <ToolHeader type={part.type} state={part.state} toolName={toolName} />
                           )}
-                        </ToolContent>
-                      </Tool>
-                    )
-                  }
-                  return null
-                })}
+                          <ToolContent>
+                            {'input' in part && part.input !== undefined && (
+                              <ToolInput input={part.input} />
+                            )}
+                            {'output' in part && (
+                              <ToolOutput output={part.output} errorText={part.errorText} />
+                            )}
+                          </ToolContent>
+                        </Tool>
+                      )
+                    }
+                    return null
+                  })
+                )}
               </MessageContent>
             </Message>
           ))}
@@ -173,6 +259,11 @@ function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
               <PromptInputSubmit status={status} onStop={() => {}} />
             </PromptInputFooter>
           </PromptInput>
+          {conversation && (
+            <div className="mt-2 px-1 flex items-center justify-between gap-3">
+              <ContextBar agentId={conversation.agent.id} conversationId={convId} isStreaming={isStreaming} />
+            </div>
+          )}
         </div>
       </div>
     </div>

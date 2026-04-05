@@ -1,26 +1,26 @@
 ## Phase
-Plan 5 — Studio Web UI/UX Overhaul — COMPLETE + Polish done
+Idle — last session completed chat UX polish (conversation list, context bar, SSE observer, sidebar footer)
 
 ## Currently Working On
-- Nothing — all phases complete, all polish items done.
+- Nothing active. Last session closed cleanly.
 
 ## Relevant Files
-- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/chats/**` — full chat system (new route prefix)
-- `apps/studio/server/src/routes/conversations.ts` — all conversation endpoints including GET messages
-- `apps/studio/db/src/schema/conversations.ts` — `parts` column (was `content`)
-- `apps/studio/server/src/runtime/storage.ts` — reads/writes `parts` not `content`
-- `packages/core/src/runner.ts` — reads `m.parts` not `m.content`
+- `apps/studio/server/src/runtime/stream-registry.ts` — SSE broadcast + concurrent lock
+- `apps/studio/server/src/routes/chat.ts` — POST chat (409 guard, tee), GET stream (SSE), GET status
+- `apps/studio/web/hooks/use-conversation-observer.ts` — EventSource hook, token via ?token= param
+- `apps/studio/web/components/chat/conversation-list-panel.tsx` — grouped accordion list, load-more
+- `apps/studio/web/components/chat/context-bar.tsx` — model/token display, isStreaming prop
+- `apps/studio/web/components/chat/context-preview-sheet.tsx` — model info card above usage bar
+- `apps/studio/web/components/sidebar/project-sidebar.tsx` — Settings in main group, user in footer
+- `apps/studio/web/components/sidebar/company-sidebar.tsx` — same pattern
+- `apps/studio/web/lib/api.ts` — compaction_count, model_info, conversations.status()
 
 ## Important Context / Temporary Decisions
 - **DB column rename pending**: `messages.content` → `messages.parts` requires `bun run db:push` from `apps/studio/server` (interactive TTY — user must run in their own terminal)
-- Chat uses ai-elements: Conversation/ConversationContent, Message/MessageResponse, PromptInput
-- AI SDK v6 `useChat` option is `messages` (NOT `initialMessages`) — breaking rename from older versions
-- `!historyData` guard needed: TanStack Query initial state has `historyData = undefined` even when `historyLoading = false`
-- `key={convId}` on `<ChatView>` forces remount on conversation change
-- ToolUIPart in ai SDK v6: properties (state, output) are directly on part; use isStaticToolUIPart + isToolUIPart helpers
-- ResizablePanelGroup uses `orientation` not `direction`
-- pending_message in sessionStorage for new chat → conversation flow
+- `use-conversation-observer` hook exists but is not yet wired into chat UI pages — see backlog
+- StreamRegistry is in-memory only — server restart clears all active run state (acceptable, runs are short-lived)
+- EventSource token via ?token= query param — only for SSE endpoint, not other routes
 
 ## Next Up
-- Run `cd apps/studio/server && bun run db:push` to apply `messages.content → messages.parts` column rename
-- Backlog items: update web imports to @jiku/ui, test suite, built-in plugins
+- Wire `use-conversation-observer` into conversation page so secondary observers auto-refresh
+- Backlog: update web imports to @jiku/ui, test suite, built-in plugins

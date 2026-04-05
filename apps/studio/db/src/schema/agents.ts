@@ -1,15 +1,17 @@
-import { pgTable, uuid, varchar, text, timestamp, unique } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, unique, integer } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 
 export const agents = pgTable('agents', {
-  id:            uuid('id').primaryKey().defaultRandom(),
-  project_id:    uuid('project_id').references(() => projects.id).notNull(),
-  name:          varchar('name', { length: 255 }).notNull(),
-  slug:          varchar('slug', { length: 255 }).notNull(),
-  description:   text('description'),
-  base_prompt:   text('base_prompt').notNull(),
-  allowed_modes: text('allowed_modes').array().notNull().default(['chat']),
-  created_at:    timestamp('created_at').defaultNow(),
+  id:                   uuid('id').primaryKey().defaultRandom(),
+  project_id:           uuid('project_id').references(() => projects.id).notNull(),
+  name:                 varchar('name', { length: 255 }).notNull(),
+  slug:                 varchar('slug', { length: 255 }).notNull(),
+  description:          text('description'),
+  base_prompt:          text('base_prompt').notNull(),
+  allowed_modes:        text('allowed_modes').array().notNull().default(['chat']),
+  /** Context compaction threshold (0–100%). 0 = disabled. Default 80. */
+  compaction_threshold: integer('compaction_threshold').default(80).notNull(),
+  created_at:           timestamp('created_at').defaultNow(),
 }, t => [unique().on(t.project_id, t.slug)])
 
 export type Agent = typeof agents.$inferSelect

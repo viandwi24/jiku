@@ -1,5 +1,21 @@
 # Memory
 
+## Radix ScrollArea breaks text-overflow ellipsis
+
+`@radix-ui/react-scroll-area` injects `min-width: 100%; display: table` on the inner viewport div. This causes flex children to stretch to content width, preventing `text-overflow: ellipsis` from working no matter how many Tailwind truncation classes are applied. Use a plain `<div className="overflow-y-auto h-full">` instead whenever truncated text lives inside the scroll container.
+
+## SSE observer pattern: stream.tee() + StreamRegistry
+
+`apps/studio/server/src/runtime/stream-registry.ts` manages active chat runs. When `POST /conversations/:id/chat` starts a run, it tees the stream and registers one branch for SSE observers. `GET /conversations/:id/stream` is the SSE endpoint — each new observer tees the registered branch again. `GET /conversations/:id/status` returns `{ running: boolean }` for polling clients. Cleanup happens on stream end and on observer disconnect. Concurrent runs to the same conversation return 409.
+
+## EventSource auth via query param
+
+Browser `EventSource` does not support custom headers. For the SSE observer endpoint (`GET /conversations/:id/stream`), the JWT is passed as `?token=<jwt>` in the URL. The server reads it with `c.req.query('token')`. Only use this pattern for SSE — all other endpoints use the `Authorization: Bearer` header.
+
+## SidebarFooter convention: always show user info dropdown
+
+Both `company-sidebar.tsx` and `project-sidebar.tsx` (and the root sidebar) render user info in `SidebarFooter` using the same dropdown pattern. Settings link lives in the same menu group as the primary nav items — no separator between Settings and the other nav entries.
+
 ## AI SDK v6 Tool API
 
 Vercel AI SDK v6 menggunakan `inputSchema` (bukan `parameters` seperti v3/v4) dan helper `zodSchema()` dari `ai`:

@@ -72,8 +72,62 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 - `apps/studio/web/app/(app)/studio/.../chats/[conv]/page.tsx` — active conversation with history
 - `apps/studio/web/components/chat/conversation-list-panel.tsx` — conv list + search
 
+## Conversation List Panel
+
+`components/chat/conversation-list-panel.tsx` — sidebar list of conversations for a project.
+
+- **Grouping**: Conversations bucketed by date: Today, Yesterday, This week, This month, Last 3 months, Older. Rendered as accordion sections. Today is auto-expanded; others start collapsed.
+- **Pagination**: Load-more button, PAGE_SIZE = 10. Fetches next page on click.
+- **Truncation**: Last message preview uses `truncate` (text-overflow: ellipsis). Uses plain `overflow-y-auto` div — NOT Radix `ScrollArea` (see ADR-011).
+- **Search**: Filter input at top narrows visible conversations by name/content.
+
+## Context Bar
+
+`components/chat/context-bar.tsx` — shown below the chat input.
+
+- Left: model_id + provider name
+- Right: token count
+- Popover: model info card, context usage bar (segmented), compaction count
+- `isStreaming` prop: when true, refreshes preview data after each streaming turn completes
+
+`components/chat/context-preview-sheet.tsx` — full sheet view of context state.
+
+- Model info card rendered above the context usage bar (provider row + model row)
+
+## SSE Observer (Stream Registry)
+
+`apps/studio/server/src/runtime/stream-registry.ts` — in-memory registry of active chat runs.
+
+- Tracks `conversationId → { stream, observerControllers }` while a run is active
+- `POST /conversations/:id/chat`: 409 if conversation already has an active run; otherwise tees the run stream (one branch → HTTP response, one branch → registry for observers)
+- `GET /conversations/:id/stream`: SSE endpoint for observer clients. Each observer tees the registered branch. Sends `data:` events per chunk, sends `event: done` when stream ends. Auth via `?token=` query param (EventSource cannot set headers — see ADR-013).
+- `GET /conversations/:id/status`: Returns `{ running: boolean }` for polling.
+
+`apps/studio/web/hooks/use-conversation-observer.ts` — client hook.
+
+- Opens `EventSource` to the SSE endpoint with `?token=<jwt>` appended
+- On `done` event: fetches fresh messages to update the UI
+- Cleans up EventSource on unmount
+
+## Related Files
+
+- `apps/studio/server/src/routes/chat.ts` — HTTP streaming route + SSE observer + status
+- `apps/studio/server/src/runtime/stream-registry.ts` — active run registry
+- `apps/studio/server/src/routes/conversations.ts` — CRUD + messages history endpoint
+- `apps/studio/server/src/runtime/manager.ts` — JikuRuntimeManager + dynamic provider
+- `apps/studio/server/src/runtime/storage.ts` — StudioStorageAdapter (`parts` column)
+- `apps/studio/server/src/credentials/service.ts` — buildProvider(), resolveAgentModel()
+- `apps/studio/web/hooks/use-conversation-observer.ts` — SSE observer hook
+- `apps/studio/web/app/(app)/studio/.../chats/page.tsx` — new chat page with agent selector
+- `apps/studio/web/app/(app)/studio/.../chats/[conv]/page.tsx` — active conversation with history
+- `apps/studio/web/components/chat/conversation-list-panel.tsx` — grouped accordion list
+- `apps/studio/web/components/chat/context-bar.tsx` — model + token display
+- `apps/studio/web/components/chat/context-preview-sheet.tsx` — full context sheet
+
 ## Known Limitations
 
 - No WebSocket support (removed in Plan 4) — all chat is HTTP streaming
 - `PluginLoader` in `wakeUp()` is empty — built-in plugins not yet registered
 - Agent selector disappears once conversation is started (intentional — cleaner UX)
+- `use-conversation-observer` hook is not yet wired into chat pages — observer pattern exists but is unused in UI
+- StreamRegistry is in-memory — a server restart clears all active run state

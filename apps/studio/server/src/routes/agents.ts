@@ -35,7 +35,7 @@ router.post('/projects/:pid/agents', async (req, res) => {
 
 router.patch('/agents/:aid', async (req, res) => {
   const agentId = req.params['aid']!
-  const body = req.body as Partial<{ name: string; description: string; base_prompt: string; allowed_modes: string[]; slug: string }>
+  const body = req.body as Partial<{ name: string; description: string; base_prompt: string; allowed_modes: string[]; slug: string; compaction_threshold: number }>
 
   const agent = await updateAgent(agentId, body)
   await runtimeManager.syncAgent(agent.project_id, agentId)

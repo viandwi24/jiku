@@ -53,6 +53,12 @@ export class MemoryStorageAdapter implements JikuStorageAdapter {
     this.messages.set(conversation_id, msgs.filter(m => !ids.includes(m.id)))
   }
 
+  async replaceMessages(conversation_id: string, newMessages: Omit<Message, 'id' | 'created_at'>[]): Promise<Message[]> {
+    const created = newMessages.map(m => ({ ...m, id: this.newId(), created_at: new Date() }) as Message)
+    this.messages.set(conversation_id, created)
+    return created
+  }
+
   async pluginGet(scope: string, key: string): Promise<unknown> {
     return this.store.get(`${scope}:${key}`) ?? null
   }

@@ -8,6 +8,7 @@ import { policiesRouter } from './routes/policies.ts'
 import { conversationsRouter } from './routes/conversations.ts'
 import { credentialsRouter } from './routes/credentials.ts'
 import { chatRouter } from './routes/chat.ts'
+import { previewRouter } from './routes/preview.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { checkDbConnection, seedPermissions, getAllProjects } from '@jiku-studio/db'
 import { env } from './env.ts'
@@ -25,6 +26,7 @@ app.use('/api', policiesRouter)
 app.use('/api', conversationsRouter)
 app.use('/api', credentialsRouter)
 app.use('/api', chatRouter)
+app.use('/api', previewRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 

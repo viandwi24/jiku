@@ -62,6 +62,27 @@ export async function deleteMessagesByIds(ids: string[]) {
   await db.delete(messages).where(inArray(messages.id, ids))
 }
 
+/**
+ * Replace all messages in a conversation with a new set.
+ * Used for context compaction checkpointing.
+ */
+export async function replaceMessages(
+  conversationId: string,
+  newMessages: Omit<NewMessage, 'id' | 'created_at'>[],
+) {
+  // Delete all existing messages for this conversation
+  await db.delete(messages).where(eq(messages.conversation_id, conversationId))
+
+  if (newMessages.length === 0) return []
+
+  // Insert the new messages
+  const inserted = await db.insert(messages).values(
+    newMessages.map(m => ({ ...m, conversation_id: conversationId }))
+  ).returning()
+
+  return inserted
+}
+
 export async function getConversationsByProject(projectId: string, userId: string) {
   const rows = await db.query.conversations.findMany({
     where: (t, { and, eq: eqFn }) => and(eqFn(t.user_id, userId)),

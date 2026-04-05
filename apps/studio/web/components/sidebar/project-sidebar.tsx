@@ -1,20 +1,31 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
   Bot,
   ChevronLeft,
+  ChevronsUpDown,
   LayoutDashboard,
+  LogOut,
   MessageSquare,
   Settings,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/lib/store/auth.store'
 import {
+  Avatar,
+  AvatarFallback,
   Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarHeader,
@@ -22,7 +33,6 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
   Skeleton,
 } from '@jiku/ui'
 
@@ -33,6 +43,14 @@ interface ProjectSidebarProps {
 
 export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps) {
   const pathname = usePathname()
+  const router = useRouter()
+  const user = useAuthStore(s => s.user)
+  const clearAuth = useAuthStore(s => s.clearAuth)
+
+  function handleSignOut() {
+    clearAuth()
+    router.replace('/login')
+  }
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -109,15 +127,6 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
                   )}
                 </SidebarMenuItem>
               ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarSeparator />
-
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive('/settings')}>
                   <Link href={`${base}/settings/general`}>
@@ -130,6 +139,37 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton className="h-auto py-2">
+                  <Avatar className="h-6 w-6">
+                    <AvatarFallback className="text-xs">
+                      {user?.name?.[0]?.toUpperCase() ?? 'U'}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex-1 truncate text-left text-sm">{user?.name}</span>
+                  <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-52">
+                <div className="px-2 py-1.5">
+                  <p className="text-xs font-medium">{user?.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSignOut}>
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
     </Sidebar>
   )
 }

@@ -4,7 +4,7 @@ import { use, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { CredentialAdapter } from '@/lib/api'
-import { Button, CredentialSelector, MetadataOverrideForm, ModelSelector, Separator } from '@jiku/ui'
+import { Button, CredentialSelector, MetadataOverrideForm, ModelSelector, Separator, Label, Switch, Slider } from '@jiku/ui'
 import { toast } from 'sonner'
 
 interface PageProps {
@@ -57,6 +57,22 @@ export default function AgentLlmPage({ params }: PageProps) {
   const [selectedCredId, setSelectedCredId] = useState<string | null>(null)
   const [selectedModelId, setSelectedModelId] = useState<string>('')
   const [metadataOverride, setMetadataOverride] = useState<Record<string, string>>({})
+
+  // Compaction settings — initialize from agent when loaded
+  const defaultThreshold = agent?.compaction_threshold ?? 80
+  const [compactionEnabled, setCompactionEnabled] = useState(defaultThreshold > 0)
+  const [threshold, setThreshold] = useState(defaultThreshold > 0 ? defaultThreshold : 80)
+
+  const saveCompactionMutation = useMutation({
+    mutationFn: () => api.agents.update(agentId, {
+      compaction_threshold: compactionEnabled ? threshold : 0,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents', project?.id] })
+      toast.success('Compaction settings saved')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save'),
+  })
 
   const credId = selectedCredId ?? currentCred?.credential.id ?? null
   const adapter = adaptersData?.adapters.find((a: CredentialAdapter) => {
@@ -150,6 +166,54 @@ export default function AgentLlmPage({ params }: PageProps) {
             Unassign
           </Button>
         )}
+      </div>
+
+      <Separator />
+
+      {/* ── Compaction Settings ── */}
+      <div className="space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <Label className="text-sm font-medium">Context Compaction</Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Auto-summarize conversation history when context usage reaches a threshold.
+            </p>
+          </div>
+          <Switch
+            checked={compactionEnabled}
+            onCheckedChange={setCompactionEnabled}
+          />
+        </div>
+
+        {compactionEnabled && (
+          <div className="space-y-3 pl-0">
+            <div className="flex items-center justify-between text-sm">
+              <Label>Threshold</Label>
+              <span className="font-medium tabular-nums">{threshold}%</span>
+            </div>
+            <Slider
+              value={[threshold]}
+              onValueChange={([v]) => setThreshold(v ?? threshold)}
+              min={50}
+              max={95}
+              step={5}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>50% — aggressive</span>
+              <span>95% — conservative</span>
+            </div>
+          </div>
+        )}
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => saveCompactionMutation.mutate()}
+          disabled={!agentId || saveCompactionMutation.isPending}
+        >
+          {saveCompactionMutation.isPending ? 'Saving...' : 'save compaction settings'}
+        </Button>
       </div>
     </div>
   )

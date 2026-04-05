@@ -6,6 +6,7 @@ import type {
   PolicyRule,
   SubjectMatcher,
   JikuStorageAdapter,
+  PreviewRunResult,
 } from '@jiku/types'
 import { AgentRunner } from './runner.ts'
 import { ModelProviders } from './providers.ts'
@@ -57,6 +58,23 @@ export class JikuRuntime {
     if (!runner) throw new Error(`Agent '${params.agent_id}' not found`)
     return runner.run({
       ...params,
+      rules: this.rules,
+      subject_matcher: this.subjectMatcher,
+    })
+  }
+
+  async previewRun(params: {
+    agent_id: string
+    caller: JikuRunParams['caller']
+    mode: JikuRunParams['mode']
+    conversation_id?: string
+  }): Promise<PreviewRunResult> {
+    const runner = this.agents.get(params.agent_id)
+    if (!runner) throw new Error(`Agent '${params.agent_id}' not found`)
+    return runner.previewRun({
+      caller: params.caller,
+      mode: params.mode,
+      conversation_id: params.conversation_id,
       rules: this.rules,
       subject_matcher: this.subjectMatcher,
     })

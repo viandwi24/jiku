@@ -33,7 +33,8 @@ export const DatabasePlugin = definePlugin({
     }
   },
 
-  setup(_ctx) {},
+  setup(_ctx) {
+  },
 })
 
 // ============================================================
@@ -64,12 +65,14 @@ export const SocialPlugin = definePlugin({
         permission: '*',
         modes: ['chat', 'task'],
         input: z.object({ limit: z.number().optional() }),
-        execute: async () => ({
-          posts: [
-            { id: 'post-1', content: 'Hello world!', platform: 'twitter' },
-            { id: 'post-2', content: 'Check out our product!', platform: 'instagram' },
-          ],
-        }),
+        execute: async (args, ctx) => {
+          return ({
+            posts: [
+              { id: 'post-1', content: 'Hello world!', platform: 'twitter' },
+              { id: 'post-2', content: 'Check out our product!', platform: 'instagram' },
+            ],
+          })
+        },
       }),
 
       defineTool({

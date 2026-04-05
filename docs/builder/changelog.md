@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-05 — Chat UX Polish: Conversation list, Context bar, SSE observer, Sidebar footer
+
+- **Conversation list panel** (`components/chat/conversation-list-panel.tsx`): Full rewrite. Replaced Radix `ScrollArea` with plain `overflow-y-auto` div (ScrollArea injected `min-width:100%; display:table` which broke `text-overflow: ellipsis`). Added date-based grouping (Today/Yesterday/This week/This month/Last 3 months/Older) as accordion sections — Today auto-expanded, rest collapsed. Load-more pagination (PAGE_SIZE=10). Proper ellipsis truncation on last message preview.
+- **Context bar** (`components/chat/context-bar.tsx`): Added `isStreaming` prop to trigger preview refresh after each chat turn. Left side shows model_id + provider; right side shows token count. Popover shows model info, usage bar, segment breakdown, compaction count.
+- **Context preview sheet** (`components/chat/context-preview-sheet.tsx`): Model info card moved above context usage bar; shows provider + model rows.
+- **Stream registry** (`apps/studio/server/src/runtime/stream-registry.ts`): New file — in-memory Map tracking active runs per conversation. Concurrent lock (409 if already running). SSE broadcast to observer clients via `stream.tee()`.
+- **Chat routes** (`apps/studio/server/src/routes/chat.ts`): `POST /conversations/:id/chat` returns 409 if already running; tees stream (one branch to caller, one to SSE broadcast). New `GET /conversations/:id/stream` SSE observer endpoint. New `GET /conversations/:id/status` returns `{ running: boolean }`.
+- **Observer hook** (`apps/studio/web/hooks/use-conversation-observer.ts`): New file — EventSource to SSE stream, token passed as `?token=` query param. On `done` event, fetches fresh messages.
+- **API types** (`apps/studio/web/lib/api.ts`): Added `compaction_count: number` and `model_info?` to `PreviewRunResult`. Added `api.conversations.status()`.
+- **Project sidebar** (`components/sidebar/project-sidebar.tsx`): Settings moved into same menu group as Dashboard/Agents/Chats (no separator). User info dropdown added to `SidebarFooter`.
+- **Company sidebar** (`components/sidebar/company-sidebar.tsx`): Same pattern — Settings in same menu group, user info in `SidebarFooter`.
+- Files: `apps/studio/server/src/runtime/stream-registry.ts`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/web/hooks/use-conversation-observer.ts`, `apps/studio/web/components/chat/conversation-list-panel.tsx`, `apps/studio/web/components/chat/context-bar.tsx`, `apps/studio/web/components/chat/context-preview-sheet.tsx`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/sidebar/project-sidebar.tsx`, `apps/studio/web/components/sidebar/company-sidebar.tsx`
+
 ## 2026-04-05 — Chat History: content → parts migration + AI SDK v6 fixes
 
 - **DB schema**: Renamed `messages.content` jsonb column → `messages.parts` to align with AI SDK v6 `UIMessage.parts` format. Requires `bun run db:push` (interactive TTY).

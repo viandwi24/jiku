@@ -5,9 +5,11 @@
 - [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
 - [ ] Tambah built-in plugins — jiku.cron, jiku.skills (PluginLoader saat ini kosong di studio)
 - [ ] Invite member feature (currently only owner can be member)
+- [ ] Wire `use-conversation-observer` hook into chat UI so secondary observers (other tabs/windows) auto-refresh when a stream completes
 
 ## Done
 
+- [x] Chat UX polish: conversation list grouping, context bar, SSE observer, sidebar footer — completed 2026-04-05
 - [x] Setup automated docs architecture — completed 2026-04-04
 - [x] Implement @jiku/types — completed 2026-04-04
 - [x] Implement @jiku/kit — completed 2026-04-04

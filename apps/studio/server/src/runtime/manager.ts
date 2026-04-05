@@ -55,6 +55,7 @@ export class JikuRuntimeManager {
         allowed_modes: (a.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
         provider_id: DYNAMIC_PROVIDER_ID,
         model_id: DYNAMIC_MODEL_ID,
+        compaction_threshold: a.compaction_threshold ?? 80,
       }))
     }
 
@@ -88,6 +89,7 @@ export class JikuRuntimeManager {
       allowed_modes: (agent.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
       provider_id: DYNAMIC_PROVIDER_ID,
       model_id: DYNAMIC_MODEL_ID,
+      compaction_threshold: agent.compaction_threshold ?? 80,
     }))
   }
 
@@ -153,6 +155,16 @@ export class JikuRuntimeManager {
     })
 
     return { ...result, stream: wrappedStream as typeof result.stream }
+  }
+
+  async previewRun(projectId: string, params: {
+    agent_id: string
+    caller: import('@jiku/types').CallerContext
+    mode: import('@jiku/types').AgentMode
+    conversation_id?: string
+  }): Promise<import('@jiku/types').PreviewRunResult> {
+    const runtime = await this.getRuntime(projectId)
+    return runtime.previewRun(params)
   }
 
   async stopAll(): Promise<void> {

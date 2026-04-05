@@ -7,6 +7,7 @@ import {
   updateConversationTitle,
   listConversationsByAgent,
   deleteMessagesByIds,
+  replaceMessages as dbReplaceMessages,
   pluginKvGet,
   pluginKvSet,
   pluginKvDelete,
@@ -121,6 +122,18 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
 
   async deleteMessages(_conversationId: string, ids: string[]): Promise<void> {
     await deleteMessagesByIds(ids)
+  }
+
+  async replaceMessages(conversationId: string, msgs: Omit<Message, 'id' | 'created_at'>[]): Promise<Message[]> {
+    const rows = await dbReplaceMessages(
+      conversationId,
+      msgs.map(m => ({
+        conversation_id: conversationId,
+        role: m.role,
+        parts: m.parts,
+      })),
+    )
+    return rows.map(toJikuMessage)
   }
 
   async pluginGet(scope: string, key: string): Promise<unknown> {

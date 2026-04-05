@@ -71,6 +71,11 @@ export const api = {
       }),
     delete: (agentId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}`, { method: 'DELETE' }),
+    preview: (agentId: string, body: { mode?: 'chat' | 'task' }) =>
+      request<PreviewRunResult>(`/api/agents/${agentId}/preview`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 
   policies: {
@@ -136,6 +141,13 @@ export const api = {
       }),
     messages: (convId: string) =>
       request<{ messages: { id: string; role: string; parts: { type: string; [key: string]: unknown }[]; created_at: string | null }[] }>(`/api/conversations/${convId}/messages`),
+    preview: (convId: string, body: { mode?: 'chat' | 'task' }) =>
+      request<PreviewRunResult>(`/api/conversations/${convId}/preview`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    status: (convId: string) =>
+      request<{ running: boolean }>(`/api/conversations/${convId}/status`),
   },
 
   credentials: {
@@ -221,7 +233,48 @@ export interface Agent {
   description: string | null
   base_prompt: string
   allowed_modes: string[]
+  compaction_threshold?: number | null
   created_at: string | null
+}
+
+export interface ContextSegment {
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'tool_hint'
+  label: string
+  content: string
+  token_estimate: number
+}
+
+export interface ConversationContext {
+  segments: ContextSegment[]
+  total_tokens: number
+  history_tokens: number
+  grand_total: number
+  model_context_window: number
+  usage_percent: number
+}
+
+export interface PreviewRunResult {
+  context: ConversationContext
+  active_tools: {
+    id: string
+    name: string
+    permission: string
+    has_prompt: boolean
+    token_estimate: number
+  }[]
+  active_plugins: {
+    id: string
+    name: string
+    segments: { label: string; token_estimate: number }[]
+  }[]
+  system_prompt: string
+  warnings: string[]
+  compaction_count: number
+  model_info?: {
+    provider_id: string
+    provider_name: string
+    model_id: string
+  }
 }
 
 export interface PolicyCondition {

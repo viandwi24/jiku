@@ -11,6 +11,9 @@ Persistent memory for agents across conversations. Agents can read and write mem
 | `agent_caller` | Agent (for this user) | Agent + same user | Per-user memories (preferences, history) |
 | `agent_global` | Agent | All users of same agent | Agent-wide knowledge base |
 | `runtime_global` | Agent (if policy allows) | All agents in project | Project-wide shared facts |
+| `agent_self` | Agent (via persona tools) | Agent only | Agent's own identity / persona — see `docs/feats/persona.md` |
+
+> `agent_self` is injected into `[Persona]` section (before `[Memory]`), not the memory section. Queries to `agent_self` are always scope-explicit and never bleed into regular memory queries.
 
 ## Memory Tiers
 

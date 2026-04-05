@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-05 — Plan 9 Persona System + Active Tools UI + Tool Groups
+
+**Changed:** Implemented the complete Persona System (Plan 9) plus two enhancements: Active Tools debug UI and tool group metadata.
+
+- **Persona System core**: `agent_self` scope added to MemoryScope. `PersonaSeed` interface. `formatPersonaSection()` in `@jiku/core` formats `## Who I Am` block. `buildSystemPrompt()` accepts `persona_section` injected before memory. `AgentRunner.run()` and `previewRun()` both load `agent_self` memories and build persona section.
+- **`ensurePersonaSeeded()`** (`apps/studio/server/src/memory/persona.ts`): new file. Bootstraps `agent_self` memories from `persona_seed` config on first run. No-op if `persona_seeded_at` is set.
+- **DB schema**: `agents` table gets `persona_seed jsonb` + `persona_seeded_at timestamptz` columns. (Migration pending: `bun run db:push`)
+- **Built-in persona tools**: `persona_read` + `persona_update` (append/replace/remove) always registered on agents. Both carry `group: 'persona'` in meta. All existing memory tools carry `group: 'memory'`.
+- **API routes** (`apps/studio/server/src/routes/persona.ts`): `GET /persona/memories`, `GET+PATCH /persona/seed`, `POST /persona/reset`.
+- **Persona settings page** (`agents/[agent]/persona/page.tsx`): PersonaSeed form, initial memories list, live Current Persona panel (agent_self memories), Reset to Seed AlertDialog.
+- **Bug fix**: `previewRun()` was missing `built_in_tools` merge — tools count was always 0. Fixed to match `run()` merge logic.
+- **Active Tools UI**: `ToolRow` in `context-preview-sheet.tsx` fully rewritten — expandable detail showing description, short tool ID (`memory_search` not `__builtin__:memory_search`), permission, parameters with type + required badges. `schemaToParams()` parses JSON schema properties.
+- **Tool group metadata**: `ToolMeta.group?: string` added to `@jiku/types`. Runner mapper passes `group`. UI groups tools by `meta.group` (memory / persona / plugin) in `ActiveToolsList`.
+- **Context preview sheet layout**: system prompt moved below usage bar (above tabs). Context tab groups segments by source with token total per group (`SegmentGroupList`). Category badge removed from tool row header.
+- **ContextBar enhancement**: Tools button shows count. UsagePopover shows tool summary with built-in/plugin breakdown. `persona` added to SOURCE_LABELS/COLORS (violet).
+
+**Files touched:** `packages/types/src/index.ts`, `packages/core/src/memory/builder.ts`, `packages/core/src/memory/index.ts`, `packages/core/src/resolver/prompt.ts`, `packages/core/src/runner.ts`, `packages/core/src/runtime.ts`, `apps/studio/db/src/schema/agents.ts`, `apps/studio/db/src/queries/memory.ts`, `apps/studio/server/src/memory/tools.ts`, `apps/studio/server/src/memory/persona.ts` *(new)*, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/routes/persona.ts` *(new)*, `apps/studio/server/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../agents/[agent]/layout.tsx`, `apps/studio/web/app/.../agents/[agent]/persona/page.tsx` *(new)*, `apps/studio/web/components/chat/context-bar.tsx`, `apps/studio/web/components/chat/context-preview-sheet.tsx`
+
+---
+
 ## 2026-04-05 — Memory Preview Sheet + Post-test Bug Fixes + Backlog Completion
 
 **Changed:** Resolved all remaining items from memory system backlog and automated test findings.

@@ -164,6 +164,32 @@ Memory tools are injected via `built_in_tools` on `AgentDefinition` in `RuntimeM
 
 Added `zod@^4.3.6` to `apps/studio/server/package.json` — required by `memory/tools.ts` for tool input schemas. Server does not re-use core's zod; it needs its own declaration.
 
+## Persona scope (agent_self) never enters memory queries
+
+`agent_self` memories are always queried with explicit `scope: 'agent_self'`. Regular memory queries (`buildMemoryContext`, `findRelevantMemories`) never include `agent_self` — they only query `agent_caller`, `agent_global`, `runtime_global`. Persona and memory are injected into separate system prompt sections and can never collide.
+
+## Tool group metadata — declare in ToolMeta
+
+Each `defineTool()` call can include `meta.group?: string`. This is the canonical grouping for UI display. Convention: `'memory'` for memory CRUD tools, `'persona'` for persona tools, plugin tools use their plugin domain (e.g. `'social'`). If unset, UI falls back to ID-prefix parsing.
+
+## previewRun() must mirror run() for built_in_tools
+
+`AgentRunner.previewRun()` must merge `built_in_tools` the same way `run()` does, otherwise the active tools count will be 0. Pattern:
+```ts
+const builtInResolved = (this.agent.built_in_tools ?? []).map(t => ({
+  ...t, plugin_id: '__builtin__', resolved_id: `__builtin__:${t.meta.id}`,
+  tool_name: `builtin_${t.meta.id}`, resolved_permission: '*',
+}))
+const modeTools = [
+  ...scope.active_tools.filter(t => t.modes.includes(mode)),
+  ...builtInResolved.filter(t => t.modes.includes(mode)),
+]
+```
+
+## shortToolId convention in UI
+
+In `context-preview-sheet.tsx`, the displayed tool ID strips the `__builtin__:` prefix to save space: `memory_search` instead of `__builtin__:memory_search`. The full ID is still used internally for grouping logic.
+
 ## Wrap stream untuk cleanup after full consume
 
 `modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).

@@ -1,5 +1,35 @@
 # Decisions
 
+## ADR-021 — Tool group metadata lives in ToolMeta, not derived from ID
+
+**Context:** The `context-preview-sheet.tsx` previously grouped tools by ID prefix (`__builtin__:` → "built-in", `pluginId:` → plugin name). This was fragile and leaky — UI logic was parsing internal ID conventions. Alternatives: dedicate a grouping layer in the runner, or carry it in the tool definition itself.
+
+**Decision:** Add `group?: string` field to `ToolMeta` in `@jiku/types`. Tool authors declare their group when defining the tool. The runner passes it through unchanged to `PreviewRunResult.active_tools`. UI reads `t.group` directly, with fallback to ID-prefix heuristic when unset.
+
+**Consequences:** Grouping is explicit and semantically meaningful (e.g. "memory", "persona", "social"). Tool ID format changes won't break the UI. Third-party plugin tools that don't set `group` fall back gracefully to ID-prefix grouping.
+
+---
+
+## ADR-020 — agent_self scope uses varchar(50), not ALTER ENUM
+
+**Context:** Plan 9 adds a 4th memory scope `agent_self`. The original Plan 8 schema defined scope as a DB enum (`memory_scope`). `ALTER TYPE ... ADD VALUE` inside a transaction requires PostgreSQL 12+ and cannot be rolled back. The existing `memories.scope` column is actually `varchar(50)` (Plan 8 implemented it this way intentionally to avoid enum rigidity).
+
+**Decision:** No schema migration needed for the `memories` table. `agent_self` is a new string value accepted by the varchar column. Only the `agents` table needs migration (adding `persona_seed` + `persona_seeded_at` columns).
+
+**Consequences:** Scope values are not DB-enforced — only application-layer validated. This is acceptable; the set of scopes is small and well-controlled. New scopes can be added without touching the DB enum.
+
+---
+
+## ADR-019 — Persona seeding runs at studio server layer, not in @jiku/core
+
+**Context:** `ensurePersonaSeeded()` needs to check `persona_seeded_at` on the agent record and write to the DB. This is a DB operation. Alternatives: put it in `AgentRunner` (core), or in `RuntimeManager` (studio server).
+
+**Decision:** Lives in `apps/studio/server/src/memory/persona.ts`, called from `RuntimeManager.run()` before `runtime.run()`. `@jiku/core` is kept DB-free — it only calls `getMemories()` through the storage adapter interface.
+
+**Consequences:** The seeding concern is co-located with the studio's DB layer. If jiku core is used standalone (without studio), consumers must implement their own seeding logic. This is acceptable — persona seeding is studio-specific behaviour.
+
+---
+
 ## ADR-018 — MemoryPreviewSheet reuses previewRun() instead of a dedicated API route
 
 **Context:** The Memory Preview Sheet needs to show memories injected into the current session. A dedicated `/api/conversations/:id/memory-preview` route was considered, but `previewRun()` already returns `ContextSegment[]` which includes a `source: 'memory'` segment containing the full injected memory text.

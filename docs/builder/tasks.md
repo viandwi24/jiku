@@ -1,11 +1,13 @@
 ## Backlog
 
+- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies persona_seed + persona_seeded_at columns (required for Plan 9 to work in production)
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
 - [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
 - [ ] Tambah built-in plugins — jiku.cron, jiku.skills (plugin files exist at plugins/jiku.cron + plugins/jiku.skills, belum diaktifkan di server)
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
+- [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (deferred from Plan 9)
 
 ## Done
 
@@ -40,3 +42,7 @@
 - [x] UX fix: show error bubble in ChatInterface when server returns error (e.g. no credential assigned) — completed 2026-04-05
 - [x] Plan 5 — Studio Web UI/UX Overhaul: sidebar, chat system, agent tabs, settings tabs, error boundaries, empty states, toast — completed 2026-04-05
 - [x] Chat history fix: content→parts migration, AI SDK v6 `messages` option, `!historyData` guard — completed 2026-04-05
+- [x] Plan 9 — Persona System: agent_self scope, PersonaSeed, ensurePersonaSeeded, formatPersonaSection, persona_read + persona_update tools, persona settings page, API routes — completed 2026-04-05
+- [x] Active Tools UI — ToolRow expandable detail (description, ID, params schema), ContextBar tools button + count — completed 2026-04-05
+- [x] Tool group metadata — `group` field in ToolMeta, all memory/persona tools tagged, grouping in context preview sheet — completed 2026-04-05
+- [x] Context preview sheet layout — system prompt below usage bar, segment grouping by source, tab context/tools — completed 2026-04-05

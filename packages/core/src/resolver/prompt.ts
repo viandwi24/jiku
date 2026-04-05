@@ -31,6 +31,7 @@ export function buildToolHints(tools: ResolvedTool[]): string {
 
 /**
  * Build the full system prompt by assembling all segments.
+ * Segment order: base → persona → memory → mode → user_context → tool_hints → plugins
  */
 export function buildSystemPrompt(params: {
   base: string
@@ -39,13 +40,15 @@ export function buildSystemPrompt(params: {
   caller: CallerContext
   plugin_segments: string[]
   memory_section?: string
+  persona_section?: string
 }): string {
-  const { base, mode, active_tools, caller, plugin_segments, memory_section } = params
+  const { base, mode, active_tools, caller, plugin_segments, memory_section, persona_section } = params
 
   const segments = [
     base,
-    buildModeInstruction(mode),
+    persona_section,
     memory_section,
+    buildModeInstruction(mode),
     buildUserContext(caller),
     buildToolHints(active_tools),
     plugin_segments.join('\n'),

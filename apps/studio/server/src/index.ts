@@ -11,6 +11,7 @@ import { chatRouter } from './routes/chat.ts'
 import { previewRouter } from './routes/preview.ts'
 import { pluginsRouter } from './routes/plugins.ts'
 import { memoryRouter } from './routes/memory.ts'
+import { personaRouter } from './routes/persona.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
@@ -34,6 +35,7 @@ app.use('/api', chatRouter)
 app.use('/api', previewRouter)
 app.use('/api', pluginsRouter)
 app.use('/api', memoryRouter)
+app.use('/api', personaRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 

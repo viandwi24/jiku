@@ -1,32 +1,39 @@
 ## Phase
-Post-testing fixes + Memory Preview Sheet — COMPLETE
+Plan 9 — Persona System — COMPLETE
 
 ## Currently Working On
-- Nothing active. All backlog items from memory system session resolved.
+- Nothing active.
 
 ## Relevant Files
-- `apps/studio/web/components/chat/memory-preview-sheet.tsx` — new Memory Preview Sheet component
-- `apps/studio/web/components/chat/context-bar.tsx` — added `onMemoryClick` prop + Memory button
-- `apps/studio/web/app/(app)/studio/.../chats/[conv]/page.tsx` — wired MemoryPreviewSheet
-- `apps/studio/server/src/memory/tools.ts` — all 9 tools including memory_user_write
-- `apps/studio/db/src/queries/memory.ts` — added deleteExpiredMemories()
-- `apps/studio/server/src/index.ts` — memory cleanup job (boot + 24h interval)
-- `apps/studio/web/app/(app)/studio/page.tsx` — live Projects + Agents count
-- `apps/studio/web/app/(app)/studio/companies/[company]/page.tsx` — live Agents count
-- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/page.tsx` — live Chats count
-- `docs/plans/impl-reports/8-memory-system-implement-report.md` — updated to 98% COMPLETE
+- `packages/types/src/index.ts` — added `agent_self` to MemoryScope, added PersonaSeed interface
+- `packages/core/src/memory/builder.ts` — added `formatPersonaSection()`
+- `packages/core/src/memory/index.ts` — exported formatPersonaSection
+- `packages/core/src/resolver/prompt.ts` — buildSystemPrompt now accepts `persona_section`
+- `packages/core/src/runner.ts` — loads agent_self memories + injects persona_section into prompt + preview
+- `packages/core/src/runtime.ts` — addAgent() accepts optional personaSeed param
+- `apps/studio/db/src/schema/agents.ts` — added persona_seed + persona_seeded_at columns
+- `apps/studio/db/src/queries/memory.ts` — added agent_self scope, updateAgentPersonaSeed, markAgentPersonaSeeded, resetAgentPersona, getAgentSelfMemories
+- `apps/studio/server/src/memory/tools.ts` — added persona_read + persona_update tools
+- `apps/studio/server/src/memory/persona.ts` — ensurePersonaSeeded() service
+- `apps/studio/server/src/runtime/manager.ts` — passes persona_seed to addAgent, calls ensurePersonaSeeded on run()
+- `apps/studio/server/src/routes/persona.ts` — GET/PATCH seed, POST reset, GET memories
+- `apps/studio/server/src/index.ts` — registered personaRouter
+- `apps/studio/web/lib/api.ts` — added persona API methods + PersonaSeed type
+- `apps/studio/web/app/.../agents/[agent]/layout.tsx` — added "persona" nav item
+- `apps/studio/web/app/.../agents/[agent]/persona/page.tsx` — Persona settings page
+- `apps/studio/web/components/chat/context-preview-sheet.tsx` — added violet color for persona segment
 
 ## Important Context / Temporary Decisions
-- Memory config is on `/memory` page (not `/settings`) — config tab lives alongside memory browser
-- `getMemories()` `agent_id` is now optional — runtime_global queries don't need agent_id
-- `previewRun()` in runner now loads and shows memory as a context segment (teal color)
-- Memory Preview Sheet: `MemoryPreviewSheet` component reads memory segment from `previewRun()` — no separate API route needed
-- `ContextBar` now accepts `onMemoryClick` prop — renders Memory button between model info and Context button
-- Footer layout: `[model id · provider]` ··· `[Memory] [Context]`
-- Dashboard metrics now live: Studio (Projects+Agents), Company (Agents), Project (Chats)
-- Memory expiration cleanup: runs at server boot + every 24h via `setInterval`
+- `agent_self` scope is injected as `[Persona]` section in system prompt, before `[Memory]`
+- `agent_self` memories are ALWAYS injected (no relevance scoring) — all core, tier is always 'core'
+- `ensurePersonaSeeded` runs at studio server layer (manager.ts) before each run — no-op if already seeded
+- persona_seeded_at tracks whether seed was applied; null = not yet seeded (will seed on next run)
+- Reset persona: deletes all agent_self memories + sets persona_seeded_at = null → re-seeds on next run
+- `formatPersonaSection` lives in @jiku/core (no DB dep needed — just takes AgentMemory[])
+- DB schema change: agents table now has persona_seed (jsonb) + persona_seeded_at (timestamptz)
 
 ## Next Up
+- DB migration to apply schema changes (persona_seed + persona_seeded_at columns)
 - Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
 - Invite member feature
 - Agent Tools tab (currently placeholder)

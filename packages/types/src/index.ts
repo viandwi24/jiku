@@ -12,6 +12,7 @@ export interface ToolMeta {
   id: string
   name: string
   description: string
+  group?: string
 }
 
 export interface ToolDefinition {
@@ -460,7 +461,7 @@ export interface ResolvedScope {
 // ============================================================
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona'
   label: string
   content: string
   token_estimate: number
@@ -480,9 +481,12 @@ export interface PreviewRunResult {
   active_tools: {
     id: string
     name: string
+    description: string
     permission: string
     has_prompt: boolean
     token_estimate: number
+    input_schema?: unknown
+    group?: string
   }[]
   active_plugins: {
     id: string
@@ -505,7 +509,16 @@ export interface PreviewRunResult {
 // MEMORY
 // ============================================================
 
-export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global'
+export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global' | 'agent_self'
+
+export interface PersonaSeed {
+  name?: string
+  role?: string
+  personality?: string
+  communication_style?: string
+  background?: string
+  initial_memories?: string[]
+}
 export type MemoryTier = 'core' | 'extended'
 export type MemoryImportance = 'low' | 'medium' | 'high'
 export type MemoryVisibility = 'private' | 'agent_shared' | 'project_shared'

@@ -8,6 +8,7 @@ import type {
   JikuStorageAdapter,
   PreviewRunResult,
   ResolvedMemoryConfig,
+  PersonaSeed,
 } from '@jiku/types'
 import { AgentRunner } from './runner.ts'
 import { ModelProviders } from './providers.ts'
@@ -40,8 +41,8 @@ export class JikuRuntime {
     this.runtimeId = options.runtime_id
   }
 
-  addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig): void {
-    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId)
+  addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig, personaSeed?: PersonaSeed | null): void {
+    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed)
     this.agents.set(def.meta.id, runner)
   }
 

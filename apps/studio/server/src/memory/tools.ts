@@ -24,6 +24,7 @@ export function buildMemoryTools(
         id: 'memory_core_append',
         name: 'Remember',
         description: 'Save an important fact to core memory. Always available in future conversations.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -56,6 +57,7 @@ export function buildMemoryTools(
         id: 'memory_core_replace',
         name: 'Update Memory',
         description: 'Update or correct an existing memory.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -75,6 +77,7 @@ export function buildMemoryTools(
         id: 'memory_core_remove',
         name: 'Forget',
         description: 'Remove a memory that is no longer relevant.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -93,6 +96,7 @@ export function buildMemoryTools(
         id: 'memory_extended_insert',
         name: 'Remember (Extended)',
         description: 'Save a fact to extended memory. Retrieved based on relevance, not always present.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -130,6 +134,7 @@ export function buildMemoryTools(
         id: 'memory_search',
         name: 'Search Memory',
         description: 'Search through memories to find relevant information.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -163,6 +168,7 @@ export function buildMemoryTools(
         id: 'memory_runtime_read',
         name: 'Read Project Memory',
         description: 'Search the shared project memory visible to all agents.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -187,6 +193,7 @@ export function buildMemoryTools(
         id: 'memory_runtime_write',
         name: 'Write Project Memory',
         description: 'Write to shared project memory. Visible to all agents in this project.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -219,6 +226,7 @@ export function buildMemoryTools(
         id: 'memory_user_write',
         name: 'Write User Memory',
         description: 'Write a memory about another user (agent_shared visibility). Only usable when cross-user write is enabled.',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -252,6 +260,7 @@ export function buildMemoryTools(
         id: 'memory_user_lookup',
         name: 'Lookup User Memory',
         description: 'Access memories about another user (only agent_shared visibility).',
+        group: 'memory',
       },
       permission: '*',
       modes: ['chat', 'task'],
@@ -274,6 +283,86 @@ export function buildMemoryTools(
       },
     }))
   }
+
+  // ── Persona tools (always active) ─────────────────────────────
+
+  tools.push(defineTool({
+    meta: {
+      id: 'persona_read',
+      name: 'Read My Persona',
+      description: 'Read your current persona and self-knowledge stored in memory.',
+      group: 'persona',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({}),
+    execute: async (_args, ctx) => {
+      const memories = await storage.getMemories({
+        runtime_id: runtimeId,
+        agent_id: ctx.runtime.agent.id,
+        scope: 'agent_self',
+      })
+      if (memories.length === 0) return 'No persona memories found yet.'
+      return memories.map(m => `[${m.id}] (${m.section ?? 'general'}) ${m.content}`).join('\n')
+    },
+  }))
+
+  tools.push(defineTool({
+    meta: {
+      id: 'persona_update',
+      name: 'Update My Persona',
+      description: 'Update or add to your persona and self-knowledge. Use when you learn something new about yourself, receive feedback about your communication style, or want to refine your identity.',
+      group: 'persona',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({
+      action: z.enum(['append', 'replace', 'remove']),
+      key: z.string().describe('Identifier: "personality", "communication_style", "expertise", etc.'),
+      content: z.string().describe('Content of the persona memory (not needed for remove)').optional(),
+      memory_id: z.string().describe('Memory ID to replace or remove (not needed for append)').optional(),
+    }),
+    execute: async (args, ctx) => {
+      const { action, key, content, memory_id } = args as {
+        action: 'append' | 'replace' | 'remove'
+        key: string
+        content?: string
+        memory_id?: string
+      }
+
+      if (action === 'append') {
+        if (!content) return 'content is required for append action.'
+        await storage.saveMemory({
+          runtime_id: runtimeId,
+          agent_id: ctx.runtime.agent.id,
+          caller_id: null,
+          scope: 'agent_self',
+          tier: 'core',
+          section: key,
+          content,
+          importance: 'high',
+          visibility: 'private',
+          source: 'agent',
+          expires_at: null,
+        })
+        return `Persona updated: added "${key}" → "${content}"`
+      }
+
+      if (action === 'replace') {
+        if (!memory_id || !content) return 'memory_id and content are required for replace action.'
+        await storage.updateMemory(memory_id, { content })
+        return `Persona updated: replaced memory ${memory_id} with "${content}"`
+      }
+
+      if (action === 'remove') {
+        if (!memory_id) return 'memory_id is required for remove action.'
+        await storage.deleteMemory(memory_id)
+        return `Persona updated: removed memory ${memory_id}`
+      }
+
+      return 'Unknown action.'
+    },
+  }))
 
   return tools
 }

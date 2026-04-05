@@ -5,6 +5,7 @@ import { defineAgent } from '@jiku/kit'
 import { StudioStorageAdapter } from './storage.ts'
 import { buildProvider, resolveAgentModel } from '../credentials/service.ts'
 import { buildMemoryTools } from '../memory/tools.ts'
+import { ensurePersonaSeeded } from '../memory/persona.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -111,6 +112,7 @@ export class JikuRuntimeManager {
           built_in_tools: memoryTools,
         }),
         agentMemoryConfig,
+        (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
       )
     }
 
@@ -161,6 +163,7 @@ export class JikuRuntimeManager {
         built_in_tools: memoryTools,
       }),
       agentMemoryConfig,
+      (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
     )
   }
 
@@ -218,6 +221,15 @@ export class JikuRuntimeManager {
    */
   async run(projectId: string, params: JikuRunParams): Promise<JikuRunResult> {
     const runtime = await this.getRuntime(projectId)
+
+    // Ensure persona seed is applied before first run (no-op if already seeded)
+    if (this.storages.has(projectId)) {
+      const storage = this.storages.get(projectId)
+      if (storage) {
+        const selfMems = await storage.getMemories({ runtime_id: projectId, agent_id: params.agent_id, scope: 'agent_self' })
+        await ensurePersonaSeeded(params.agent_id, projectId, selfMems.length > 0)
+      }
+    }
 
     const modelInfo = await resolveAgentModel(params.agent_id)
     if (!modelInfo) {

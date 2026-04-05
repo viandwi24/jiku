@@ -1,4 +1,4 @@
-import type { AgentMemory, MemoryContext, ResolvedMemoryConfig } from '@jiku/types'
+import type { AgentMemory, MemoryContext, ResolvedMemoryConfig, PersonaSeed } from '@jiku/types'
 import { findRelevantMemories } from './relevance.ts'
 import { estimateTokens } from '../utils/tokens.ts'
 
@@ -74,4 +74,29 @@ export function formatMemorySection(
 
   if (sections.length === 0) return ''
   return `## What I Remember\n\n${sections.join('\n\n')}`
+}
+
+/**
+ * Format the [Persona] system prompt section from agent_self memories.
+ * All agent_self memories are always injected (no relevance filtering).
+ */
+export function formatPersonaSection(
+  agentName: string,
+  selfMemories: AgentMemory[],
+  seed?: PersonaSeed | null,
+): string | null {
+  if (selfMemories.length === 0 && !seed) return null
+
+  const lines: string[] = ['## Who I Am']
+  lines.push(`**Name:** ${seed?.name ?? agentName}`)
+  if (seed?.role) lines.push(`**Role:** ${seed.role}`)
+  lines.push('')
+
+  if (selfMemories.length > 0) {
+    lines.push(...selfMemories.map(m => `- ${m.content}`))
+  } else {
+    lines.push(`I am ${seed?.name ?? agentName}, an AI assistant. I'm still learning about myself.`)
+  }
+
+  return lines.join('\n')
 }

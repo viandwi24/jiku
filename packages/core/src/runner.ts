@@ -23,6 +23,7 @@ import type {
   ContextSegment,
   ResolvedMemoryConfig,
   AgentMemory,
+  PersonaSeed,
 } from '@jiku/types'
 import type { JikuUIMessage, JikuUIMessageStreamWriter } from './types.ts'
 import { resolveScope } from './resolver/scope.ts'
@@ -36,7 +37,7 @@ import type { ModelProviders } from './providers.ts'
 import type { PluginLoader } from './plugins/loader.ts'
 import { estimateTokens, getModelContextWindow } from './utils/tokens.ts'
 import { compactMessages, applyCompactBoundary } from './compaction.ts'
-import { buildMemoryContext, formatMemorySection } from './memory/builder.ts'
+import { buildMemoryContext, formatMemorySection, formatPersonaSection } from './memory/builder.ts'
 
 export class JikuAccessError extends Error {
   constructor(message: string) {
@@ -69,6 +70,7 @@ export class AgentRunner {
     private providers: ModelProviders,
     private memoryConfig?: ResolvedMemoryConfig,
     private runtimeId?: string,
+    private personaSeed?: PersonaSeed | null,
   ) {}
 
   /**
@@ -169,10 +171,22 @@ export class AgentRunner {
       }
     }
 
-    // 5. Load memories (if storage supports it + memory config is set)
+    // 5. Load persona + memories (if storage supports it + memory config is set)
+    let personaSection: string | undefined
     let memorySection: string | undefined
     let accessedMemoryIds: string[] = []
     let loadedMemories: AgentMemory[] = []
+
+    if (this.runtimeId && this.storage.getMemories) {
+      // Load agent_self memories for persona (always, independent of memoryConfig)
+      const selfMemories = await this.storage.getMemories({
+        runtime_id: this.runtimeId,
+        agent_id: this.agent.meta.id,
+        scope: 'agent_self',
+      })
+      const personaText = formatPersonaSection(this.agent.meta.name, selfMemories, this.personaSeed)
+      if (personaText) personaSection = personaText
+    }
 
     if (this.memoryConfig && this.runtimeId && this.storage.getMemories) {
       const config = this.memoryConfig
@@ -228,6 +242,7 @@ export class AgentRunner {
       caller,
       plugin_segments: pluginSegments,
       memory_section: memorySection,
+      persona_section: personaSection,
     })
 
     const history = await this.storage.getMessages(conversation_id)
@@ -418,7 +433,19 @@ export class AgentRunner {
 
     if (!scope.accessible) throw new JikuAccessError(scope.denial_reason ?? 'Access denied')
 
-    const modeTools = scope.active_tools.filter(t => t.modes.includes(mode))
+    // Merge built-in tools (same as run())
+    const builtInResolved = (this.agent.built_in_tools ?? []).map(t => ({
+      ...t,
+      plugin_id: '__builtin__',
+      resolved_id: `__builtin__:${t.meta.id}`,
+      tool_name: `builtin_${t.meta.id}`,
+      resolved_permission: '*',
+    }))
+    const modeTools = [
+      ...scope.active_tools.filter(t => t.modes.includes(mode)),
+      ...builtInResolved.filter(t => t.modes.includes(mode)),
+    ]
+
     const model_id = this.agent.model_id ?? 'unknown'
     const pluginSegments = await this.plugins.getPromptSegmentsAsync()
 
@@ -426,6 +453,18 @@ export class AgentRunner {
     const modeInstructionText = buildModeInstruction(mode)
     const userContextText = buildUserContext(caller)
     const toolHintsText = buildToolHints(modeTools)
+
+    // Load persona for preview
+    let personaSection: string | undefined
+    if (this.runtimeId && this.storage.getMemories) {
+      const selfMemories = await this.storage.getMemories({
+        runtime_id: this.runtimeId,
+        agent_id: this.agent.meta.id,
+        scope: 'agent_self',
+      })
+      const personaText = formatPersonaSection(this.agent.meta.name, selfMemories, this.personaSeed)
+      if (personaText) personaSection = personaText
+    }
 
     // Load memories for preview (read-only — no touchMemories)
     let memorySection: string | undefined
@@ -455,6 +494,14 @@ export class AgentRunner {
         content: this.agent.base_prompt,
         token_estimate: estimateTokens(this.agent.base_prompt),
       },
+      ...(personaSection
+        ? [{
+            source: 'persona' as const,
+            label: 'Persona',
+            content: personaSection,
+            token_estimate: estimateTokens(personaSection),
+          }]
+        : []),
       {
         source: 'mode',
         label: `Mode: ${mode}`,
@@ -525,6 +572,7 @@ export class AgentRunner {
       caller,
       plugin_segments: pluginSegments,
       memory_section: memorySection,
+      persona_section: personaSection,
     })
 
     return {
@@ -539,9 +587,12 @@ export class AgentRunner {
       active_tools: modeTools.map(t => ({
         id: t.resolved_id,
         name: t.meta.name,
+        description: t.meta.description,
         permission: t.resolved_permission,
         has_prompt: !!t.prompt,
         token_estimate: t.prompt ? estimateTokens(t.prompt) : 0,
+        input_schema: t.input,
+        group: t.meta.group,
       })),
       active_plugins: this.plugins.getLoadOrder().map(id => ({
         id,

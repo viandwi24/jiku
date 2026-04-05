@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Layers, ExternalLink, Brain } from 'lucide-react'
+import { Layers, ExternalLink, Brain, Wrench } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { PreviewRunResult } from '@/lib/api'
 import { Popover, PopoverContent, PopoverTrigger, Progress, Button, cn } from '@jiku/ui'
@@ -18,6 +18,7 @@ interface ContextBarProps {
 
 const SOURCE_LABELS: Record<string, string> = {
   base_prompt: 'Base prompt',
+  persona: 'Persona',
   mode: 'Mode',
   user_context: 'User context',
   plugin: 'Plugins',
@@ -27,6 +28,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_COLORS: Record<string, string> = {
   base_prompt: 'bg-blue-500',
+  persona: 'bg-violet-500',
   mode: 'bg-purple-500',
   user_context: 'bg-green-500',
   plugin: 'bg-orange-500',
@@ -35,11 +37,18 @@ const SOURCE_COLORS: Record<string, string> = {
   history: 'bg-indigo-500',
 }
 
-function UsagePopover({ preview, onDetails }: { preview: PreviewRunResult; onDetails: () => void }) {
+function UsagePopover({
+  preview,
+  onDetails,
+  onTools,
+}: {
+  preview: PreviewRunResult
+  onDetails: () => void
+  onTools: () => void
+}) {
   const { context } = preview
   const { segments, history_tokens, grand_total, model_context_window, usage_percent } = context
 
-  // Group segments by source, sum tokens
   const grouped = segments.reduce<Record<string, number>>((acc, seg) => {
     acc[seg.source] = (acc[seg.source] ?? 0) + seg.token_estimate
     return acc
@@ -49,6 +58,10 @@ function UsagePopover({ preview, onDetails }: { preview: PreviewRunResult; onDet
     usage_percent > 90 ? '[&>div]:bg-destructive'
     : usage_percent > 70 ? '[&>div]:bg-amber-500'
     : '[&>div]:bg-primary'
+
+  const toolCount = preview.active_tools.length
+  const builtInCount = preview.active_tools.filter(t => t.id.startsWith('__builtin__:')).length
+  const pluginCount = toolCount - builtInCount
 
   return (
     <div className="w-64 space-y-3">
@@ -61,7 +74,7 @@ function UsagePopover({ preview, onDetails }: { preview: PreviewRunResult; onDet
         </div>
       )}
 
-      {/* Usage header */}
+      {/* Usage bar */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between text-xs">
           <span className="text-muted-foreground">Context usage</span>
@@ -100,16 +113,52 @@ function UsagePopover({ preview, onDetails }: { preview: PreviewRunResult; onDet
         </div>
       )}
 
-      {/* Details button */}
-      <div className="border-t border-border/40 pt-2">
+      {/* Active tools summary */}
+      {toolCount > 0 && (
+        <div className="border-t border-border/40 pt-2 space-y-1.5">
+          <button
+            onClick={onTools}
+            className="flex items-center gap-2 text-xs w-full hover:text-foreground transition-colors group"
+          >
+            <Wrench className="h-3 w-3 text-muted-foreground shrink-0" />
+            <span className="flex-1 text-muted-foreground text-left">Active tools</span>
+            <span className="tabular-nums font-medium">{toolCount}</span>
+            <ExternalLink className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+          </button>
+          <div className="flex gap-1.5 flex-wrap">
+            {builtInCount > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                {builtInCount} built-in
+              </span>
+            )}
+            {pluginCount > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-600 dark:text-orange-400">
+                {pluginCount} plugin
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="border-t border-border/40 pt-2 flex gap-1.5">
         <Button
           variant="ghost"
           size="sm"
-          className="w-full h-7 text-xs gap-1.5 justify-center"
+          className="flex-1 h-7 text-xs gap-1.5 justify-center"
+          onClick={onTools}
+        >
+          <Wrench className="h-3 w-3" />
+          Tools
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 h-7 text-xs gap-1.5 justify-center"
           onClick={onDetails}
         >
           <ExternalLink className="h-3 w-3" />
-          View full details
+          Details
         </Button>
       </div>
     </div>
@@ -131,7 +180,6 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
     staleTime: 0,
   })
 
-  // Re-fetch after each streaming turn completes
   useEffect(() => {
     if (!isStreaming) {
       qc.invalidateQueries({ queryKey })
@@ -142,11 +190,22 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
   const usagePercent = preview?.context.usage_percent ?? 0
   const grandTotal = preview?.context.grand_total ?? 0
   const contextWindow = preview?.context.model_context_window ?? 128000
+  const toolCount = preview?.active_tools.length ?? 0
 
   const dotColor =
     usagePercent > 90 ? 'bg-destructive'
     : usagePercent > 70 ? 'bg-amber-500'
     : 'bg-muted-foreground/40'
+
+  function openTools() {
+    setPopoverOpen(false)
+    setSheetOpen(true)
+  }
+
+  function openDetails() {
+    setPopoverOpen(false)
+    setSheetOpen(true)
+  }
 
   return (
     <>
@@ -158,62 +217,61 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
         </span>
       )}
 
-      {onMemoryClick && (
-        <button
-          onClick={onMemoryClick}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-teal-500 transition-colors ml-auto"
-        >
-          <Brain className="h-3 w-3" />
-          <span>Memory</span>
-        </button>
-      )}
-
-      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-        <PopoverTrigger asChild>
+      <div className="flex-1 flex items-center gap-2 divide-x divide-gray-500/50">
+        {onMemoryClick && (
           <button
-            className={cn('flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group', onMemoryClick ? '' : 'ml-auto')}
+            onClick={onMemoryClick}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-teal-500 transition-colors ml-auto pr-2"
           >
-            <Layers className="h-3 w-3" />
-            <span className="flex items-center gap-1">
-              {preview ? (
-                <>
-                  <span className={cn('h-1.5 w-1.5 rounded-full', dotColor)} />
-                  <span className="tabular-nums">{grandTotal.toLocaleString()}</span>
-                  <span className="text-muted-foreground/60">/ {(contextWindow / 1000).toFixed(0)}k tokens</span>
-                </>
-              ) : (
-                <span>Context</span>
-              )}
-            </span>
+            <Brain className="h-3 w-3" />
+            <span>Memory</span>
           </button>
-        </PopoverTrigger>
+        )}
 
-        <PopoverContent
-          side="top"
-          align="end"
-          sideOffset={8}
-          className="p-3"
-        >
-          {preview ? (
-            <UsagePopover
-              preview={preview}
-              onDetails={() => {
-                setPopoverOpen(false)
-                setSheetOpen(true)
-              }}
-            />
-          ) : (
-            <p className="text-xs text-muted-foreground">Loading...</p>
-          )}
-        </PopoverContent>
-      </Popover>
+        {/* Context popover */}
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <PopoverTrigger asChild>
+            <button
+              className={cn(
+                'flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group',
+                (!onMemoryClick && toolCount === 0) && 'ml-auto',
+              )}
+            >
+              <Layers className="h-3 w-3" />
+              <span className="flex items-center gap-1">
+                {preview ? (
+                  <>
+                    <span className={cn('h-1.5 w-1.5 rounded-full', dotColor)} />
+                    <span className="tabular-nums">{grandTotal.toLocaleString()}</span>
+                    <span className="text-muted-foreground/60">/ {(contextWindow / 1000).toFixed(0)}k tokens</span>
+                  </>
+                ) : (
+                  <span>Context</span>
+                )}
+              </span>
+            </button>
+          </PopoverTrigger>
 
-      <ContextPreviewSheet
-        agentId={agentId}
-        conversationId={conversationId}
-        open={sheetOpen}
-        onOpenChange={setSheetOpen}
-      />
+          <PopoverContent side="top" align="end" sideOffset={8} className="p-3">
+            {preview ? (
+              <UsagePopover
+                preview={preview}
+                onDetails={openDetails}
+                onTools={openTools}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">Loading...</p>
+            )}
+          </PopoverContent>
+        </Popover>
+
+        <ContextPreviewSheet
+          agentId={agentId}
+          conversationId={conversationId}
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+        />
+      </div>
     </>
   )
 }

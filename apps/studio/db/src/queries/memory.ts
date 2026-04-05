@@ -5,7 +5,7 @@ import { projects } from '../schema/projects.ts'
 import { agents } from '../schema/agents.ts'
 import type { AgentMemoryRow, NewAgentMemoryRow } from '../schema/memories.ts'
 
-export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global'
+export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global' | 'agent_self'
 export type MemoryTier = 'core' | 'extended'
 export type MemoryVisibility = 'private' | 'agent_shared' | 'project_shared'
 
@@ -160,4 +160,36 @@ export async function updateProjectMemoryConfig(projectId: string, config: Recor
 
 export async function updateAgentMemoryConfig(agentId: string, config: Record<string, unknown> | null): Promise<void> {
   await db.update(agents).set({ memory_config: config }).where(eq(agents.id, agentId))
+}
+
+export async function updateAgentPersonaSeed(agentId: string, seed: Record<string, unknown> | null): Promise<void> {
+  await db.update(agents).set({ persona_seed: seed }).where(eq(agents.id, agentId))
+}
+
+export async function markAgentPersonaSeeded(agentId: string): Promise<void> {
+  await db.update(agents).set({ persona_seeded_at: new Date() }).where(eq(agents.id, agentId))
+}
+
+export async function resetAgentPersona(agentId: string): Promise<void> {
+  // Delete all agent_self memories and clear seeded_at so next run re-seeds
+  await db.delete(agent_memories).where(
+    and(
+      eq(agent_memories.agent_id, agentId),
+      eq(agent_memories.scope, 'agent_self'),
+    )
+  )
+  await db.update(agents).set({ persona_seeded_at: null }).where(eq(agents.id, agentId))
+}
+
+export async function getAgentSelfMemories(agentId: string): Promise<AgentMemoryRow[]> {
+  return db
+    .select()
+    .from(agent_memories)
+    .where(
+      and(
+        eq(agent_memories.agent_id, agentId),
+        eq(agent_memories.scope, 'agent_self'),
+      )
+    )
+    .orderBy(desc(agent_memories.created_at))
 }

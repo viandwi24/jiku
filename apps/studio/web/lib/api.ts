@@ -206,6 +206,20 @@ export const api = {
       request<{ resolved: ResolvedMemoryConfig; project_config: ResolvedMemoryConfig; agent_config: AgentMemoryConfig | null }>(`/api/agents/${agentId}/memory-config/resolved`),
   },
 
+  persona: {
+    getSeed: (agentId: string) =>
+      request<{ seed: PersonaSeed | null; seeded_at: string | null }>(`/api/agents/${agentId}/persona/seed`),
+    updateSeed: (agentId: string, seed: PersonaSeed | null) =>
+      request<{ seed: PersonaSeed | null }>(`/api/agents/${agentId}/persona/seed`, {
+        method: 'PATCH',
+        body: JSON.stringify(seed),
+      }),
+    reset: (agentId: string) =>
+      request<{ success: boolean }>(`/api/agents/${agentId}/persona/reset`, { method: 'POST' }),
+    getMemories: (agentId: string) =>
+      request<{ memories: MemoryItem[] }>(`/api/agents/${agentId}/persona/memories`),
+  },
+
   credentials: {
     // Adapters registry
     adapters: (group_id?: string) =>
@@ -321,7 +335,7 @@ export interface Agent {
 }
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona'
   label: string
   content: string
   token_estimate: number
@@ -341,9 +355,12 @@ export interface PreviewRunResult {
   active_tools: {
     id: string
     name: string
+    description: string
     permission: string
     has_prompt: boolean
     token_estimate: number
+    input_schema?: unknown
+    group?: string
   }[]
   active_plugins: {
     id: string
@@ -481,7 +498,7 @@ export interface MemoryItem {
   project_id: string
   agent_id: string | null
   caller_id: string | null
-  scope: 'agent_caller' | 'agent_global' | 'runtime_global'
+  scope: 'agent_caller' | 'agent_global' | 'runtime_global' | 'agent_self'
   tier: 'core' | 'extended'
   section: string | null
   content: string
@@ -520,4 +537,13 @@ export type AgentMemoryConfig = {
   }
   core?: Partial<ResolvedMemoryConfig['core']>
   extraction?: Partial<ResolvedMemoryConfig['extraction']>
+}
+
+export interface PersonaSeed {
+  name?: string
+  role?: string
+  personality?: string
+  communication_style?: string
+  background?: string
+  initial_memories?: string[]
 }

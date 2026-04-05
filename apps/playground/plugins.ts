@@ -46,7 +46,7 @@ export const DatabasePlugin = definePlugin({
  * Also contributes ctx.social to its own dependents.
  */
 export const SocialPlugin = definePlugin({
-  meta: { id: 'jiku.social', name: 'Social Media', version: '2.0.0' },
+  meta: { id: 'jiku.social', name: 'Social Media', version: '2.0.0', project_scope: true },
   depends: [DatabasePlugin],
 
   contributes: () => ({
@@ -55,11 +55,15 @@ export const SocialPlugin = definePlugin({
     },
   }),
 
+  configSchema: z.object({
+    api_key: z.string().optional().describe('Social API key'),
+  }),
+
   setup(ctx) {
     // ctx.database — fully typed from DatabasePlugin.contributes
     ctx.database.query('posts')
 
-    ctx.tools.register(
+    ctx.project.tools.register(
       defineTool({
         meta: { id: 'list_posts', name: 'List Posts', description: 'List all available posts' },
         permission: '*',
@@ -108,9 +112,6 @@ export const SocialPlugin = definePlugin({
       }),
     )
 
-    ctx.provide('social', () => ({
-      getPlatformConfig: () => ({ api_key: process.env.SOCIAL_API_KEY ?? 'demo-key' }),
-    }))
   },
 })
 

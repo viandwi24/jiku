@@ -5,8 +5,9 @@ import type {
   PluginLoaderInterface,
   CallerContext,
   JikuStorageAdapter,
-  RuntimeContext,
   BasePluginContext,
+  ContributesValue,
+  ProjectPluginContext,
 } from '@jiku/types'
 import { SharedRegistry } from './registry.ts'
 import {
@@ -21,6 +22,16 @@ import { createHookAPI } from './hooks.ts'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyPluginDef = PluginDefinition<any>
 
+interface RegisteredTool {
+  tool: ResolvedTool
+  plugin_id: string
+}
+
+interface RegisteredPrompt {
+  segment: string | (() => Promise<string>)
+  plugin_id: string
+}
+
 export class PluginLoader implements PluginLoaderInterface {
   private plugins = new Map<string, AnyPluginDef>()
   private overrides = new Map<string, Partial<AnyPluginDef>>()
@@ -28,6 +39,13 @@ export class PluginLoader implements PluginLoaderInterface {
   private booted = false
   private loadOrder: string[] = []
   private storage: JikuStorageAdapter | null = null
+
+  // New: per-tool and per-prompt tracking with plugin_id
+  private registeredTools: RegisteredTool[] = []
+  private registeredPrompts: RegisteredPrompt[] = []
+
+  // New: per-project enabled plugin sets
+  private projectEnabledPlugins = new Map<string, Set<string>>()
 
   setStorage(storage: JikuStorageAdapter): void {
     this.storage = storage
@@ -47,6 +65,14 @@ export class PluginLoader implements PluginLoaderInterface {
 
   getLoadOrder(): string[] {
     return [...this.loadOrder]
+  }
+
+  getAllPlugins(): PluginDefinition<ContributesValue>[] {
+    return [...this.plugins.values()]
+  }
+
+  setProjectEnabledPlugins(projectId: string, pluginIds: string[]): void {
+    this.projectEnabledPlugins.set(projectId, new Set(pluginIds))
   }
 
   private prefixTool(plugin_id: string, tool: ToolDefinition): ResolvedTool {
@@ -113,28 +139,35 @@ export class PluginLoader implements PluginLoaderInterface {
       }
 
       // 3c: Build ctx and run setup
+      const registerTool = (...tools: ToolDefinition[]) => pendingTools.push(...tools)
+      const injectPrompt = (segment: string | (() => Promise<string>)) => {
+        this.registeredPrompts.push({ segment, plugin_id: pluginId })
+      }
+
       const baseCtx: BasePluginContext = {
         tools: {
-          register: (...tools: ToolDefinition[]) => pendingTools.push(...tools),
+          register: registerTool,
         },
         prompt: {
-          inject: (segment: string | (() => Promise<string>)) =>
-            this.registry.injectPromptSegment(segment),
+          inject: injectPrompt,
+        },
+        project: {
+          tools: { register: registerTool },
+          prompt: { inject: injectPrompt },
         },
         hooks: hookAPI,
         storage: pluginStorage,
-        provide: <K extends keyof RuntimeContext>(
-          key: K,
-          factory: (ctx: CallerContext) => RuntimeContext[K]
-        ) => {
-          this.registry.registerProvider(key as string, factory as (ctx: CallerContext) => unknown)
-        },
       }
 
       const ctx = { ...baseCtx, ...mergedFromDeps } as BasePluginContext & Record<string, unknown>
       node.def.setup(ctx)
 
+      // Register tools with plugin_id tracking
       const resolved = pendingTools.map(t => this.prefixTool(pluginId, t))
+      for (const tool of resolved) {
+        this.registeredTools.push({ tool, plugin_id: pluginId })
+      }
+      // Keep registry in sync for backward compat
       this.registry.registerTools(resolved)
 
       console.log(`[jiku] ✓ ${pluginId} loaded — ${resolved.length} tool(s) registered`)
@@ -152,16 +185,146 @@ export class PluginLoader implements PluginLoaderInterface {
     this.booted = false
   }
 
-  getResolvedTools(): ResolvedTool[] {
-    return this.registry.getResolvedTools()
+  /**
+   * Trigger onServerStop lifecycle for all registered plugins.
+   * Called when the server is shutting down.
+   */
+  async stopPlugins(): Promise<void> {
+    const storage = this.storage
+    for (const id of [...this.loadOrder].reverse()) {
+      const plugin = this.plugins.get(id)
+      if (!plugin?.onServerStop) continue
+      const pluginStorage = storage
+        ? this.registry.makePluginStorage(id, storage)
+        : { get: async () => null, set: async () => {}, delete: async () => {}, keys: async () => [] } as unknown as import('@jiku/types').PluginStorageAPI
+      const hookAPI = createHookAPI()
+      const ctx: BasePluginContext = {
+        tools: { register: () => {} },
+        prompt: { inject: () => {} },
+        project: {
+          tools: { register: () => {} },
+          prompt: { inject: () => {} },
+        },
+        hooks: hookAPI,
+        storage: pluginStorage,
+      }
+      try {
+        await plugin.onServerStop(ctx)
+      } catch (err) {
+        console.warn(`[jiku] onServerStop error in plugin "${id}":`, err)
+      }
+    }
   }
 
-  getPromptSegments(): string[] {
-    return []
+  /**
+   * Returns resolved tools, optionally filtered by project context.
+   * - No projectId: returns all tools (backward compat).
+   * - With projectId: system plugins (project_scope falsy) always included;
+   *   project-scoped plugins included only if enabled for that project.
+   */
+  getResolvedTools(projectId?: string): ResolvedTool[] {
+    if (!projectId) {
+      return this.registeredTools.map(r => r.tool)
+    }
+    const enabled = this.projectEnabledPlugins.get(projectId) ?? new Set<string>()
+    return this.registeredTools
+      .filter(r => {
+        const plugin = this.plugins.get(r.plugin_id)
+        if (!plugin) return false
+        if (!plugin.meta.project_scope) return true  // system plugin — always included
+        return enabled.has(r.plugin_id)              // project-scoped — only if enabled
+      })
+      .map(r => r.tool)
   }
 
-  async getPromptSegmentsAsync(): Promise<string[]> {
-    return this.registry.getPromptSegments()
+  /**
+   * Returns prompt segments synchronously (empty — use getPromptSegmentsAsync for resolved values).
+   * Kept for PluginLoaderInterface backward compat.
+   */
+  getPromptSegments(projectId?: string): string[] {
+    // Synchronous version returns only string segments (not async factories)
+    if (!projectId) {
+      return this.registeredPrompts
+        .filter(r => typeof r.segment === 'string')
+        .map(r => r.segment as string)
+    }
+    const enabled = this.projectEnabledPlugins.get(projectId) ?? new Set<string>()
+    return this.registeredPrompts
+      .filter(r => {
+        if (typeof r.segment !== 'string') return false
+        const plugin = this.plugins.get(r.plugin_id)
+        if (!plugin) return false
+        if (!plugin.meta.project_scope) return true
+        return enabled.has(r.plugin_id)
+      })
+      .map(r => r.segment as string)
+  }
+
+  /**
+   * Returns all prompt segments (including async factories), optionally filtered by project.
+   */
+  async getPromptSegmentsAsync(projectId?: string): Promise<string[]> {
+    if (!projectId) {
+      return Promise.all(
+        this.registeredPrompts.map(r =>
+          typeof r.segment === 'string' ? r.segment : r.segment()
+        )
+      )
+    }
+    const enabled = this.projectEnabledPlugins.get(projectId) ?? new Set<string>()
+    const filtered = this.registeredPrompts.filter(r => {
+      const plugin = this.plugins.get(r.plugin_id)
+      if (!plugin) return false
+      if (!plugin.meta.project_scope) return true
+      return enabled.has(r.plugin_id)
+    })
+    return Promise.all(
+      filtered.map(r => typeof r.segment === 'string' ? r.segment : r.segment())
+    )
+  }
+
+  async activatePlugin(projectId: string, pluginId: string, config: unknown, { updateSet = true } = {}): Promise<void> {
+    const plugin = this.plugins.get(pluginId)
+
+    if (updateSet) {
+      const enabled = this.projectEnabledPlugins.get(projectId) ?? new Set<string>()
+      enabled.add(pluginId)
+      this.projectEnabledPlugins.set(projectId, enabled)
+    }
+
+    if (!plugin?.onProjectPluginActivated) return
+
+    const storage = this.storage!
+    const pluginStorage = this.registry.makePluginStorage(`${projectId}:${pluginId}`, storage)
+    const hookAPI = createHookAPI()
+    const ctx: ProjectPluginContext = {
+      projectId,
+      config: config as Record<string, unknown>,
+      storage: pluginStorage,
+      hooks: hookAPI,
+    }
+    await plugin.onProjectPluginActivated(projectId, ctx)
+  }
+
+  async deactivatePlugin(projectId: string, pluginId: string, config: Record<string, unknown> = {}): Promise<void> {
+    const plugin = this.plugins.get(pluginId)
+
+    // Remove from enabled set
+    const enabled = this.projectEnabledPlugins.get(projectId)
+    enabled?.delete(pluginId)
+
+    if (!plugin?.onProjectPluginDeactivated) return
+
+    const storage = this.storage!
+    const pluginStorage = this.registry.makePluginStorage(`${projectId}:${pluginId}`, storage)
+    const hookAPI = createHookAPI()
+    const ctx: ProjectPluginContext = {
+      projectId,
+      config,
+      storage: pluginStorage,
+      hooks: hookAPI,
+    }
+    await plugin.onProjectPluginDeactivated(projectId, ctx)
   }
 
   resolveProviders(caller: CallerContext): Record<string, unknown> {

@@ -101,6 +101,10 @@ export interface PluginMeta {
   name: string
   version: string
   description?: string
+  author?: string
+  icon?: string       // lucide icon name or URL
+  category?: string   // 'productivity' | 'communication' | 'finance' | etc
+  project_scope?: boolean  // default false = system plugin
 }
 
 // --- Contributes ---
@@ -147,6 +151,15 @@ export type MergeContributes<Deps extends PluginDependency[]> =
     ExtractContributes<Extract<Deps[number], PluginDefinition<any>>>
   >
 
+// --- Project plugin context (per-project activation) ---
+
+export interface ProjectPluginContext<TConfig = Record<string, unknown>> {
+  projectId: string
+  config: TConfig
+  storage: PluginStorageAPI
+  hooks: HookAPI
+}
+
 // --- Base context always available in setup ---
 
 export interface BasePluginContext {
@@ -156,12 +169,12 @@ export interface BasePluginContext {
   prompt: {
     inject: (segment: string | (() => Promise<string>)) => void
   }
+  project: {
+    tools: { register: (...tools: ToolDefinition[]) => void }
+    prompt: { inject: (segment: string | (() => Promise<string>)) => void }
+  }
   hooks: HookAPI
   storage: PluginStorageAPI
-  provide: <K extends keyof RuntimeContext>(
-    key: K,
-    factory: (ctx: CallerContext) => RuntimeContext[K]
-  ) => void
 }
 
 /**
@@ -195,6 +208,10 @@ export interface PluginDefinition<
   setup: (ctx: BasePluginContext) => void
   onActivated?: (ctx: CallerContext) => void | Promise<void>
   onDeactivated?: () => void | Promise<void>
+  configSchema?: unknown  // z.ZodObject<any> but typed as unknown to avoid zod dependency in types
+  onProjectPluginActivated?: (projectId: string, ctx: ProjectPluginContext<Record<string, unknown>>) => void | Promise<void>
+  onProjectPluginDeactivated?: (projectId: string, ctx: ProjectPluginContext<Record<string, unknown>>) => void | Promise<void>
+  onServerStop?: (ctx: BasePluginContext) => void | Promise<void>
 }
 
 // ============================================================
@@ -519,8 +536,15 @@ export interface PluginLoaderInterface {
   override(pluginId: string, newDef: Partial<PluginDefinition<any>>): void
   isLoaded(id: string): boolean
   getLoadOrder(): string[]
-  getResolvedTools(): ResolvedTool[]
-  getPromptSegments(): string[]
+  /** Returns resolved tools. If projectId given, filters to system + enabled project-scoped plugins. */
+  getResolvedTools(projectId?: string): ResolvedTool[]
+  /** Returns prompt segments synchronously. If projectId given, filters appropriately. */
+  getPromptSegments(projectId?: string): string[]
   resolveProviders(caller: CallerContext): Record<string, unknown>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAllPlugins(): PluginDefinition<ContributesValue>[]
+  setProjectEnabledPlugins(projectId: string, pluginIds: string[]): void
+  activatePlugin(projectId: string, pluginId: string, config: unknown, options?: { updateSet?: boolean }): Promise<void>
+  deactivatePlugin(projectId: string, pluginId: string, config?: Record<string, unknown>): Promise<void>
 }
 

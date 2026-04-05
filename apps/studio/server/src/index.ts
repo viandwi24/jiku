@@ -9,7 +9,11 @@ import { conversationsRouter } from './routes/conversations.ts'
 import { credentialsRouter } from './routes/credentials.ts'
 import { chatRouter } from './routes/chat.ts'
 import { previewRouter } from './routes/preview.ts'
+import { pluginsRouter } from './routes/plugins.ts'
 import { runtimeManager } from './runtime/manager.ts'
+import { seedPluginRegistry } from './plugins/seed.ts'
+import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
+import { PluginLoader } from '@jiku/core'
 import { checkDbConnection, seedPermissions, getAllProjects } from '@jiku-studio/db'
 import { env } from './env.ts'
 
@@ -27,6 +31,7 @@ app.use('/api', conversationsRouter)
 app.use('/api', credentialsRouter)
 app.use('/api', chatRouter)
 app.use('/api', previewRouter)
+app.use('/api', pluginsRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -49,6 +54,12 @@ process.on('uncaughtException', (err) => {
 async function bootstrap() {
   await checkDbConnection()
   await seedPermissions()
+
+  // Create shared plugin loader and register built-in studio plugins.
+  const sharedLoader = new PluginLoader()
+  sharedLoader.register(JikuStudioPlugin)
+  await seedPluginRegistry(sharedLoader)
+  runtimeManager.setPluginLoader(sharedLoader)
 
   const projects = await getAllProjects()
   await Promise.all(projects.map(p => runtimeManager.wakeUp(p.id)))

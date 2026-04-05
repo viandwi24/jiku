@@ -150,6 +150,28 @@ export const api = {
       request<{ running: boolean }>(`/api/conversations/${convId}/status`),
   },
 
+  plugins: {
+    list: () => request<{ plugins: PluginItem[] }>('/api/plugins'),
+    get: (id: string) => request<{ plugin: PluginItem }>(`/api/plugins/${id}`),
+    configSchema: (id: string) => request<{ schema: Record<string, unknown> }>(`/api/plugins/${id}/config-schema`),
+    listProject: (projectId: string) => request<{ plugins: PluginItem[] }>(`/api/projects/${projectId}/plugins`),
+    listActive: (projectId: string) => request<{ plugins: ProjectPluginItem[] }>(`/api/projects/${projectId}/plugins/active`),
+    enable: (projectId: string, pluginId: string, config?: Record<string, unknown>) =>
+      request<{ plugin: ProjectPluginItem }>(`/api/projects/${projectId}/plugins/${pluginId}/enable`, {
+        method: 'POST',
+        body: JSON.stringify({ config: config ?? {} }),
+      }),
+    disable: (projectId: string, pluginId: string) =>
+      request<{ plugin: ProjectPluginItem }>(`/api/projects/${projectId}/plugins/${pluginId}/disable`, {
+        method: 'POST',
+      }),
+    updateConfig: (projectId: string, pluginId: string, config: Record<string, unknown>) =>
+      request<{ plugin: ProjectPluginItem }>(`/api/projects/${projectId}/plugins/${pluginId}/config`, {
+        method: 'PATCH',
+        body: JSON.stringify(config),
+      }),
+  },
+
   credentials: {
     // Adapters registry
     adapters: (group_id?: string) =>
@@ -209,6 +231,33 @@ export const api = {
 }
 
 // Types
+export interface PluginItem {
+  id: string
+  name: string
+  description: string | null
+  version: string
+  author: string | null
+  icon: string | null
+  category: string | null
+  project_scope: boolean | null
+  config_schema: Record<string, unknown> | null
+  created_at: string | null
+  updated_at: string | null
+  // project status overlay (when fetched via /projects/:pid/plugins)
+  enabled?: boolean
+  config?: Record<string, unknown>
+  activated_at?: string | null
+}
+
+export interface ProjectPluginItem {
+  id: string
+  project_id: string
+  plugin_id: string
+  enabled: boolean | null
+  config: Record<string, unknown> | null
+  activated_at: string | null
+}
+
 export interface Company {
   id: string
   name: string

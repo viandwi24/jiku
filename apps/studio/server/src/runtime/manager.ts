@@ -1,4 +1,4 @@
-import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules } from '@jiku-studio/db'
+import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins } from '@jiku-studio/db'
 import { JikuRuntime, PluginLoader, createProviderDef } from '@jiku/core'
 import type { JikuRunParams, JikuRunResult } from '@jiku/types'
 import { defineAgent } from '@jiku/kit'
@@ -15,19 +15,52 @@ const DYNAMIC_PROVIDER_ID = '__studio__'
  * Manages one JikuRuntime per project (project = runtime in @jiku/core terminology).
  * Provider is a single dynamic entry that resolves the agent's credential on every
  * getModel() call — this keeps decrypted keys out of long-lived memory.
+ *
+ * A single shared PluginLoader instance is used across all projects.
+ * Each project gets its own enabled plugin set via setProjectEnabledPlugins().
  */
 export class JikuRuntimeManager {
   private runtimes = new Map<string, JikuRuntime>()
   private storages = new Map<string, StudioStorageAdapter>()
+  private _pluginLoader: PluginLoader | null = null
 
   // Per-agent resolved model cache for the current request (cleared after each run)
   private modelCache = new Map<string, ReturnType<typeof buildProvider>>()
+
+  /** Set the shared plugin loader (called from index.ts after boot) */
+  setPluginLoader(loader: PluginLoader): void {
+    this._pluginLoader = loader
+  }
+
+  /** Get the shared plugin loader */
+  getPluginLoader(): PluginLoader | null {
+    return this._pluginLoader
+  }
 
   async wakeUp(projectId: string): Promise<void> {
     const agentRows = await getAgentsByProjectId(projectId)
     const rules = await loadProjectPolicyRules(projectId)
     const storage = new StudioStorageAdapter(projectId)
-    const plugins = new PluginLoader()
+
+    // Use the shared plugin loader if available, otherwise create an empty one
+    const pluginLoader = this._pluginLoader ?? new PluginLoader()
+
+    // Load enabled project plugins from DB and configure the loader.
+    // setProjectEnabledPlugins populates the enabled set — activatePlugin only triggers lifecycle hooks.
+    const enabledRows = await getEnabledProjectPlugins(projectId)
+    const enabledPluginIds = enabledRows.map(r => r.plugin_id)
+    pluginLoader.setProjectEnabledPlugins(projectId, enabledPluginIds)
+
+    // Trigger onProjectPluginActivated lifecycle for each enabled plugin (no Set mutation — already done above)
+    for (const row of enabledRows) {
+      const plugin = pluginLoader.getAllPlugins().find(p => p.meta.id === row.plugin_id)
+      if (!plugin?.onProjectPluginActivated) continue
+      try {
+        await pluginLoader.activatePlugin(projectId, row.plugin_id, row.config ?? {}, { updateSet: false })
+      } catch (err) {
+        console.warn(`[jiku] Failed to activate plugin "${row.plugin_id}" for project "${projectId}":`, err)
+      }
+    }
 
     // Dynamic provider: resolves the model from modelCache at run-time
     const dynamicProviderDef = createProviderDef(DYNAMIC_PROVIDER_ID, {
@@ -39,7 +72,7 @@ export class JikuRuntimeManager {
     })
 
     const runtime = new JikuRuntime({
-      plugins,
+      plugins: pluginLoader,
       storage,
       rules: Array.from(rules.values()).flat(),
       providers: { [DYNAMIC_PROVIDER_ID]: dynamicProviderDef },
@@ -102,6 +135,43 @@ export class JikuRuntimeManager {
       await this.wakeUp(projectId)
     }
     return this.runtimes.get(projectId)!
+  }
+
+  /**
+   * Activate a plugin for a project.
+   * Updates the enabled set and triggers the lifecycle hook.
+   */
+  async activatePlugin(projectId: string, pluginId: string, config: Record<string, unknown>): Promise<void> {
+    const loader = this._pluginLoader
+    if (!loader) return
+
+    await loader.activatePlugin(projectId, pluginId, config)
+    // Note: getResolvedTools(projectId) will now include the newly enabled plugin's tools
+    // No need to restart runtime — tools are resolved dynamically per request
+  }
+
+  /**
+   * Deactivate a plugin for a project.
+   * Loads the current config from DB so the lifecycle hook receives it.
+   */
+  async deactivatePlugin(projectId: string, pluginId: string): Promise<void> {
+    const loader = this._pluginLoader
+    if (!loader) return
+
+    await loader.deactivatePlugin(projectId, pluginId)
+  }
+
+  /**
+   * Rebuild the effective tool/prompt set for a project after plugin changes.
+   * Since tools are resolved dynamically via getResolvedTools(projectId),
+   * this is a no-op in the current architecture but kept as a sync point
+   * for future use (e.g. hot-reloading runtimes).
+   */
+  async syncProjectTools(projectId: string): Promise<void> {
+    const runtime = this.runtimes.get(projectId)
+    if (!runtime || !this._pluginLoader) return
+    // Tools are already resolved dynamically — no rebuild needed
+    console.log(`[jiku] syncProjectTools: ${projectId} tools synced`)
   }
 
   /**
@@ -173,6 +243,11 @@ export class JikuRuntimeManager {
     )
     this.runtimes.clear()
     this.storages.clear()
+
+    // Trigger onServerStop lifecycle for all registered plugins
+    if (this._pluginLoader) {
+      await this._pluginLoader.stopPlugins()
+    }
   }
 }
 

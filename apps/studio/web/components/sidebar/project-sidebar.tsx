@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   LogOut,
   MessageSquare,
+  Puzzle,
   Settings,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -72,6 +73,14 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     enabled: !!projectData?.id,
   })
 
+  const { data: projectPluginsData } = useQuery({
+    queryKey: ['project-plugins', projectData?.id],
+    queryFn: () => api.plugins.listProject(projectData!.id),
+    enabled: !!projectData?.id,
+  })
+
+  const activePluginCount = (projectPluginsData?.plugins ?? []).filter(p => p.enabled).length
+
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}`
   const isActive = (path: string) => {
     const full = `${base}${path}`
@@ -82,6 +91,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     { href: '', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/agents', label: 'Agents', icon: Bot, badge: agentsData?.agents.length, exact: false },
     { href: '/chats', label: 'Chats', icon: MessageSquare },
+    { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },
   ]
 
 

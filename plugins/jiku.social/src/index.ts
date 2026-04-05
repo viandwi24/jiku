@@ -7,7 +7,15 @@ export default definePlugin({
     name: 'Social Media Manager',
     version: '2.0.0',
     description: 'Manage social media posts across platforms',
+    project_scope: true,
+    author: 'Jiku',
+    icon: 'Share2',
+    category: 'communication',
   },
+
+  configSchema: z.object({
+    api_key: z.string().optional().describe('Social Media API key'),
+  }),
 
   contributes: () => ({
     social: {
@@ -16,7 +24,7 @@ export default definePlugin({
   }),
 
   setup(ctx) {
-    ctx.tools.register(
+    ctx.project.tools.register(
 
       defineTool({
         meta: { id: 'list_posts', name: 'List Posts', description: 'List all posts' },
@@ -67,8 +75,5 @@ export default definePlugin({
 
     )
 
-    ctx.provide('social', (_caller: unknown) => ({
-      getPlatformConfig: () => ({ api_key: process.env.SOCIAL_API_KEY ?? 'demo-key' }),
-    }))
   },
 })

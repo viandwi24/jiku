@@ -1,0 +1,16 @@
+{
+  "name": "@jiku/plugin-cron",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "typings": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@jiku/kit": "workspace:*",
+    "@jiku/types": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

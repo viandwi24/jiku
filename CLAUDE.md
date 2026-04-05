@@ -11,6 +11,14 @@
 
 ---
 
+## UI Components
+
+- **Always use components from `@jiku/ui` first** — it wraps shadcn/ui. Check there before writing any custom component.
+- Only build a custom component if `@jiku/ui` genuinely does not have what you need.
+- Import pattern: `import { Button, Input, Tabs, ... } from '@jiku/ui'`
+
+---
+
 ## TypeScript Rules
 
 - **No dynamic `import()` type expressions inside function bodies or signatures.** All imports must be at the top of the file as static `import` statements.

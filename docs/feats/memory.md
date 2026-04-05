@@ -40,7 +40,7 @@ resolveMemoryConfig(projectConfig, agentConfig?) → ResolvedMemoryConfig
 5. **Touch** — `touchMemories(ids)` increments `access_count` + sets `last_accessed`
 6. **Extract** — `extractMemoriesPostRun()` runs as fire-and-forget after stream completes
 
-## Built-in Memory Tools (8 of 9)
+## Built-in Memory Tools (9 of 9)
 
 Always available:
 - `memory_core_append` — save to core memory
@@ -53,9 +53,7 @@ Policy-gated:
 - `memory_runtime_read` — read `runtime_global` (`policy.read.runtime_global`)
 - `memory_runtime_write` — write `runtime_global` (`policy.write.runtime_global`)
 - `memory_user_lookup` — read other users' `agent_shared` memories (`policy.read.cross_user`)
-
-Missing (not yet implemented):
-- `memory_user_write` — write `agent_shared` (`policy.write.cross_user`)
+- `memory_user_write` — write `agent_shared` for a target `caller_id` (`policy.write.cross_user`); saves with `scope: agent_caller, visibility: agent_shared`
 
 ## API Routes
 
@@ -82,6 +80,8 @@ Missing (not yet implemented):
 - Save + Reset to project defaults buttons
 
 **Context Preview Sheet** — memory segment (teal) shown in context segments list with token count and content.
+
+**Memory Preview Sheet** — `components/chat/memory-preview-sheet.tsx` — dedicated sheet accessible via Memory button in chat footer. Reuses the `['preview', agentId, conversationId]` TanStack Query cache (no extra API request). Parses the raw injected memory text by markdown headings (## Project Memory → runtime_global, ## About You → agent_caller, etc.) and renders collapsible sections grouped by scope with tier + importance badges. Shows token count from `memorySeg.token_estimate`. Includes a raw text debug view.
 
 ## Config Shape
 
@@ -138,10 +138,11 @@ interface ResolvedMemoryConfig {
 - `apps/studio/web/app/(app)/studio/.../memory/page.tsx`
 - `apps/studio/web/app/(app)/studio/.../agents/[agent]/memory/page.tsx`
 
+## Memory Expiration Cleanup
+
+`deleteExpiredMemories()` in `apps/studio/db/src/queries/memory.ts` — deletes rows where `expires_at IS NOT NULL AND expires_at < NOW()`. Called at server boot and every 24h via `setInterval` in `apps/studio/server/src/index.ts`.
+
 ## Known Limitations
 
 - No vector/embedding search — uses keyword + recency scoring only
-- `memory_user_write` tool not yet implemented
-- Memory preview sheet in chat UI not yet built
-- No memory expiration cleanup job (expires_at field exists but no scheduled deletion)
 - DB migration for `agent_memories` requires `bun run db:push`

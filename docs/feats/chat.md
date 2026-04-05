@@ -83,10 +83,15 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 
 ## Context Bar
 
-`components/chat/context-bar.tsx` — shown below the chat input.
+`components/chat/context-bar.tsx` — shown below the chat input. Footer layout:
 
-- Left: model_id + provider name
-- Right: token count
+```
+[model_id · provider]  ···  [Memory] [Context]
+```
+
+- Left: model_id + provider name (from `previewRun()`)
+- Right: Memory button (when `onMemoryClick` prop is provided) + Context token count button
+- `onMemoryClick?: () => void` — when provided, renders a Brain-icon Memory button with `ml-auto` (pushes both Memory + Context to the right)
 - Popover: model info card, context usage bar (segmented), compaction count
 - `isStreaming` prop: when true, refreshes preview data after each streaming turn completes
 - Segment colors: base_prompt=blue, mode=purple, user_context=green, plugin=orange, memory=teal, tool_hint=slate, history=indigo
@@ -95,6 +100,16 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 
 - Model info card rendered above the context usage bar (provider row + model row)
 - Memory segment (teal) appears when memories are loaded for the conversation
+
+`components/chat/memory-preview-sheet.tsx` — dedicated memory preview sheet.
+
+- Opened via Memory button in ContextBar footer
+- Reuses `['preview', agentId, conversationId]` TanStack Query cache — no extra API request
+- Parses raw memory segment text by markdown headings into `MemoryBlock[]`
+- Groups by scope (runtime_global → "Project Memory", agent_global → "Agent Knowledge", agent_caller → "About You")
+- Renders collapsible sections with tier + importance badges
+- Shows total token estimate from `memorySeg.token_estimate`
+- Includes raw text toggle for debugging
 
 ## SSE Observer (Stream Registry)
 
@@ -131,5 +146,4 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 - No WebSocket support (removed in Plan 4) — all chat is HTTP streaming
 - `PluginLoader` in `wakeUp()` is empty — built-in plugins not yet registered
 - Agent selector disappears once conversation is started (intentional — cleaner UX)
-- `use-conversation-observer` hook is not yet wired into chat pages — observer pattern exists but is unused in UI
 - StreamRegistry is in-memory — a server restart clears all active run state

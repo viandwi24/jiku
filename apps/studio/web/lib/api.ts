@@ -148,6 +148,8 @@ export const api = {
       }),
     status: (convId: string) =>
       request<{ running: boolean }>(`/api/conversations/${convId}/status`),
+    liveParts: (convId: string) =>
+      request<{ running: boolean; chunks: Record<string, unknown>[] }>(`/api/conversations/${convId}/live-parts`),
   },
 
   plugins: {

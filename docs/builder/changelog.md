@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-06 — Tool parts persistence, real-time streaming, get_datetime, Telegram context
+
+- **Tool parts persisted to DB** (`packages/core/src/runner.ts`): Runner now saves ALL parts per assistant message — tool invocations (call + result) and text — not just text. Uses `result.steps` from AI SDK to collect every step's `toolCalls`+`toolResults` and builds `tool-invocation` parts with `state: 'result'`. History loading updated to reconstruct full `assistant` + `tool` model messages from saved parts so multi-step tool context survives page refresh.
+- **Real-time streaming for connector conversations** (`server/src/connectors/event-router.ts`): `executeConversationAdapter` now registers to `streamRegistry` and tees the run stream. Observer tab (watching same conversation) and run detail page both receive live updates via polling.
+- **`useLiveConversation` hook** (`apps/studio/web/hooks/use-live-conversation.ts`): Polls `/live-parts` at 400ms during active run. `autoDetect` mode polls `/status` every 2s to begin polling when a run starts (handles tabs opened before streaming begins). Reconstructs partial `UIMessage` from buffered chunks.
+- **`streamRegistry` buffer** (`server/src/runtime/stream-registry.ts`): Added `buffer: StreamChunk[]` per active run. `bufferChunk()` accumulates chunks. `GET /conversations/:id/live-parts` exposes snapshot (returns `{running: false}` when idle).
+- **`get_datetime` system tool** (`apps/studio/server/src/system/tools.ts`): Built-in tool returning `{ iso, timezone, local, unix }` — server timezone + formatted local time. Injected as first tool in all agents via `systemTools` array in `RuntimeManager.wakeUp/syncAgent`.
+- **Telegram user context injection** (`server/src/connectors/event-router.ts`): `buildConnectorContextString` injects server timestamp, `language_code`, and estimated user timezone (35+ locale map) so AI can convert times correctly without asking. Telegram plugin now sends `metadata.language_code` and `metadata.client_timestamp` on message events.
+- **ConversationViewer real-time** (`apps/studio/web/components/chat/conversation-viewer.tsx`): Uses `useLiveConversation` in readonly mode. Shows "streaming" badge during live run. `displayMessages` merges DB messages + live partial message.
+- Files: `packages/core/src/runner.ts`, `apps/studio/server/src/runtime/stream-registry.ts`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/system/tools.ts` *(new)*, `apps/studio/server/src/runtime/manager.ts`, `plugins/jiku.telegram/src/index.ts`, `apps/studio/web/hooks/use-live-conversation.ts` *(new)*, `apps/studio/web/components/chat/conversation-viewer.tsx`, `apps/studio/web/lib/api.ts`
+
+## 2026-04-06 — Connector System: Plugin architecture, Telegram polish, Zod fix
+
+- **`@jiku/plugin-connector`** *(new — `plugins/jiku.connector/`)* : Core connector plugin. Contributes `ctx.connector.register(adapter)` to dependent plugins via module-level mutable ref pattern (safe across `contributes()` → `setup()` boundary). Server registers this before TelegramPlugin.
+- **Telegram plugin refactor** (`plugins/jiku.telegram/src/index.ts`): Now `depends: [ConnectorPlugin]` and calls `ctx.connector.register(telegramAdapter)` instead of raw `ctx.hooks.callHook(...)`. Added `telegramify-markdown` for MarkdownV2-safe escaping. Added `splitMessage()` — splits responses at newlines near 4000-char boundary, sends as sequential messages (reply_parameters only on first chunk). Switched parse_mode `Markdown` → `MarkdownV2`.
+- **Typing indicator** (`server/src/connectors/event-router.ts`): `sendTyping()` called immediately + repeated via `setInterval` every 4s while agent processes. Cleared in `finally` block.
+- **Zod cross-instance fix**: All workspace packages (`core`, all plugins) standardized on `zod: 3.25.76`. Root `package.json` hoists single Zod instance. Removed `zodToJsonSchema` unused import from `packages/core/src/runner.ts`.
+- **Binding architecture** (`output_adapter + output_config`): `ConnectorBinding` no longer has `agent_id` at root — uses `output_adapter: string` + `output_config: jsonb`. `ConversationOutputConfig { agent_id, conversation_mode? }` and `TaskOutputConfig { agent_id }` inside config. Pairing approve route, API types (`web/lib/api.ts`), and event-router all updated.
+- Files: `plugins/jiku.connector/` *(new)*, `plugins/jiku.telegram/src/index.ts`, `plugins/jiku.telegram/package.json`, `apps/studio/server/src/index.ts`, `apps/studio/server/package.json`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/routes/connectors.ts`, `apps/studio/web/lib/api.ts`, `packages/core/src/runner.ts`, root `package.json`
+
 ## 2026-04-06 — UX polish: Run Detail, Memory table, Persona refactor
 
 - **ConversationViewer** (`apps/studio/web/components/chat/conversation-viewer.tsx`): Extracted shared component from chat page. Accepts `mode: 'edit' | 'readonly'`. In readonly mode: no PromptInput, same ContextBar + MemoryPreviewSheet. Both chat and run detail now use this component.

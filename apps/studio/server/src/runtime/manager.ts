@@ -10,6 +10,7 @@ import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
 import { buildRunTaskTool } from '../task/tools.ts'
+import { systemTools } from '../system/tools.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -122,7 +123,7 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
-          built_in_tools: [...memoryTools, ...connectorTools, runTaskTool],
+          built_in_tools: [...systemTools, ...memoryTools, ...connectorTools, runTaskTool],
         }),
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
@@ -203,7 +204,7 @@ export class JikuRuntimeManager {
         provider_id: DYNAMIC_PROVIDER_ID,
         model_id: DYNAMIC_MODEL_ID,
         compaction_threshold: agent.compaction_threshold ?? 80,
-        built_in_tools: [...memoryTools, runTaskTool],
+        built_in_tools: [...systemTools, ...memoryTools, runTaskTool],
       }),
       agentMemoryConfig,
       (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,

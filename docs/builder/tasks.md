@@ -1,5 +1,6 @@
 ## Backlog
 
+- [ ] Verify Telegram bot responds end-to-end (test: send message → typing indicator → get_datetime tool call → MarkdownV2 response)
 - [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies `persona_prompt` column on agents + all pending schema changes
 - [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
@@ -20,6 +21,11 @@
 - [x] Run Detail page uses ConversationViewer mode=readonly — same context/tools/memory preview as chat — completed 2026-04-06
 - [x] Memory browser table layout + agent column + filter by agent — completed 2026-04-06
 - [x] Persona refactor — persona_prompt field, direct system prompt injection, simple textarea UI — completed 2026-04-06
+- [x] `@jiku/plugin-connector` — new core plugin exposing `ctx.connector.register()` via contributes — completed 2026-04-06
+- [x] Telegram plugin: depends on ConnectorPlugin, MarkdownV2 + telegramify-markdown, multi-chunk messages — completed 2026-04-06
+- [x] Typing indicator in event-router (sendTyping + 4s interval repeat) — completed 2026-04-06
+- [x] Zod v3.25.76 standardization across all workspace packages — completed 2026-04-06
+- [x] Binding architecture: output_adapter + output_config jsonb (no agent_id at root) — completed 2026-04-06
 - [x] Dashboard metrics live counts — Studio (Projects+Agents), Company (Agents), Project (Chats) via useQueries — completed 2026-04-05
 - [x] Bug fixes from automated test — MemoryItem type fields (source, project_id), staleTime:0, touchMemories warning — completed 2026-04-05
 - [x] Chat UX polish: conversation list grouping, context bar, SSE observer, sidebar footer — completed 2026-04-05
@@ -49,3 +55,7 @@
 - [x] Active Tools UI — ToolRow expandable detail (description, ID, params schema), ContextBar tools button + count — completed 2026-04-05
 - [x] Tool group metadata — `group` field in ToolMeta, all memory/persona tools tagged, grouping in context preview sheet — completed 2026-04-05
 - [x] Context preview sheet layout — system prompt below usage bar, segment grouping by source, tab context/tools — completed 2026-04-05
+- [x] Tool parts persistence — runner saves tool-invocation parts (call+result) per step to DB; history loading reconstructs full model messages with tool roles — completed 2026-04-06
+- [x] Real-time streaming for connector conversations — streamRegistry teed in event-router, useLiveConversation hook polls /live-parts — completed 2026-04-06
+- [x] `get_datetime` system tool — returns iso/timezone/local/unix; injected into all agents — completed 2026-04-06
+- [x] Telegram user timezone context — language_code → timezone map injected into connector context string — completed 2026-04-06

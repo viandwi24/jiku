@@ -7,6 +7,7 @@ import {
   jsonSchema,
   type ToolSet,
   type ModelMessage,
+  type ToolContent,
 } from 'ai'
 import type {
   AgentDefinition,
@@ -268,10 +269,41 @@ export class AgentRunner {
     const effectiveHistory = applyCompactBoundary(history)
     const messages: ModelMessage[] = []
     for (const m of effectiveHistory) {
-      const text = m.parts.find(p => p.type === 'text')
-      if (!text || text.type !== 'text') continue
-      if (m.role === 'user') messages.push({ role: 'user', content: (text as { type: 'text'; text: string }).text })
-      else if (m.role === 'assistant') messages.push({ role: 'assistant', content: (text as { type: 'text'; text: string }).text })
+      if (m.role === 'user') {
+        const text = m.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
+        if (text) messages.push({ role: 'user', content: text.text })
+      } else if (m.role === 'assistant') {
+        // Build rich assistant content preserving tool calls + results
+        const toolParts = m.parts.filter(p => p.type === 'tool-invocation') as Array<{
+          type: 'tool-invocation'; toolInvocationId: string; toolName: string; args: unknown; state: string; result?: unknown
+        }>
+        const textPart = m.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
+
+        if (toolParts.length > 0) {
+          // Multi-part: tool calls + optional text
+          type AssistantPart = { type: 'text'; text: string } | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
+          const content: AssistantPart[] = []
+          if (textPart) content.push({ type: 'text', text: textPart.text })
+          for (const tp of toolParts) {
+            content.push({ type: 'tool-call', toolCallId: tp.toolInvocationId, toolName: tp.toolName, input: tp.args })
+          }
+          messages.push({ role: 'assistant', content })
+          // Add tool results as a tool message
+          const toolResults = toolParts
+            .filter(tp => tp.state === 'result')
+            .map(tp => ({
+              type: 'tool-result' as const,
+              toolCallId: tp.toolInvocationId,
+              toolName: tp.toolName,
+              output: { type: 'json' as const, value: tp.result ?? null },
+            }))
+          if (toolResults.length > 0) {
+            messages.push({ role: 'tool', content: toolResults as ToolContent })
+          }
+        } else if (textPart) {
+          messages.push({ role: 'assistant', content: textPart.text })
+        }
+      }
     }
     messages.push({ role: 'user', content: input })
 
@@ -362,25 +394,52 @@ export class AgentRunner {
         )
 
         // Wait for completion then persist + emit final usage
-        const [finalText, usage] = await Promise.all([result.text, result.usage])
+        const [steps, usage] = await Promise.all([result.steps, result.usage])
 
         jikuWriter.write('jiku-usage', {
           input_tokens: usage.inputTokens ?? 0,
           output_tokens: usage.outputTokens ?? 0,
         })
 
-        if (finalText) {
+        // Build all parts from all steps: text + tool invocations
+        type MessagePartLocal =
+          | { type: 'text'; text: string }
+          | { type: 'tool-invocation'; toolInvocationId: string; toolName: string; args: unknown; state: 'result'; result: unknown }
+
+        const allParts: MessagePartLocal[] = []
+
+        for (const step of steps) {
+          // Add tool call+result pairs for this step
+          for (const tc of step.toolCalls ?? []) {
+            const tr = (step.toolResults ?? []).find((r) => r.toolCallId === tc.toolCallId)
+            allParts.push({
+              type: 'tool-invocation',
+              toolInvocationId: tc.toolCallId,
+              toolName: tc.toolName,
+              args: tc.input,
+              state: 'result',
+              result: tr?.output ?? null,
+            })
+          }
+          // Add text part for this step (if any)
+          if (step.text) {
+            allParts.push({ type: 'text', text: step.text })
+          }
+        }
+
+        if (allParts.length > 0) {
           await storage.addMessage(conversation_id, {
             conversation_id,
             role: 'assistant',
-            parts: [{ type: 'text', text: finalText }],
+            parts: allParts,
           })
         }
 
         if (mode === 'task') {
+          const finalText = steps.map(s => s.text).filter(Boolean).join('')
           await storage.updateConversation(conversation_id, {
             status: 'completed',
-            output: finalText,
+            output: finalText || undefined,
           })
         }
 
@@ -400,7 +459,7 @@ export class AgentRunner {
           }).catch(() => {})
 
           // Post-run persona extraction (fire and forget)
-          if (storage.saveMemory) {
+          if (storage.saveMemory !== undefined) {
             const { extractPersonaPostRun } = await import('./memory/persona-extraction.ts')
             extractPersonaPostRun({
               runtime_id: runtimeId,

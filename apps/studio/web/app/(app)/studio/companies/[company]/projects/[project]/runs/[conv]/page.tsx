@@ -4,6 +4,7 @@ import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { UIMessage } from 'ai'
 import { api } from '@/lib/api'
+import { dbMessageToUIMessage } from '@/lib/messages'
 import { Button, Badge } from '@jiku/ui'
 import { ArrowLeft, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
@@ -76,12 +77,7 @@ export default function RunDetailPage({ params }: PageProps) {
   const finishedAt = conv.finished_at ? new Date(conv.finished_at as string) : null
   const durationMs = startedAt && finishedAt ? finishedAt.getTime() - startedAt.getTime() : null
 
-  const initialMessages: UIMessage[] = historyData.messages.map(m => ({
-    id: m.id,
-    role: m.role as 'user' | 'assistant',
-    parts: m.parts as UIMessage['parts'],
-    metadata: {},
-  }))
+  const initialMessages: UIMessage[] = historyData.messages.map(dbMessageToUIMessage)
 
   return (
     <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100svh - 3rem)' }}>

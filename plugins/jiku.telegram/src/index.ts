@@ -61,6 +61,10 @@ class TelegramAdapter extends ConnectorAdapter {
           username: msg.from?.username,
         },
         content: { text: msg.text ?? msg.caption },
+        metadata: {
+          language_code: msg.from?.language_code ?? null,
+          client_timestamp: new Date(msg.date * 1000).toISOString(),
+        },
         timestamp: new Date(msg.date * 1000),
       }
       await ctx.onEvent(event)

@@ -11,6 +11,7 @@ import {
   getConnectorById,
 } from '@jiku-studio/db'
 import { connectorRegistry } from './registry.ts'
+import { streamRegistry } from '../runtime/stream-registry.ts'
 
 /**
  * Try to handle an invite code redemption for a message event.
@@ -110,6 +111,44 @@ function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boole
   return true
 }
 
+/** Best-effort language_code → IANA timezone mapping for common locales */
+const LANG_TO_TIMEZONE: Record<string, string> = {
+  id: 'Asia/Jakarta',
+  en: 'America/New_York',
+  'en-GB': 'Europe/London',
+  ru: 'Europe/Moscow',
+  uk: 'Europe/Kiev',
+  de: 'Europe/Berlin',
+  fr: 'Europe/Paris',
+  es: 'Europe/Madrid',
+  it: 'Europe/Rome',
+  pt: 'America/Sao_Paulo',
+  'pt-BR': 'America/Sao_Paulo',
+  tr: 'Europe/Istanbul',
+  ar: 'Asia/Riyadh',
+  fa: 'Asia/Tehran',
+  zh: 'Asia/Shanghai',
+  'zh-CN': 'Asia/Shanghai',
+  'zh-TW': 'Asia/Taipei',
+  ja: 'Asia/Tokyo',
+  ko: 'Asia/Seoul',
+  th: 'Asia/Bangkok',
+  vi: 'Asia/Ho_Chi_Minh',
+  ms: 'Asia/Kuala_Lumpur',
+  hi: 'Asia/Kolkata',
+  bn: 'Asia/Dhaka',
+  pl: 'Europe/Warsaw',
+  nl: 'Europe/Amsterdam',
+  sv: 'Europe/Stockholm',
+  no: 'Europe/Oslo',
+  da: 'Europe/Copenhagen',
+  fi: 'Europe/Helsinki',
+  cs: 'Europe/Prague',
+  ro: 'Europe/Bucharest',
+  hu: 'Europe/Budapest',
+  he: 'Asia/Jerusalem',
+}
+
 function buildConnectorContextString(
   event: ConnectorEvent,
   binding: ConnectorBinding,
@@ -122,6 +161,20 @@ function buildConnectorContextString(
   if (binding.include_sender_info) {
     parts.push(`Sender: ${identity.display_name ?? event.sender.display_name ?? event.sender.external_id}`)
     parts.push(`Identity: ${JSON.stringify(identity.external_ref_keys)}`)
+  }
+
+  // Inject message timestamp and user locale/timezone hint
+  const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const msgTime = event.timestamp
+  const langCode = event.metadata?.['language_code'] as string | null | undefined
+  const userTz = langCode ? (LANG_TO_TIMEZONE[langCode] ?? LANG_TO_TIMEZONE[langCode.split('-')[0]!] ?? null) : null
+
+  parts.push(`Message received at: ${msgTime.toISOString()} (server timezone: ${serverTz})`)
+  if (userTz) {
+    const localTime = msgTime.toLocaleString('en-US', { timeZone: userTz, dateStyle: 'full', timeStyle: 'long' })
+    parts.push(`User locale: ${langCode} — estimated timezone: ${userTz} — user local time: ${localTime}`)
+  } else if (langCode) {
+    parts.push(`User locale: ${langCode} (timezone unknown)`)
   }
 
   if (event.type !== 'message') {
@@ -427,7 +480,7 @@ async function executeConversationAdapter(
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
     const input = contextString ? `${contextString}\n\n${inputText}` : inputText
 
-    const stream = await runtimeManager.run(projectId, {
+    const runResult = await runtimeManager.run(projectId, {
       agent_id: agentId,
       conversation_id: conversationId,
       caller,
@@ -435,8 +488,28 @@ async function executeConversationAdapter(
       input,
     })
 
+    // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates
+    const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
+    const [observerStream, drainStream] = runResult.stream.tee()
+
+    // Drain observer branch — buffer chunks + broadcast to SSE subscribers
+    ;(async () => {
+      try {
+        const obsReader = observerStream.getReader()
+        while (true) {
+          const { done, value } = await obsReader.read()
+          if (done) break
+          bufferChunk(value as Record<string, unknown>)
+          broadcast(`data: ${JSON.stringify(value)}\n\n`)
+        }
+      } finally {
+        registryDone()
+      }
+    })()
+
+    // Drain main branch for response text
     let responseText = ''
-    const reader = stream.stream.getReader()
+    const reader = drainStream.getReader()
     try {
       while (true) {
         const { done, value } = await reader.read()

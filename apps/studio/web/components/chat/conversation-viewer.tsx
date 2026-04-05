@@ -9,6 +9,7 @@ import type { UIMessage } from 'ai'
 import { api } from '@/lib/api'
 import { getToken } from '@/lib/auth'
 import { useConversationObserver } from '@/hooks/use-conversation-observer'
+import { useLiveConversation } from '@/hooks/use-live-conversation'
 import { Avatar, AvatarFallback, Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@jiku/ui/components/ai-elements/conversation.tsx'
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
@@ -42,11 +43,60 @@ export interface ConversationViewerProps {
   initialMessages: UIMessage[]
 }
 
+function MessageParts({ msg }: { msg: UIMessage }) {
+  return (
+    <>
+      {msg.role === 'assistant' && msg.parts.some(p =>
+        p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]')
+      ) ? (
+        <CompactionIndicator
+          summary={(() => {
+            const part = msg.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
+            return part?.text.replace('[Context Summary]\n', '') ?? ''
+          })()}
+          removedCount={0}
+          tokenSaved={0}
+        />
+      ) : (
+        msg.parts.map((part, i) => {
+          if (isTextUIPart(part)) {
+            return msg.role === 'assistant'
+              ? <MessageResponse key={i}>{part.text}</MessageResponse>
+              : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
+          }
+          if (isToolUIPart(part)) {
+            const toolName = getToolName(part)
+            return (
+              <Tool key={i}>
+                {isStaticToolUIPart(part) ? (
+                  <ToolHeader type={part.type} state={part.state} />
+                ) : (
+                  <ToolHeader type={part.type} state={part.state} toolName={toolName} />
+                )}
+                <ToolContent>
+                  {'input' in part && part.input !== undefined && (
+                    <ToolInput input={part.input} />
+                  )}
+                  {'output' in part && (
+                    <ToolOutput output={part.output} errorText={part.errorText} />
+                  )}
+                </ToolContent>
+              </Tool>
+            )
+          }
+          return null
+        })
+      )}
+    </>
+  )
+}
+
 export function ConversationViewer({ convId, mode, conversation, initialMessages }: ConversationViewerProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [memorySheetOpen, setMemorySheetOpen] = useState(false)
   const qc = useQueryClient()
 
+  // ── edit mode: full useChat with send capability ──────────────────────────
   const { messages, sendMessage, status, error, setMessages } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
@@ -58,6 +108,22 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   })
 
   const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // ── readonly mode: poll live-parts for realtime streaming view ────────────
+  const { liveMessage, isStreaming: liveStreaming, start: startLive, stop: stopLive } = useLiveConversation({
+    conversationId: convId,
+    autoDetect: mode === 'readonly',
+    onDone: async () => {
+      const fresh = await api.conversations.messages(convId)
+      setMessages(fresh.messages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        parts: m.parts as UIMessage['parts'],
+        metadata: {},
+      })))
+      qc.invalidateQueries({ queryKey: ['conversations'] })
+    },
+  })
 
   // Detect jiku-compact data parts in assistant messages
   useEffect(() => {
@@ -75,7 +141,7 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
     }
   }, [messages])
 
-  // Observer: attach as SSE observer if already running
+  // Observer: attach as SSE observer if already running (edit mode)
   const { attach } = useConversationObserver({
     conversationId: convId,
     onDone: async () => {
@@ -92,8 +158,21 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
 
   useEffect(() => {
     api.conversations.status(convId).then(({ running }) => {
-      if (running) attach()
+      if (!running) return
+      if (mode === 'edit') {
+        attach()
+      } else {
+        startLive()
+      }
     }).catch(() => { /* ignore */ })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId, mode])
+
+  // Cleanup live polling when unmounting in readonly mode
+  useEffect(() => {
+    return () => {
+      if (mode === 'readonly') stopLive()
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId])
 
@@ -116,10 +195,19 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming])
 
-  function handleSend({ text }: { text: string; files: unknown[] }) {
+  // Start live polling when edit-mode streaming ends (so readonly tabs catch up)
+  // readonly: start polling when we detect a run is active
+  const handleSend = ({ text }: { text: string; files: unknown[] }) => {
     if (!text.trim() || isStreaming || mode !== 'edit') return
     sendMessage({ text })
   }
+
+  // Build display messages — append live message for readonly observers
+  const displayMessages = (mode === 'readonly' && liveMessage)
+    ? [...messages, liveMessage]
+    : messages
+
+  const displayStreaming = mode === 'edit' ? isStreaming : liveStreaming
 
   return (
     <div className="flex flex-col h-full">
@@ -139,6 +227,9 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
             {mode === 'readonly' && (
               <Badge variant="outline" className="text-xs text-muted-foreground">readonly</Badge>
             )}
+            {displayStreaming && (
+              <Badge variant="outline" className="text-xs text-green-600 border-green-500/40">streaming</Badge>
+            )}
             <Badge variant="outline" className="text-xs">
               {conversation.status}
             </Badge>
@@ -149,7 +240,7 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       {/* Message list */}
       <Conversation className="flex-1">
         <ConversationContent className="max-w-3xl mx-auto w-full">
-          {messages.length === 0 && !isStreaming && (
+          {displayMessages.length === 0 && !displayStreaming && (
             <Empty>
               <EmptyMedia variant="icon"><Bot /></EmptyMedia>
               <EmptyTitle>{mode === 'readonly' ? 'No messages' : 'Start the conversation'}</EmptyTitle>
@@ -166,50 +257,10 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
             />
           ))}
 
-          {messages.map(msg => (
+          {displayMessages.map(msg => (
             <Message key={msg.id} from={msg.role}>
               <MessageContent>
-                {msg.role === 'assistant' && msg.parts.some(p =>
-                  p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]')
-                ) ? (
-                  <CompactionIndicator
-                    summary={(() => {
-                      const part = msg.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
-                      return part?.text.replace('[Context Summary]\n', '') ?? ''
-                    })()}
-                    removedCount={0}
-                    tokenSaved={0}
-                  />
-                ) : (
-                  msg.parts.map((part, i) => {
-                    if (isTextUIPart(part)) {
-                      return msg.role === 'assistant'
-                        ? <MessageResponse key={i}>{part.text}</MessageResponse>
-                        : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
-                    }
-                    if (isToolUIPart(part)) {
-                      const toolName = getToolName(part)
-                      return (
-                        <Tool key={i}>
-                          {isStaticToolUIPart(part) ? (
-                            <ToolHeader type={part.type} state={part.state} />
-                          ) : (
-                            <ToolHeader type={part.type} state={part.state} toolName={toolName} />
-                          )}
-                          <ToolContent>
-                            {'input' in part && part.input !== undefined && (
-                              <ToolInput input={part.input} />
-                            )}
-                            {'output' in part && (
-                              <ToolOutput output={part.output} errorText={part.errorText} />
-                            )}
-                          </ToolContent>
-                        </Tool>
-                      )
-                    }
-                    return null
-                  })
-                )}
+                <MessageParts msg={msg} />
               </MessageContent>
             </Message>
           ))}
@@ -241,7 +292,7 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
               <ContextBar
                 agentId={conversation.agent.id}
                 conversationId={convId}
-                isStreaming={isStreaming}
+                isStreaming={displayStreaming}
                 onMemoryClick={() => setMemorySheetOpen(true)}
               />
             </div>

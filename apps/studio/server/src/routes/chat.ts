@@ -59,20 +59,22 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
     return
   }
 
-  // Register run and get broadcast/done handles
-  const { broadcast, done } = streamRegistry.startRun(conversationId)
+  // Register run and get broadcast/buffer/done handles
+  const { broadcast, bufferChunk, done } = streamRegistry.startRun(conversationId)
 
-  // Tee the stream: one branch for the original caller, one for broadcasting
+  // Tee the stream: one branch for the original caller, one for broadcasting + buffering
   const [callerStream, broadcastStream] = result.stream.tee()
 
-  // Drain broadcast branch in background — forward raw bytes to observers
+  // Drain broadcast branch in background — buffer chunks + forward to SSE observers
   ;(async () => {
     try {
       const reader = broadcastStream.getReader()
       while (true) {
         const { done: streamDone, value } = await reader.read()
         if (streamDone) break
-        // Serialize the chunk as SSE data line
+        // Accumulate in memory for polling consumers
+        bufferChunk(value as Record<string, unknown>)
+        // Forward to SSE observers
         const line = `data: ${JSON.stringify(value)}\n\n`
         broadcast(line)
       }
@@ -116,6 +118,22 @@ router.get('/conversations/:id/stream', async (req, res) => {
 router.get('/conversations/:id/status', async (req, res) => {
   const conversationId = String(req.params['id'])
   res.json({ running: streamRegistry.isRunning(conversationId) })
+})
+
+/**
+ * GET /conversations/:id/live-parts
+ * Returns the in-memory chunk buffer for an active run — for polling observers.
+ * Returns { running: false } if no active run (stream finished or never started).
+ * Consumers should poll this at ~500ms and stop when running=false, then reload messages from DB.
+ */
+router.get('/conversations/:id/live-parts', async (req, res) => {
+  const conversationId = String(req.params['id'])
+  const buffer = streamRegistry.getBuffer(conversationId)
+  if (buffer === null) {
+    res.json({ running: false, chunks: [] })
+    return
+  }
+  res.json({ running: true, chunks: buffer })
 })
 
 export { router as chatRouter }

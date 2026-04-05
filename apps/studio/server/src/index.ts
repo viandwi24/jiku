@@ -10,11 +10,12 @@ import { credentialsRouter } from './routes/credentials.ts'
 import { chatRouter } from './routes/chat.ts'
 import { previewRouter } from './routes/preview.ts'
 import { pluginsRouter } from './routes/plugins.ts'
+import { memoryRouter } from './routes/memory.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
 import { PluginLoader } from '@jiku/core'
-import { checkDbConnection, seedPermissions, getAllProjects } from '@jiku-studio/db'
+import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
 
 const app = express()
@@ -32,6 +33,7 @@ app.use('/api', credentialsRouter)
 app.use('/api', chatRouter)
 app.use('/api', previewRouter)
 app.use('/api', pluginsRouter)
+app.use('/api', memoryRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -68,6 +70,17 @@ async function bootstrap() {
   app.listen(env.PORT, () => {
     console.log('[jiku] Studio Server ready on :' + env.PORT)
   })
+
+  // Daily cleanup: delete expired memories
+  const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
+  async function runMemoryCleanup() {
+    const deleted = await deleteExpiredMemories()
+    if (deleted > 0) console.log(`[jiku] Memory cleanup: deleted ${deleted} expired rows`)
+  }
+  runMemoryCleanup().catch((err) => console.warn('[jiku] Memory cleanup error:', err))
+  setInterval(() => {
+    runMemoryCleanup().catch((err) => console.warn('[jiku] Memory cleanup error:', err))
+  }, CLEANUP_INTERVAL_MS)
 
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)

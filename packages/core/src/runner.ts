@@ -21,6 +21,8 @@ import type {
   ToolContext,
   PreviewRunResult,
   ContextSegment,
+  ResolvedMemoryConfig,
+  AgentMemory,
 } from '@jiku/types'
 import type { JikuUIMessage, JikuUIMessageStreamWriter } from './types.ts'
 import { resolveScope } from './resolver/scope.ts'
@@ -34,6 +36,7 @@ import type { ModelProviders } from './providers.ts'
 import type { PluginLoader } from './plugins/loader.ts'
 import { estimateTokens, getModelContextWindow } from './utils/tokens.ts'
 import { compactMessages, applyCompactBoundary } from './compaction.ts'
+import { buildMemoryContext, formatMemorySection } from './memory/builder.ts'
 
 export class JikuAccessError extends Error {
   constructor(message: string) {
@@ -64,6 +67,8 @@ export class AgentRunner {
     private plugins: PluginLoader,
     private storage: JikuStorageAdapter,
     private providers: ModelProviders,
+    private memoryConfig?: ResolvedMemoryConfig,
+    private runtimeId?: string,
   ) {}
 
   /**
@@ -103,7 +108,18 @@ export class AgentRunner {
     if (!scope.accessible) throw new JikuAccessError(scope.denial_reason ?? 'Access denied')
     if (!scope.allowed_modes.includes(mode)) throw new JikuAccessError(`Mode '${mode}' not allowed`)
 
-    const modeTools = scope.active_tools.filter(t => t.modes.includes(mode))
+    // Merge built-in agent tools (e.g. memory tools) with plugin-resolved tools
+    const builtInResolved = (this.agent.built_in_tools ?? []).map(t => ({
+      ...t,
+      plugin_id: '__builtin__',
+      resolved_id: `__builtin__:${t.meta.id}`,
+      tool_name: `builtin_${t.meta.id}`,
+      resolved_permission: '*',
+    }))
+    const modeTools = [
+      ...scope.active_tools.filter(t => t.modes.includes(mode)),
+      ...builtInResolved.filter(t => t.modes.includes(mode)),
+    ]
 
     // 2. Resolve model — run-level > agent-level > runtime defaults
     const model = this.providers.resolve(
@@ -153,7 +169,57 @@ export class AgentRunner {
       }
     }
 
-    // 5. Build system prompt + history (before stream starts)
+    // 5. Load memories (if storage supports it + memory config is set)
+    let memorySection: string | undefined
+    let accessedMemoryIds: string[] = []
+    let loadedMemories: AgentMemory[] = []
+
+    if (this.memoryConfig && this.runtimeId && this.storage.getMemories) {
+      const config = this.memoryConfig
+      const runtimeId = this.runtimeId
+      const agentId = this.agent.meta.id
+      const callerId = caller.user_id
+
+      const [runtimeMems, agentMems, callerMems, extendedMems] = await Promise.all([
+        config.policy.read.runtime_global
+          ? this.storage.getMemories({ runtime_id: runtimeId, scope: 'runtime_global' })
+          : Promise.resolve([]),
+        this.storage.getMemories({ runtime_id: runtimeId, agent_id: agentId, scope: 'agent_global' }),
+        this.storage.getMemories({ runtime_id: runtimeId, agent_id: agentId, caller_id: callerId, scope: 'agent_caller' }),
+        this.storage.getMemories({ runtime_id: runtimeId, agent_id: agentId, caller_id: callerId, scope: ['agent_caller', 'agent_global'], tier: 'extended' }),
+      ])
+
+      loadedMemories = [...runtimeMems, ...agentMems, ...callerMems]
+
+      const memoryCtx = await buildMemoryContext({
+        memories: {
+          runtime_global: runtimeMems,
+          agent_global: agentMems,
+          agent_caller: callerMems,
+          extended_pool: extendedMems,
+        },
+        current_input: input,
+        config,
+      })
+
+      accessedMemoryIds = [
+        ...memoryCtx.runtime_global,
+        ...memoryCtx.agent_global,
+        ...memoryCtx.agent_caller,
+        ...memoryCtx.extended,
+      ].map(m => m.id)
+
+      if (accessedMemoryIds.length > 0 && this.storage.touchMemories) {
+        this.storage.touchMemories(accessedMemoryIds).catch((err) => {
+          console.warn('[memory] touchMemories failed:', err)
+        })
+      }
+
+      const userName = (caller.user_data.name as string | undefined)
+      memorySection = formatMemorySection(memoryCtx, userName) || undefined
+    }
+
+    // 6. Build system prompt + history (before stream starts)
     const pluginSegments = await this.plugins.getPromptSegmentsAsync()
     const systemPrompt = buildSystemPrompt({
       base: this.agent.base_prompt,
@@ -161,6 +227,7 @@ export class AgentRunner {
       active_tools: modeTools,
       caller,
       plugin_segments: pluginSegments,
+      memory_section: memorySection,
     })
 
     const history = await this.storage.getMessages(conversation_id)
@@ -180,7 +247,7 @@ export class AgentRunner {
       parts: [{ type: 'text', text: input }],
     })
 
-    // 6. Build runtime context (shared across the run)
+    // 7. Build runtime context (shared across the run)
     const runtimeCtx: RuntimeContext = {
       caller,
       agent: { id: this.agent.meta.id, name: this.agent.meta.name, mode },
@@ -189,10 +256,13 @@ export class AgentRunner {
       ...this.plugins.resolveProviders(caller),
     }
 
-    // 7. Keep a ref to the storage for use in closures below
+    // 8. Keep a ref to the storage for use in closures below
     const storage = this.storage
+    const memoryConfig = this.memoryConfig
+    const runtimeId = this.runtimeId
+    const agentId = this.agent.meta.id
 
-    // 8. Build stream using createUIMessageStream
+    // 9. Build stream using createUIMessageStream
     const stream = createUIMessageStream<JikuUIMessage>({
       execute: async ({ writer }) => {
         const jikuWriter = makeWriter(writer)
@@ -279,6 +349,22 @@ export class AgentRunner {
             output: finalText,
           })
         }
+
+        // Post-run memory extraction (fire and forget)
+        if (memoryConfig && runtimeId && storage.saveMemory && storage.deleteMemory) {
+          const runMessages = await storage.getMessages(conversation_id)
+          const { extractMemoriesPostRun } = await import('./memory/extraction.ts')
+          extractMemoriesPostRun({
+            runtime_id: runtimeId,
+            agent_id: agentId,
+            caller_id: caller.user_id,
+            messages: runMessages.slice(-6),
+            existing_memories: loadedMemories,
+            config: memoryConfig,
+            model,
+            storage,
+          }).catch(() => {})
+        }
       },
 
       onError: (err: unknown) => {
@@ -341,6 +427,27 @@ export class AgentRunner {
     const userContextText = buildUserContext(caller)
     const toolHintsText = buildToolHints(modeTools)
 
+    // Load memories for preview (read-only — no touchMemories)
+    let memorySection: string | undefined
+    if (this.memoryConfig && this.runtimeId && this.storage.getMemories) {
+      const config = this.memoryConfig
+      const runtimeId = this.runtimeId
+      const agentId = this.agent.meta.id
+      const callerId = caller.user_id
+      const [runtimeMems, agentMems, callerMems] = await Promise.all([
+        config.policy.read.runtime_global ? this.storage.getMemories({ runtime_id: runtimeId, scope: 'runtime_global' }) : Promise.resolve([]),
+        this.storage.getMemories({ runtime_id: runtimeId, agent_id: agentId, scope: 'agent_global' }),
+        this.storage.getMemories({ runtime_id: runtimeId, agent_id: agentId, scope: 'agent_caller', caller_id: callerId }),
+      ])
+      const memoryCtx = await buildMemoryContext({
+        memories: { runtime_global: runtimeMems, agent_global: agentMems, agent_caller: callerMems, extended_pool: [...agentMems, ...callerMems] },
+        current_input: '',
+        config,
+      })
+      const userName = (caller.user_data.name as string | undefined)
+      memorySection = formatMemorySection(memoryCtx, userName) || undefined
+    }
+
     const segments: ContextSegment[] = [
       {
         source: 'base_prompt',
@@ -366,6 +473,14 @@ export class AgentRunner {
         content: seg,
         token_estimate: estimateTokens(seg),
       })),
+      ...(memorySection
+        ? [{
+            source: 'memory' as const,
+            label: 'Memory',
+            content: memorySection,
+            token_estimate: estimateTokens(memorySection),
+          }]
+        : []),
       ...(toolHintsText
         ? [{
             source: 'tool_hint' as const,
@@ -409,6 +524,7 @@ export class AgentRunner {
       active_tools: modeTools,
       caller,
       plugin_segments: pluginSegments,
+      memory_section: memorySection,
     })
 
     return {

@@ -7,3 +7,11 @@ export { ModelProviders, createProviderDef } from './providers.ts'
 export { resolveScope } from './resolver/scope.ts'
 export { checkAccess, defaultSubjectMatcher, evaluateConditions } from './resolver/access.ts'
 export { buildSystemPrompt } from './resolver/prompt.ts'
+export {
+  DEFAULT_PROJECT_MEMORY_CONFIG,
+  resolveMemoryConfig,
+  findRelevantMemories,
+  buildMemoryContext,
+  formatMemorySection,
+  extractMemoriesPostRun,
+} from './memory/index.ts'

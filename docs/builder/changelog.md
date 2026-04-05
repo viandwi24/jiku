@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-04-05 — Memory Preview Sheet + Post-test Bug Fixes + Backlog Completion
+
+**Changed:** Resolved all remaining items from memory system backlog and automated test findings.
+
+- **`memory_user_write` tool** (`apps/studio/server/src/memory/tools.ts`): 9th built-in memory tool added. Policy-gated by `config.policy.write.cross_user`. Writes `scope: agent_caller, visibility: agent_shared` for a target `caller_id`.
+- **Memory expiration cleanup** (`apps/studio/db/src/queries/memory.ts`, `apps/studio/server/src/index.ts`): Added `deleteExpiredMemories()` DB function (delete where `expires_at < now()`). Registered as cleanup job in server bootstrap — runs immediately at boot and every 24h via `setInterval`.
+- **`MemoryPreviewSheet`** (`apps/studio/web/components/chat/memory-preview-sheet.tsx`): New component. Reads memory segment from `previewRun()` (no separate API route). Parses raw markdown memory section into scoped blocks. Shows token count, grouped collapsible sections per scope (Project-Global / Agent-Global / User-Scoped), tier + importance badges, raw content toggle.
+- **`ContextBar` Memory button** (`apps/studio/web/components/chat/context-bar.tsx`): Added `onMemoryClick?: () => void` prop. When provided, renders `[Memory]` button between model info and `[Context]` button. Footer layout: `[model · provider] ··· [Memory] [Context]`.
+- **Chat page wire-up** (`chats/[conv]/page.tsx`): `memorySheetOpen` state + `MemoryPreviewSheet` render. Passes `onMemoryClick` to `ContextBar`.
+- **Dashboard live counts**: Studio page now shows live Projects + Agents via cascading `useQueries`. Company page shows live Agents. Project page shows live Chats count via `conversations.listProject()`.
+- **Bug fixes from automated test**: `MemoryItem.source` union added `'agent'`; `MemoryItem.project_id` field rename (was `runtime_id`); `staleTime: 0` on memory browser; `touchMemories` `.catch()` now logs warning instead of silently swallowing.
+- **Implementation report updated** (`docs/plans/impl-reports/8-memory-system-implement-report.md`): Status 90% → 98%. All completed items marked done. Errors table extended with 4 new bug fixes.
+
+**Files touched:** `apps/studio/server/src/memory/tools.ts`, `apps/studio/db/src/queries/memory.ts`, `apps/studio/server/src/index.ts`, `apps/studio/web/components/chat/memory-preview-sheet.tsx`, `apps/studio/web/components/chat/context-bar.tsx`, `apps/studio/web/app/(app)/studio/.../chats/[conv]/page.tsx`, `apps/studio/web/app/(app)/studio/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/page.tsx`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/memory/memory-browser.tsx`, `docs/plans/impl-reports/8-memory-system-implement-report.md`
+
+---
+
+## 2026-04-05 — Memory System (Plan 8): Full Implementation
+
+**Changed:** Implemented the complete memory system across all layers.
+
+- **Core types** (`packages/types/src/index.ts`): Added `MemoryScope`, `MemoryTier`, `MemoryImportance`, `MemoryVisibility`, `AgentMemory`, `MemoryContext`, `ResolvedMemoryConfig`, `ProjectMemoryConfig`, `AgentMemoryConfig`. Extended `JikuStorageAdapter` with 5 optional memory methods (`agent_id` now optional in `getMemories`). Updated `ContextSegment.source` to include `'memory'`.
+- **Core memory logic** (`packages/core/src/memory/`): `config.ts` — `DEFAULT_PROJECT_MEMORY_CONFIG` + `resolveMemoryConfig()` 2-level merge. `relevance.ts` — `tokenize()` with EN+ID stopwords, `scoreMemory()` (keyword+recency+access+importance), `findRelevantMemories()`. `builder.ts` — `buildMemoryContext()` + `formatMemorySection()`. `extraction.ts` — `extractMemoriesPostRun()` Zod-based LLM extraction, fire-and-forget.
+- **Runner integration** (`packages/core/src/runner.ts`): Memory loaded before prompt, injected into system prompt, `touchMemories()` called after, post-run extraction triggered. `previewRun()` now also loads memories and includes a `memory` segment with token estimate.
+- **DB schema**: `agent_memories` table (16 columns). `agents.memory_config` + `projects.memory_config` jsonb columns.
+- **DB queries** (`apps/studio/db/src/queries/memory.ts`): 9 functions — `getMemories` (agent_id now optional), `saveMemory`, `updateMemory`, `deleteMemory`, `touchMemories`, `listProjectMemories`, `getMemoryById`, `updateProjectMemoryConfig`, `updateAgentMemoryConfig`.
+- **Storage adapter** (`apps/studio/server/src/runtime/storage.ts`): All 5 memory methods implemented.
+- **Memory tools** (`apps/studio/server/src/memory/tools.ts`): 8 built-in tools — core CRUD (append/replace/remove), extended insert, search, runtime read/write (policy-gated), user lookup (policy-gated).
+- **Runtime manager** (`apps/studio/server/src/runtime/manager.ts`): `wakeUp()` loads project memory config, resolves per-agent config, builds and injects memory tools as `built_in_tools`.
+- **API routes** (`apps/studio/server/src/routes/memory.ts`): 7 routes — memories list/delete, project config get/patch, agent config get/patch/resolved.
+- **Web API** (`apps/studio/web/lib/api.ts`): `api.memory.list/delete`, `api.memoryConfig.getProject/updateProject/getAgent/updateAgent/getAgentResolved`. Added `'memory'` to `ContextSegment.source` union.
+- **Web components**: `MemoryBrowser` (scope/tier filters, cards with badges, delete with confirm). `MemoryConfig` (Default Policy, Relevance Scoring, Core Memory, Extraction sections with sliders/switches).
+- **Web pages**: `/memory` — tabs: Memories + Config (project-level). `/agents/[agent]/memory` — per-agent override with InheritToggle pattern (inherit/on/off), effective config panel.
+- **Sidebar navigation**: Memory item (Brain icon) between Chats and Plugins. Plugins moved above Settings. Memory tab removed from settings layout.
+- **Context preview**: Memory segment (teal color) now appears in context bar popover and context preview sheet when memories are loaded.
+- **Bug fix**: `getMemories()` — `agent_id` was incorrectly required, causing `WHERE agent_id = ''` on `runtime_global` queries. Made optional, only added to WHERE when present.
+
+**Files touched:** `packages/types/src/index.ts`, `packages/core/src/memory/*`, `packages/core/src/runner.ts`, `packages/core/src/resolver/prompt.ts`, `apps/studio/db/src/schema/memories.ts`, `apps/studio/db/src/schema/agents.ts`, `apps/studio/db/src/schema/projects.ts`, `apps/studio/db/src/queries/memory.ts`, `apps/studio/server/src/runtime/storage.ts`, `apps/studio/server/src/memory/tools.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/routes/memory.ts`, `apps/studio/server/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/memory/memory-browser.tsx`, `apps/studio/web/components/memory/memory-config.tsx`, `apps/studio/web/app/(app)/studio/.../memory/page.tsx`, `apps/studio/web/app/(app)/studio/.../agents/[agent]/memory/page.tsx`, `apps/studio/web/app/(app)/studio/.../agents/[agent]/layout.tsx`, `apps/studio/web/app/(app)/studio/.../settings/layout.tsx`, `apps/studio/web/components/sidebar/project-sidebar.tsx`, `apps/studio/web/components/chat/context-bar.tsx`, `apps/studio/web/components/chat/context-preview-sheet.tsx`
+
+---
+
 ## 2026-04-05 — Chat UX Polish: Conversation list, Context bar, SSE observer, Sidebar footer
 
 - **Conversation list panel** (`components/chat/conversation-list-panel.tsx`): Full rewrite. Replaced Radix `ScrollArea` with plain `overflow-y-auto` div (ScrollArea injected `min-width:100%; display:table` which broke `text-overflow: ellipsis`). Added date-based grouping (Today/Yesterday/This week/This month/Last 3 months/Older) as accordion sections — Today auto-expanded, rest collapsed. Load-more pagination (PAGE_SIZE=10). Proper ellipsis truncation on last message preview.

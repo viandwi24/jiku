@@ -12,8 +12,22 @@ import {
   pluginKvSet,
   pluginKvDelete,
   pluginKvKeys,
+  getMemories as dbGetMemories,
+  saveMemory as dbSaveMemory,
+  updateMemory as dbUpdateMemory,
+  deleteMemory as dbDeleteMemory,
+  touchMemories as dbTouchMemories,
 } from '@jiku-studio/db'
-import type { JikuStorageAdapter, Conversation, Message, MessagePart } from '@jiku/types'
+import type {
+  JikuStorageAdapter,
+  Conversation,
+  Message,
+  MessagePart,
+  AgentMemory,
+  MemoryScope,
+  MemoryTier,
+  MemoryVisibility,
+} from '@jiku/types'
 
 function toJikuConversation(row: {
   id: string
@@ -63,6 +77,44 @@ function toJikuMessage(row: {
     role,
     parts,
     created_at: row.created_at ?? new Date(),
+  }
+}
+
+function toAgentMemory(row: {
+  id: string
+  project_id: string
+  agent_id: string
+  caller_id: string | null
+  scope: string
+  tier: string
+  section?: string | null
+  content: string
+  importance: string
+  visibility: string
+  source: string
+  access_count: number
+  last_accessed: Date | null
+  expires_at: Date | null
+  created_at: Date
+  updated_at: Date
+}): AgentMemory {
+  return {
+    id: row.id,
+    runtime_id: row.project_id,
+    agent_id: row.agent_id,
+    caller_id: row.caller_id,
+    scope: row.scope as AgentMemory['scope'],
+    tier: row.tier as AgentMemory['tier'],
+    section: row.section ?? undefined,
+    content: row.content,
+    importance: row.importance as AgentMemory['importance'],
+    visibility: row.visibility as AgentMemory['visibility'],
+    source: row.source as AgentMemory['source'],
+    access_count: row.access_count,
+    last_accessed: row.last_accessed,
+    expires_at: row.expires_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
   }
 }
 
@@ -150,5 +202,57 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
 
   async pluginKeys(scope: string, prefix?: string): Promise<string[]> {
     return pluginKvKeys(this.projectId, scope, prefix)
+  }
+
+  async getMemories(params: {
+    runtime_id: string
+    agent_id?: string
+    caller_id?: string
+    scope?: MemoryScope | MemoryScope[]
+    tier?: MemoryTier
+    visibility?: MemoryVisibility[]
+  }): Promise<AgentMemory[]> {
+    const rows = await dbGetMemories({
+      project_id: params.runtime_id,
+      agent_id: params.agent_id,
+      caller_id: params.caller_id,
+      scope: params.scope as Parameters<typeof dbGetMemories>[0]['scope'],
+      tier: params.tier as Parameters<typeof dbGetMemories>[0]['tier'],
+      visibility: params.visibility as Parameters<typeof dbGetMemories>[0]['visibility'],
+    })
+    return rows.map(toAgentMemory)
+  }
+
+  async saveMemory(memory: Omit<AgentMemory,
+    'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'
+  >): Promise<AgentMemory> {
+    const row = await dbSaveMemory({
+      project_id: memory.runtime_id,
+      agent_id: memory.agent_id,
+      caller_id: memory.caller_id ?? undefined,
+      scope: memory.scope,
+      tier: memory.tier,
+      section: memory.section,
+      content: memory.content,
+      importance: memory.importance,
+      visibility: memory.visibility,
+      source: memory.source,
+      expires_at: memory.expires_at ?? undefined,
+    })
+    return toAgentMemory(row)
+  }
+
+  async updateMemory(id: string, data: Partial<Pick<AgentMemory,
+    'content' | 'importance' | 'visibility' | 'expires_at'
+  >>): Promise<void> {
+    await dbUpdateMemory(id, data)
+  }
+
+  async deleteMemory(id: string): Promise<void> {
+    await dbDeleteMemory(id)
+  }
+
+  async touchMemories(ids: string[]): Promise<void> {
+    await dbTouchMemories(ids)
   }
 }

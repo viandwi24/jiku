@@ -17,6 +17,7 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/c
 import { Bot } from 'lucide-react'
 import { ContextBar } from '@/components/chat/context-bar'
 import { CompactionIndicator } from '@/components/chat/compaction-indicator'
+import { MemoryPreviewSheet } from '@/components/chat/memory-preview-sheet'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
@@ -76,6 +77,7 @@ interface CompactionEvent {
 
 function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
+  const [memorySheetOpen, setMemorySheetOpen] = useState(false)
   const qc = useQueryClient()
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
@@ -260,12 +262,19 @@ function ChatView({ convId, conversation, initialMessages }: ChatViewProps) {
             </PromptInputFooter>
           </PromptInput>
           {conversation && (
-            <div className="mt-2 px-1 flex items-center justify-between gap-3">
-              <ContextBar agentId={conversation.agent.id} conversationId={convId} isStreaming={isStreaming} />
+            <div className="mt-2 px-1 flex items-center gap-3">
+              <ContextBar agentId={conversation.agent.id} conversationId={convId} isStreaming={isStreaming} onMemoryClick={() => setMemorySheetOpen(true)} />
             </div>
           )}
         </div>
       </div>
+
+      <MemoryPreviewSheet
+        agentId={conversation?.agent.id ?? ''}
+        conversationId={convId}
+        open={memorySheetOpen}
+        onOpenChange={setMemorySheetOpen}
+      />
     </div>
   )
 }

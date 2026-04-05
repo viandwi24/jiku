@@ -1,26 +1,32 @@
 ## Phase
-Idle — last session completed chat UX polish (conversation list, context bar, SSE observer, sidebar footer)
+Post-testing fixes + Memory Preview Sheet — COMPLETE
 
 ## Currently Working On
-- Nothing active. Last session closed cleanly.
+- Nothing active. All backlog items from memory system session resolved.
 
 ## Relevant Files
-- `apps/studio/server/src/runtime/stream-registry.ts` — SSE broadcast + concurrent lock
-- `apps/studio/server/src/routes/chat.ts` — POST chat (409 guard, tee), GET stream (SSE), GET status
-- `apps/studio/web/hooks/use-conversation-observer.ts` — EventSource hook, token via ?token= param
-- `apps/studio/web/components/chat/conversation-list-panel.tsx` — grouped accordion list, load-more
-- `apps/studio/web/components/chat/context-bar.tsx` — model/token display, isStreaming prop
-- `apps/studio/web/components/chat/context-preview-sheet.tsx` — model info card above usage bar
-- `apps/studio/web/components/sidebar/project-sidebar.tsx` — Settings in main group, user in footer
-- `apps/studio/web/components/sidebar/company-sidebar.tsx` — same pattern
-- `apps/studio/web/lib/api.ts` — compaction_count, model_info, conversations.status()
+- `apps/studio/web/components/chat/memory-preview-sheet.tsx` — new Memory Preview Sheet component
+- `apps/studio/web/components/chat/context-bar.tsx` — added `onMemoryClick` prop + Memory button
+- `apps/studio/web/app/(app)/studio/.../chats/[conv]/page.tsx` — wired MemoryPreviewSheet
+- `apps/studio/server/src/memory/tools.ts` — all 9 tools including memory_user_write
+- `apps/studio/db/src/queries/memory.ts` — added deleteExpiredMemories()
+- `apps/studio/server/src/index.ts` — memory cleanup job (boot + 24h interval)
+- `apps/studio/web/app/(app)/studio/page.tsx` — live Projects + Agents count
+- `apps/studio/web/app/(app)/studio/companies/[company]/page.tsx` — live Agents count
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/page.tsx` — live Chats count
+- `docs/plans/impl-reports/8-memory-system-implement-report.md` — updated to 98% COMPLETE
 
 ## Important Context / Temporary Decisions
-- **DB column rename pending**: `messages.content` → `messages.parts` requires `bun run db:push` from `apps/studio/server` (interactive TTY — user must run in their own terminal)
-- `use-conversation-observer` hook exists but is not yet wired into chat UI pages — see backlog
-- StreamRegistry is in-memory only — server restart clears all active run state (acceptable, runs are short-lived)
-- EventSource token via ?token= query param — only for SSE endpoint, not other routes
+- Memory config is on `/memory` page (not `/settings`) — config tab lives alongside memory browser
+- `getMemories()` `agent_id` is now optional — runtime_global queries don't need agent_id
+- `previewRun()` in runner now loads and shows memory as a context segment (teal color)
+- Memory Preview Sheet: `MemoryPreviewSheet` component reads memory segment from `previewRun()` — no separate API route needed
+- `ContextBar` now accepts `onMemoryClick` prop — renders Memory button between model info and Context button
+- Footer layout: `[model id · provider]` ··· `[Memory] [Context]`
+- Dashboard metrics now live: Studio (Projects+Agents), Company (Agents), Project (Chats)
+- Memory expiration cleanup: runs at server boot + every 24h via `setInterval`
 
 ## Next Up
-- Wire `use-conversation-observer` into conversation page so secondary observers auto-refresh
-- Backlog: update web imports to @jiku/ui, test suite, built-in plugins
+- Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
+- Invite member feature
+- Agent Tools tab (currently placeholder)

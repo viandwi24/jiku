@@ -140,6 +140,30 @@ Package npm yang benar adalah `@openrouter/ai-sdk-provider`, bukan `@ai-sdk/open
 
 `@jiku-studio/server` tidak punya `drizzle-orm` sebagai dependency. Semua query DB harus diimplementasi di `@jiku-studio/db` dan di-export dari `index.ts`. Server hanya import fungsi-fungsi query, tidak pernah import `drizzle-orm` atau schema langsung.
 
+## Memory system: getMemories agent_id is optional
+
+`getMemories()` in `@jiku-studio/db` has `agent_id` as optional. When loading `runtime_global` scope, the runner does NOT pass `agent_id` — those memories are project-wide, not agent-scoped. Always omit `agent_id` when querying `runtime_global`. Pass it when querying `agent_global` or `agent_caller`.
+
+## Memory config location: /memory page, not /settings
+
+Project memory config is on the `/memory` page via a "Config" tab (alongside the "Memories" browser tab). It is NOT in project settings. The settings layout only has: General, Credentials, Permissions.
+
+## Memory in context preview
+
+`previewRun()` in `packages/core/src/runner.ts` loads memories (read-only, no `touchMemories`) and injects a `memory` context segment. In the UI, the memory segment renders in teal. The `ContextSegment.source` union includes `'memory'` — update both `packages/types/src/index.ts` and `apps/studio/web/lib/api.ts` if adding new segment sources.
+
+## Memory tools are built_in_tools, not plugin tools
+
+Memory tools are injected via `built_in_tools` on `AgentDefinition` in `RuntimeManager.wakeUp()` / `syncAgent()`. They do NOT go through the plugin system. The `AgentRunner` merges `agent.built_in_tools` with plugin-resolved tools before building the AI SDK tool map.
+
+## resolveMemoryConfig: always call before running
+
+`resolveMemoryConfig(projectConfig, agentConfig)` from `@jiku/core` must be called in `wakeUp()` and `syncAgent()` to produce the `ResolvedMemoryConfig` passed to `runtime.addAgent()`. The agent config is partial — field-by-field merge, project defaults fill missing keys.
+
+## zod is a direct dep of @jiku-studio/server
+
+Added `zod@^4.3.6` to `apps/studio/server/package.json` — required by `memory/tools.ts` for tool input schemas. Server does not re-use core's zod; it needs its own declaration.
+
 ## Wrap stream untuk cleanup after full consume
 
 `modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).

@@ -89,10 +89,12 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 - Right: token count
 - Popover: model info card, context usage bar (segmented), compaction count
 - `isStreaming` prop: when true, refreshes preview data after each streaming turn completes
+- Segment colors: base_prompt=blue, mode=purple, user_context=green, plugin=orange, memory=teal, tool_hint=slate, history=indigo
 
 `components/chat/context-preview-sheet.tsx` — full sheet view of context state.
 
 - Model info card rendered above the context usage bar (provider row + model row)
+- Memory segment (teal) appears when memories are loaded for the conversation
 
 ## SSE Observer (Stream Registry)
 

@@ -38,12 +38,14 @@ export function buildSystemPrompt(params: {
   active_tools: ResolvedTool[]
   caller: CallerContext
   plugin_segments: string[]
+  memory_section?: string
 }): string {
-  const { base, mode, active_tools, caller, plugin_segments } = params
+  const { base, mode, active_tools, caller, plugin_segments, memory_section } = params
 
   const segments = [
     base,
     buildModeInstruction(mode),
+    memory_section,
     buildUserContext(caller),
     buildToolHints(active_tools),
     plugin_segments.join('\n'),

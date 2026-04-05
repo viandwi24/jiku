@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Layers, ExternalLink } from 'lucide-react'
+import { Layers, ExternalLink, Brain } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { PreviewRunResult } from '@/lib/api'
 import { Popover, PopoverContent, PopoverTrigger, Progress, Button, cn } from '@jiku/ui'
@@ -13,6 +13,7 @@ interface ContextBarProps {
   conversationId?: string
   /** Pass the useChat status — triggers a preview refresh when streaming finishes. */
   isStreaming?: boolean
+  onMemoryClick?: () => void
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -20,6 +21,7 @@ const SOURCE_LABELS: Record<string, string> = {
   mode: 'Mode',
   user_context: 'User context',
   plugin: 'Plugins',
+  memory: 'Memory',
   tool_hint: 'Tool hints',
 }
 
@@ -28,6 +30,7 @@ const SOURCE_COLORS: Record<string, string> = {
   mode: 'bg-purple-500',
   user_context: 'bg-green-500',
   plugin: 'bg-orange-500',
+  memory: 'bg-teal-500',
   tool_hint: 'bg-slate-400',
   history: 'bg-indigo-500',
 }
@@ -113,7 +116,7 @@ function UsagePopover({ preview, onDetails }: { preview: PreviewRunResult; onDet
   )
 }
 
-export function ContextBar({ agentId, conversationId, isStreaming }: ContextBarProps) {
+export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick }: ContextBarProps) {
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const qc = useQueryClient()
@@ -155,10 +158,20 @@ export function ContextBar({ agentId, conversationId, isStreaming }: ContextBarP
         </span>
       )}
 
+      {onMemoryClick && (
+        <button
+          onClick={onMemoryClick}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-teal-500 transition-colors ml-auto"
+        >
+          <Brain className="h-3 w-3" />
+          <span>Memory</span>
+        </button>
+      )}
+
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
         <PopoverTrigger asChild>
           <button
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group ml-auto"
+            className={cn('flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group', onMemoryClick ? '' : 'ml-auto')}
           >
             <Layers className="h-3 w-3" />
             <span className="flex items-center gap-1">

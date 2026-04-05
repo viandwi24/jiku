@@ -1,5 +1,45 @@
 # Decisions
 
+## ADR-017 — getMemories agent_id is optional (runtime_global has no agent scope)
+
+**Context:** `runtime_global` memories belong to the project, not to any specific agent. When the runner loads `runtime_global` scope, it does not pass an `agent_id`. The original `GetMemoriesParams` had `agent_id: string` (required), causing `WHERE agent_id = ''` which always returns empty results and errors on the DB side.
+
+**Decision:** Make `agent_id` optional in `GetMemoriesParams`. The DB query only adds `WHERE agent_id = $n` when `agent_id` is truthy. Both the `JikuStorageAdapter` interface and `StudioStorageAdapter` implementation updated to match.
+
+**Consequences:** Queries for `runtime_global` scope now correctly fetch all project-scoped memories without filtering by agent. Agent-scoped queries still pass `agent_id` and behave as before.
+
+---
+
+## ADR-016 — Memory config lives on /memory page, not /settings
+
+**Context:** The initial implementation put memory config under `/settings/memory` (a settings tab). User feedback: the config belongs on the `/memory` page itself, alongside the memory browser — not buried in settings.
+
+**Decision:** Move memory config to a "Config" tab on the `/memory` page (alongside the "Memories" browser tab). Remove the Memory tab from project settings layout. The `/settings/memory` page file remains but is not linked from navigation.
+
+**Consequences:** Clearer UX — memory browser and its config are co-located. Settings stays focused on project-level general/credentials/permissions concerns. The `/settings/memory` route still exists as a dead page; it can be deleted in cleanup.
+
+---
+
+## ADR-015 — Memory is app-layer, not a plugin
+
+**Context:** Memory could have been implemented as a plugin (e.g. `jiku.memory`) following the existing plugin system. However, memory requires deep integration with the runner lifecycle (before-run load, after-run extraction, system prompt injection) and config inheritance (project → agent), which the plugin system's `setup()` + `contributes()` pattern doesn't cleanly support.
+
+**Decision:** Memory is a first-class feature of `@jiku/core` and `@jiku-studio/server`. Built-in memory tools are injected as `built_in_tools` on `AgentDefinition` (bypassing plugin system), and the runner has explicit memory lifecycle steps.
+
+**Consequences:** Memory cannot be disabled via plugin toggle. The tradeoff is intentional — memory is a fundamental capability, not an optional extension. Future extensibility (custom memory backends) should be done via the `JikuStorageAdapter` interface, not via plugins.
+
+---
+
+## ADR-014 — Per-agent memory config: inherit/on/off override model
+
+**Context:** Memory config has a 2-level hierarchy: project-level defaults and per-agent overrides. The agent level only needs to override specific fields (e.g. disable extraction for a specific agent), not redeclare the full config.
+
+**Decision:** `AgentMemoryConfig` is a deeply partial version of `ResolvedMemoryConfig`. Agent config is stored as nullable jsonb on the `agents` table. `resolveMemoryConfig(projectConfig, agentConfig)` merges them — project defaults win where agent config is null/undefined. The web UI uses an `InheritToggle` (inherit/on/off) per field. "Inherit" = null in agent config (falls back to project). The `GET /api/agents/:aid/memory-config/resolved` endpoint exposes the final merged config.
+
+**Consequences:** Clear semantics: inherit means project default, on/off means explicit override. The resolved config endpoint lets the UI show the effective value and its source (project vs agent).
+
+---
+
 ## ADR-013 — EventSource auth via ?token= query param (not Authorization header)
 
 **Context:** The SSE observer endpoint (`GET /conversations/:id/stream`) needs the auth token. `EventSource` is a browser native API and does not support custom request headers — there is no way to set `Authorization: Bearer <token>` on an `EventSource` connection.

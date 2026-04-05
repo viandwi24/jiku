@@ -47,6 +47,7 @@ function SegmentRow({ seg }: { seg: ContextSegment }) {
     mode: 'bg-purple-500/10 text-purple-600 dark:text-purple-400',
     user_context: 'bg-green-500/10 text-green-600 dark:text-green-400',
     plugin: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
+    memory: 'bg-teal-500/10 text-teal-600 dark:text-teal-400',
     tool_hint: 'bg-slate-500/10 text-slate-600 dark:text-slate-400',
   }
 

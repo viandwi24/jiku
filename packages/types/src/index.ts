@@ -232,6 +232,12 @@ export interface AgentDefinition {
   model_id?: string
   /** Context compaction threshold percentage (0–100). 0 = disabled. Default 80. */
   compaction_threshold?: number
+  /**
+   * Built-in tools injected directly into this agent (not via plugins).
+   * Used for memory tools and other per-agent built-ins.
+   * These bypass the plugin tool resolution pipeline.
+   */
+  built_in_tools?: ToolDefinition[]
 }
 
 // ============================================================
@@ -454,7 +460,7 @@ export interface ResolvedScope {
 // ============================================================
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'tool_hint'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint'
   label: string
   content: string
   token_estimate: number
@@ -496,6 +502,89 @@ export interface PreviewRunResult {
 }
 
 // ============================================================
+// MEMORY
+// ============================================================
+
+export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global'
+export type MemoryTier = 'core' | 'extended'
+export type MemoryImportance = 'low' | 'medium' | 'high'
+export type MemoryVisibility = 'private' | 'agent_shared' | 'project_shared'
+
+export interface AgentMemory {
+  id: string
+  runtime_id: string
+  agent_id: string
+  caller_id: string | null
+  scope: MemoryScope
+  tier: MemoryTier
+  section?: string
+  content: string
+  importance: MemoryImportance
+  visibility: MemoryVisibility
+  source: 'agent' | 'extraction'
+  access_count: number
+  last_accessed: Date | null
+  expires_at: Date | null
+  created_at: Date
+  updated_at: Date
+}
+
+export interface MemoryContext {
+  runtime_global: AgentMemory[]
+  agent_global: AgentMemory[]
+  agent_caller: AgentMemory[]
+  extended: AgentMemory[]
+  total_tokens: number
+}
+
+export interface ResolvedMemoryConfig {
+  policy: {
+    read: {
+      runtime_global: boolean
+      cross_user: boolean
+    }
+    write: {
+      agent_global: boolean
+      runtime_global: boolean
+      cross_user: boolean
+    }
+  }
+  relevance: {
+    min_score: number
+    max_extended: number
+    weights: {
+      keyword: number
+      recency: number
+      access: number
+    }
+    recency_half_life_days: number
+  }
+  core: {
+    max_chars: number
+    token_budget: number
+  }
+  extraction: {
+    enabled: boolean
+    model: string
+    target_scope: 'agent_caller' | 'agent_global' | 'both'
+  }
+}
+
+export type ProjectMemoryConfig = ResolvedMemoryConfig
+
+export type AgentMemoryConfig = {
+  policy?: {
+    read?: Partial<ResolvedMemoryConfig['policy']['read']>
+    write?: Partial<ResolvedMemoryConfig['policy']['write']>
+  }
+  relevance?: Partial<Omit<ResolvedMemoryConfig['relevance'], 'weights'>> & {
+    weights?: Partial<ResolvedMemoryConfig['relevance']['weights']>
+  }
+  core?: Partial<ResolvedMemoryConfig['core']>
+  extraction?: Partial<ResolvedMemoryConfig['extraction']>
+}
+
+// ============================================================
 // ADAPTERS
 // ============================================================
 
@@ -515,6 +604,27 @@ export interface JikuStorageAdapter {
   pluginSet(scope: string, key: string, value: unknown): Promise<void>
   pluginDelete(scope: string, key: string): Promise<void>
   pluginKeys(scope: string, prefix?: string): Promise<string[]>
+
+  // Memory methods (optional — implementations that don't support memory can omit these)
+  getMemories?(params: {
+    runtime_id: string
+    agent_id?: string
+    caller_id?: string
+    scope?: MemoryScope | MemoryScope[]
+    tier?: MemoryTier
+    visibility?: MemoryVisibility[]
+  }): Promise<AgentMemory[]>
+
+  saveMemory?(memory: Omit<AgentMemory,
+    'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'
+  >): Promise<AgentMemory>
+
+  updateMemory?(id: string, data: Partial<Pick<AgentMemory,
+    'content' | 'importance' | 'visibility' | 'expires_at'
+  >>): Promise<void>
+
+  deleteMemory?(id: string): Promise<void>
+  touchMemories?(ids: string[]): Promise<void>
 }
 
 export interface PluginStorageAPI {

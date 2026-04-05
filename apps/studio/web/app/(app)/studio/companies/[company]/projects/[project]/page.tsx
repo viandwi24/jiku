@@ -27,13 +27,20 @@ export default function ProjectDashboardPage({ params }: PageProps) {
 
   const project = projectsData?.projects.find(p => p.slug === projectSlug)
 
-  const { data: agentsData, isLoading } = useQuery({
+  const { data: agentsData, isLoading: agentsLoading } = useQuery({
     queryKey: ['agents', project?.id],
     queryFn: () => api.agents.list(project!.id),
     enabled: !!project?.id,
   })
 
+  const { data: convsData, isLoading: convsLoading } = useQuery({
+    queryKey: ['conversations', project?.id],
+    queryFn: () => api.conversations.listProject(project!.id),
+    enabled: !!project?.id,
+  })
+
   const agentCount = agentsData?.agents.length ?? 0
+  const chatCount = convsData?.conversations.length ?? 0
 
   return (
     <div className="p-6 space-y-8">
@@ -45,8 +52,8 @@ export default function ProjectDashboardPage({ params }: PageProps) {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Agents', value: isLoading ? '—' : agentCount, icon: Bot, color: 'text-emerald-500' },
-          { label: 'Active Chats', value: '—', icon: MessageSquare, color: 'text-blue-500' },
+          { label: 'Agents', value: agentsLoading ? '—' : agentCount, icon: Bot, color: 'text-emerald-500' },
+          { label: 'Chats', value: convsLoading ? '—' : chatCount, icon: MessageSquare, color: 'text-blue-500' },
           { label: 'Tools', value: '—', icon: Wrench, color: 'text-violet-500' },
           { label: 'Activity', value: '—', icon: Activity, color: 'text-orange-500' },
         ].map(stat => (

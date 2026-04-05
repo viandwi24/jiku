@@ -54,6 +54,8 @@
         "@jiku-studio/db": "workspace:*",
         "@jiku/core": "workspace:*",
         "@jiku/kit": "workspace:*",
+        "@jiku/plugin-cron": "workspace:*",
+        "@jiku/plugin-skills": "workspace:*",
         "@jiku/types": "workspace:*",
         "@openrouter/ai-sdk-provider": "^2.3.3",
         "ai": "^6.0.146",
@@ -62,6 +64,7 @@
         "express": "^5.2.1",
         "hono": "^4.7.11",
         "jose": "^5.10.0",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/bcryptjs": "^3.0.0",

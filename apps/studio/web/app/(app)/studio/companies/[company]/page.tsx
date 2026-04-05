@@ -1,7 +1,7 @@
 'use client'
 
 import { use } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueries } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@jiku/ui'
 import { Activity, Bot, FolderKanban, MessageSquare } from 'lucide-react'
@@ -19,13 +19,25 @@ export default function CompanyDashboardPage({ params }: PageProps) {
     select: (d) => d.companies.find(c => c.slug === companySlug) ?? null,
   })
 
-  const { data: projectsData, isLoading } = useQuery({
+  const { data: projectsData, isLoading: projectsLoading } = useQuery({
     queryKey: ['projects', companyData?.id],
     queryFn: () => api.projects.list(companyData!.id),
     enabled: !!companyData?.id,
   })
 
-  const projectCount = projectsData?.projects.length ?? 0
+  const projects = projectsData?.projects ?? []
+  const projectCount = projects.length
+
+  const agentQueries = useQueries({
+    queries: projects.map(p => ({
+      queryKey: ['agents', p.id],
+      queryFn: () => api.agents.list(p.id),
+      enabled: !projectsLoading,
+    })),
+  })
+
+  const agentCount = agentQueries.reduce((sum, q) => sum + (q.data?.agents.length ?? 0), 0)
+  const agentsLoading = agentQueries.some(q => q.isLoading)
 
   return (
     <div className="p-6 space-y-8">
@@ -36,8 +48,8 @@ export default function CompanyDashboardPage({ params }: PageProps) {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Projects', value: isLoading ? '—' : projectCount, icon: FolderKanban, color: 'text-violet-500' },
-          { label: 'Agents', value: '—', icon: Bot, color: 'text-emerald-500' },
+          { label: 'Projects', value: projectsLoading ? '—' : projectCount, icon: FolderKanban, color: 'text-violet-500' },
+          { label: 'Agents', value: agentsLoading ? '—' : agentCount, icon: Bot, color: 'text-emerald-500' },
           { label: 'Active Chats', value: '—', icon: MessageSquare, color: 'text-blue-500' },
           { label: 'Activity', value: '—', icon: Activity, color: 'text-orange-500' },
         ].map(stat => (

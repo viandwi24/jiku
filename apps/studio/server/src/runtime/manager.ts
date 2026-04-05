@@ -1,9 +1,10 @@
-import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins } from '@jiku-studio/db'
-import { JikuRuntime, PluginLoader, createProviderDef } from '@jiku/core'
-import type { JikuRunParams, JikuRunResult } from '@jiku/types'
+import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById } from '@jiku-studio/db'
+import { JikuRuntime, PluginLoader, createProviderDef, DEFAULT_PROJECT_MEMORY_CONFIG, resolveMemoryConfig } from '@jiku/core'
+import type { JikuRunParams, JikuRunResult, AgentMemoryConfig } from '@jiku/types'
 import { defineAgent } from '@jiku/kit'
 import { StudioStorageAdapter } from './storage.ts'
 import { buildProvider, resolveAgentModel } from '../credentials/service.ts'
+import { buildMemoryTools } from '../memory/tools.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -38,9 +39,16 @@ export class JikuRuntimeManager {
   }
 
   async wakeUp(projectId: string): Promise<void> {
-    const agentRows = await getAgentsByProjectId(projectId)
-    const rules = await loadProjectPolicyRules(projectId)
+    const [agentRows, rules, projectRow] = await Promise.all([
+      getAgentsByProjectId(projectId),
+      loadProjectPolicyRules(projectId),
+      getProjectById(projectId),
+    ])
     const storage = new StudioStorageAdapter(projectId)
+
+    // Resolve project-level memory config (fallback to platform defaults)
+    const projectMemoryConfig = (projectRow?.memory_config as import('@jiku/types').ProjectMemoryConfig | null)
+      ?? DEFAULT_PROJECT_MEMORY_CONFIG
 
     // Use the shared plugin loader if available, otherwise create an empty one
     const pluginLoader = this._pluginLoader ?? new PluginLoader()
@@ -77,19 +85,33 @@ export class JikuRuntimeManager {
       rules: Array.from(rules.values()).flat(),
       providers: { [DYNAMIC_PROVIDER_ID]: dynamicProviderDef },
       default_provider: DYNAMIC_PROVIDER_ID,
+      runtime_id: projectId,
     })
 
     await runtime.boot()
 
     for (const a of agentRows) {
-      runtime.addAgent(defineAgent({
-        meta: { id: a.id, name: a.name },
-        base_prompt: a.base_prompt,
-        allowed_modes: (a.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
-        provider_id: DYNAMIC_PROVIDER_ID,
-        model_id: DYNAMIC_MODEL_ID,
-        compaction_threshold: a.compaction_threshold ?? 80,
-      }))
+      // Resolve per-agent memory config (merge project defaults + agent override)
+      const agentMemoryConfig = resolveMemoryConfig(
+        projectMemoryConfig,
+        (a.memory_config as AgentMemoryConfig | null) ?? null,
+      )
+
+      // Build memory tools scoped to this agent's resolved config
+      const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
+
+      runtime.addAgent(
+        defineAgent({
+          meta: { id: a.id, name: a.name },
+          base_prompt: a.base_prompt,
+          allowed_modes: (a.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
+          provider_id: DYNAMIC_PROVIDER_ID,
+          model_id: DYNAMIC_MODEL_ID,
+          compaction_threshold: a.compaction_threshold ?? 80,
+          built_in_tools: memoryTools,
+        }),
+        agentMemoryConfig,
+      )
     }
 
     this.runtimes.set(projectId, runtime)
@@ -111,19 +133,35 @@ export class JikuRuntimeManager {
 
   async syncAgent(projectId: string, agentId: string): Promise<void> {
     const runtime = await this.getRuntime(projectId)
-    const agent = await getAgentById(agentId)
+    const [agent, projectRow] = await Promise.all([
+      getAgentById(agentId),
+      getProjectById(projectId),
+    ])
     if (!agent) {
       runtime.removeAgent(agentId)
       return
     }
-    runtime.addAgent(defineAgent({
-      meta: { id: agent.id, name: agent.name },
-      base_prompt: agent.base_prompt,
-      allowed_modes: (agent.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
-      provider_id: DYNAMIC_PROVIDER_ID,
-      model_id: DYNAMIC_MODEL_ID,
-      compaction_threshold: agent.compaction_threshold ?? 80,
-    }))
+    const storage = this.storages.get(projectId) ?? new StudioStorageAdapter(projectId)
+    const projectMemoryConfig = (projectRow?.memory_config as import('@jiku/types').ProjectMemoryConfig | null)
+      ?? DEFAULT_PROJECT_MEMORY_CONFIG
+    const agentMemoryConfig = resolveMemoryConfig(
+      projectMemoryConfig,
+      (agent.memory_config as AgentMemoryConfig | null) ?? null,
+    )
+    const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
+
+    runtime.addAgent(
+      defineAgent({
+        meta: { id: agent.id, name: agent.name },
+        base_prompt: agent.base_prompt,
+        allowed_modes: (agent.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
+        provider_id: DYNAMIC_PROVIDER_ID,
+        model_id: DYNAMIC_MODEL_ID,
+        compaction_threshold: agent.compaction_threshold ?? 80,
+        built_in_tools: memoryTools,
+      }),
+      agentMemoryConfig,
+    )
   }
 
   removeAgent(projectId: string, agentId: string): void {

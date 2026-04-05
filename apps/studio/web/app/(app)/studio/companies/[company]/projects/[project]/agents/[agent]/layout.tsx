@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
   Bot,
+  Brain,
   Cpu,
   FileText,
   MessageSquare,
@@ -31,6 +32,7 @@ export default function AgentLayout({ children, params }: LayoutProps) {
     { value: 'llm', label: 'llm', icon: Cpu, href: `${base}/llm` },
     { value: 'prompt', label: 'prompt', icon: FileText, href: `${base}/prompt` },
     { value: 'tools', label: 'tools', icon: Wrench, href: `${base}/tools` },
+    { value: 'memory', label: 'memory', icon: Brain, href: `${base}/memory` },
     { value: 'permissions', label: 'permissions', icon: Shield, href: `${base}/permissions` },
   ]
 

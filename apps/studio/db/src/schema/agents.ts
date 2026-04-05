@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, unique, integer } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, unique, integer, jsonb } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 
 export const agents = pgTable('agents', {
@@ -11,6 +11,8 @@ export const agents = pgTable('agents', {
   allowed_modes:        text('allowed_modes').array().notNull().default(['chat']),
   /** Context compaction threshold (0–100%). 0 = disabled. Default 80. */
   compaction_threshold: integer('compaction_threshold').default(80).notNull(),
+  /** Partial memory config override (null = inherit all from project). */
+  memory_config:        jsonb('memory_config').default(null),
   created_at:           timestamp('created_at').defaultNow(),
 }, t => [unique().on(t.project_id, t.slug)])
 

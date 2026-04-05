@@ -7,6 +7,7 @@ import type {
   SubjectMatcher,
   JikuStorageAdapter,
   PreviewRunResult,
+  ResolvedMemoryConfig,
 } from '@jiku/types'
 import { AgentRunner } from './runner.ts'
 import { ModelProviders } from './providers.ts'
@@ -20,10 +21,12 @@ export class JikuRuntime {
   private plugins: PluginLoader
   private providers: ModelProviders
   private subjectMatcher: SubjectMatcher
+  private runtimeId?: string
 
   constructor(
     options: Omit<JikuRuntimeOptions, 'plugins'> & {
       plugins: PluginLoader
+      runtime_id?: string
     }
   ) {
     this.rules = options.rules ?? []
@@ -34,10 +37,11 @@ export class JikuRuntime {
       options.default_provider,
     )
     this.subjectMatcher = options.subject_matcher ?? defaultSubjectMatcher
+    this.runtimeId = options.runtime_id
   }
 
-  addAgent(def: AgentDefinition): void {
-    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers)
+  addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig): void {
+    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId)
     this.agents.set(def.meta.id, runner)
   }
 

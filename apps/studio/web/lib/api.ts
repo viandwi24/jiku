@@ -172,6 +172,40 @@ export const api = {
       }),
   },
 
+  memory: {
+    list: (projectId: string, params?: { agent_id?: string; user_id?: string; scope?: string; tier?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.agent_id) qs.set('agent_id', params.agent_id)
+      if (params?.user_id) qs.set('user_id', params.user_id)
+      if (params?.scope) qs.set('scope', params.scope)
+      if (params?.tier) qs.set('tier', params.tier)
+      if (params?.limit != null) qs.set('limit', String(params.limit))
+      if (params?.offset != null) qs.set('offset', String(params.offset))
+      const q = qs.toString()
+      return request<{ memories: MemoryItem[] }>(`/api/projects/${projectId}/memories${q ? `?${q}` : ''}`)
+    },
+    delete: (id: string) => request<{ success: boolean }>(`/api/memories/${id}`, { method: 'DELETE' }),
+  },
+
+  memoryConfig: {
+    getProject: (projectId: string) =>
+      request<{ config: ResolvedMemoryConfig }>(`/api/projects/${projectId}/memory-config`),
+    updateProject: (projectId: string, config: Partial<ResolvedMemoryConfig>) =>
+      request<{ config: ResolvedMemoryConfig }>(`/api/projects/${projectId}/memory-config`, {
+        method: 'PATCH',
+        body: JSON.stringify(config),
+      }),
+    getAgent: (agentId: string) =>
+      request<{ config: AgentMemoryConfig | null }>(`/api/agents/${agentId}/memory-config`),
+    updateAgent: (agentId: string, config: AgentMemoryConfig | null) =>
+      request<{ config: AgentMemoryConfig | null }>(`/api/agents/${agentId}/memory-config`, {
+        method: 'PATCH',
+        body: JSON.stringify(config),
+      }),
+    getAgentResolved: (agentId: string) =>
+      request<{ resolved: ResolvedMemoryConfig; project_config: ResolvedMemoryConfig; agent_config: AgentMemoryConfig | null }>(`/api/agents/${agentId}/memory-config/resolved`),
+  },
+
   credentials: {
     // Adapters registry
     adapters: (group_id?: string) =>
@@ -287,7 +321,7 @@ export interface Agent {
 }
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'tool_hint'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint'
   label: string
   content: string
   token_estimate: number
@@ -440,4 +474,50 @@ export interface CreateCredentialBody {
   group_id: string
   fields?: Record<string, string>
   metadata?: Record<string, string>
+}
+
+export interface MemoryItem {
+  id: string
+  project_id: string
+  agent_id: string | null
+  caller_id: string | null
+  scope: 'agent_caller' | 'agent_global' | 'runtime_global'
+  tier: 'core' | 'extended'
+  section: string | null
+  content: string
+  importance: 'low' | 'medium' | 'high'
+  visibility: 'private' | 'agent_shared' | 'project_shared'
+  source: 'agent' | 'extraction'
+  access_count: number
+  last_accessed: string | null
+  expires_at: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ResolvedMemoryConfig {
+  policy: {
+    read: { runtime_global: boolean; cross_user: boolean }
+    write: { agent_global: boolean; runtime_global: boolean; cross_user: boolean }
+  }
+  relevance: {
+    min_score: number
+    max_extended: number
+    weights: { keyword: number; recency: number; access: number }
+    recency_half_life_days: number
+  }
+  core: { max_chars: number; token_budget: number }
+  extraction: { enabled: boolean; model: string; target_scope: 'agent_caller' | 'agent_global' | 'both' }
+}
+
+export type AgentMemoryConfig = {
+  policy?: {
+    read?: Partial<ResolvedMemoryConfig['policy']['read']>
+    write?: Partial<ResolvedMemoryConfig['policy']['write']>
+  }
+  relevance?: Partial<ResolvedMemoryConfig['relevance']> & {
+    weights?: Partial<ResolvedMemoryConfig['relevance']['weights']>
+  }
+  core?: Partial<ResolvedMemoryConfig['core']>
+  extraction?: Partial<ResolvedMemoryConfig['extraction']>
 }

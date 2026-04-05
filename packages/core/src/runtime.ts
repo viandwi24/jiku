@@ -41,8 +41,8 @@ export class JikuRuntime {
     this.runtimeId = options.runtime_id
   }
 
-  addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig, personaSeed?: PersonaSeed | null): void {
-    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed)
+  addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig, personaSeed?: PersonaSeed | null, personaPrompt?: string | null): void {
+    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed, personaPrompt)
     this.agents.set(def.meta.id, runner)
   }
 

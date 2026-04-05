@@ -166,6 +166,10 @@ export async function updateAgentPersonaSeed(agentId: string, seed: Record<strin
   await db.update(agents).set({ persona_seed: seed }).where(eq(agents.id, agentId))
 }
 
+export async function updateAgentPersonaPrompt(agentId: string, prompt: string | null): Promise<void> {
+  await db.update(agents).set({ persona_prompt: prompt }).where(eq(agents.id, agentId))
+}
+
 export async function markAgentPersonaSeeded(agentId: string): Promise<void> {
   await db.update(agents).set({ persona_seeded_at: new Date() }).where(eq(agents.id, agentId))
 }

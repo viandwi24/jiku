@@ -86,6 +86,7 @@ export class AgentRunner {
     private memoryConfig?: ResolvedMemoryConfig,
     private runtimeId?: string,
     private personaSeed?: PersonaSeed | null,
+    private personaPrompt?: string | null,
   ) {}
 
   /**
@@ -192,8 +193,11 @@ export class AgentRunner {
     let accessedMemoryIds: string[] = []
     let loadedMemories: AgentMemory[] = []
 
-    if (this.runtimeId && this.storage.getMemories) {
-      // Load agent_self memories for persona (always, independent of memoryConfig)
+    if (this.personaPrompt) {
+      // Plain-text persona prompt — injected directly, no memory involved
+      personaSection = this.personaPrompt
+    } else if (this.runtimeId && this.storage.getMemories) {
+      // Legacy: build persona from agent_self memories + seed
       const selfMemories = await this.storage.getMemories({
         runtime_id: this.runtimeId,
         agent_id: this.agent.meta.id,
@@ -483,7 +487,9 @@ export class AgentRunner {
 
     // Load persona for preview
     let personaSection: string | undefined
-    if (this.runtimeId && this.storage.getMemories) {
+    if (this.personaPrompt) {
+      personaSection = this.personaPrompt
+    } else if (this.runtimeId && this.storage.getMemories) {
       const selfMemories = await this.storage.getMemories({
         runtime_id: this.runtimeId,
         agent_id: this.agent.meta.id,

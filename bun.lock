@@ -55,6 +55,7 @@
         "@jiku-studio/db": "workspace:*",
         "@jiku/core": "workspace:*",
         "@jiku/kit": "workspace:*",
+        "@jiku/plugin-connector": "workspace:*",
         "@jiku/plugin-telegram": "workspace:*",
         "@jiku/types": "workspace:*",
         "@openrouter/ai-sdk-provider": "^2.3.3",
@@ -223,14 +224,11 @@
         "tailwindcss": "^4",
       },
     },
-    "plugins/jiku.connector.telegram": {
-      "name": "@jiku/plugin-telegram",
+    "plugins/jiku.connector": {
+      "name": "@jiku/plugin-connector",
       "dependencies": {
         "@jiku/kit": "workspace:*",
         "@jiku/types": "workspace:*",
-        "grammy": "^1.36.1",
-        "telegramify-markdown": "^1.3.2",
-        "zod": "3.25.76",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -263,6 +261,20 @@
       "dependencies": {
         "@jiku/kit": "workspace:*",
         "@jiku/types": "workspace:*",
+        "zod": "3.25.76",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+    },
+    "plugins/jiku.telegram": {
+      "name": "@jiku/plugin-telegram",
+      "dependencies": {
+        "@jiku/kit": "workspace:*",
+        "@jiku/plugin-connector": "workspace:*",
+        "@jiku/types": "workspace:*",
+        "grammy": "^1.36.1",
+        "telegramify-markdown": "^1.3.2",
         "zod": "3.25.76",
       },
       "devDependencies": {
@@ -547,13 +559,15 @@
 
     "@jiku/playground": ["@jiku/playground@workspace:apps/playground"],
 
+    "@jiku/plugin-connector": ["@jiku/plugin-connector@workspace:plugins/jiku.connector"],
+
     "@jiku/plugin-cron": ["@jiku/plugin-cron@workspace:plugins/jiku.cron"],
 
     "@jiku/plugin-skills": ["@jiku/plugin-skills@workspace:plugins/jiku.skills"],
 
     "@jiku/plugin-social": ["@jiku/plugin-social@workspace:plugins/jiku.social"],
 
-    "@jiku/plugin-telegram": ["@jiku/plugin-telegram@workspace:plugins/jiku.connector.telegram"],
+    "@jiku/plugin-telegram": ["@jiku/plugin-telegram@workspace:plugins/jiku.telegram"],
 
     "@jiku/types": ["@jiku/types@workspace:packages/types"],
 

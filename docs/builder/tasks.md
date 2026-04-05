@@ -1,6 +1,6 @@
 ## Backlog
 
-- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies persona_seed + persona_seeded_at columns + 7 connector tables (connectors, bindings, identities, events, messages, message_events, user_identities)
+- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies `persona_prompt` column on agents + all pending schema changes
 - [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
@@ -17,6 +17,9 @@
 - [x] `memory_user_write` tool — added to tools.ts, policy-gated by write.cross_user — completed 2026-04-05
 - [x] Memory expiration cleanup job — deleteExpiredMemories() + daily setInterval in server bootstrap — completed 2026-04-05
 - [x] Memory Preview Sheet — MemoryPreviewSheet component, wired via onMemoryClick in ContextBar footer — completed 2026-04-05
+- [x] Run Detail page uses ConversationViewer mode=readonly — same context/tools/memory preview as chat — completed 2026-04-06
+- [x] Memory browser table layout + agent column + filter by agent — completed 2026-04-06
+- [x] Persona refactor — persona_prompt field, direct system prompt injection, simple textarea UI — completed 2026-04-06
 - [x] Dashboard metrics live counts — Studio (Projects+Agents), Company (Agents), Project (Chats) via useQueries — completed 2026-04-05
 - [x] Bug fixes from automated test — MemoryItem type fields (source, project_id), staleTime:0, touchMemories warning — completed 2026-04-05
 - [x] Chat UX polish: conversation list grouping, context bar, SSE observer, sidebar footer — completed 2026-04-05

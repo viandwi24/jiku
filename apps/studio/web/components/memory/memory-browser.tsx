@@ -52,7 +52,15 @@ const IMPORTANCE_COLORS: Record<string, string> = {
   high: 'text-red-600',
 }
 
-function MemoryRow({ memory, onDelete }: { memory: MemoryItem; onDelete: (id: string) => void }) {
+function MemoryRow({
+  memory,
+  agentName,
+  onDelete,
+}: {
+  memory: MemoryItem
+  agentName: string | null
+  onDelete: (id: string) => void
+}) {
   return (
     <tr className="group border-b last:border-0 hover:bg-muted/30 transition-colors">
       {/* Scope */}
@@ -63,6 +71,19 @@ function MemoryRow({ memory, onDelete }: { memory: MemoryItem; onDelete: (id: st
         >
           {SCOPE_LABELS[memory.scope] ?? memory.scope}
         </Badge>
+      </td>
+
+      {/* Agent */}
+      <td className="px-2 py-2 w-32">
+        {agentName ? (
+          <span className="text-xs text-foreground truncate block max-w-[120px]">{agentName}</span>
+        ) : memory.agent_id ? (
+          <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-[120px]">
+            {memory.agent_id.slice(0, 8)}
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
       </td>
 
       {/* Tier */}
@@ -160,12 +181,20 @@ export function MemoryBrowser({ projectId }: MemoryBrowserProps) {
   const qc = useQueryClient()
   const [scope, setScope] = useState<string>('all')
   const [tier, setTier] = useState<string>('all')
+  const [agentFilter, setAgentFilter] = useState<string>('all')
+
+  const { data: agentsData } = useQuery({
+    queryKey: ['agents-for-memory', projectId],
+    queryFn: () => api.agents.list(projectId),
+  })
+  const agents = agentsData?.agents ?? []
 
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['memories', projectId, scope, tier],
+    queryKey: ['memories', projectId, scope, tier, agentFilter],
     queryFn: () => api.memory.list(projectId, {
       scope: scope !== 'all' ? scope : undefined,
       tier: tier !== 'all' ? tier : undefined,
+      agent_id: agentFilter !== 'all' ? agentFilter : undefined,
       limit: 100,
     }),
     staleTime: 0,
@@ -180,10 +209,24 @@ export function MemoryBrowser({ projectId }: MemoryBrowserProps) {
 
   const memories = data?.memories ?? []
 
+  const agentNameMap = new Map(agents.map(a => [a.id, a.name]))
+
   return (
     <div className="flex flex-col h-full">
       {/* Filters */}
-      <div className="flex items-center gap-3 px-6 py-3 border-b">
+      <div className="flex items-center gap-3 px-6 py-3 border-b flex-wrap">
+        <Select value={agentFilter} onValueChange={setAgentFilter}>
+          <SelectTrigger className="w-40 h-8 text-sm">
+            <SelectValue placeholder="All agents" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All agents</SelectItem>
+            {agents.map(a => (
+              <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         <Select value={scope} onValueChange={setScope}>
           <SelectTrigger className="w-40 h-8 text-sm">
             <SelectValue placeholder="All scopes" />
@@ -234,6 +277,7 @@ export function MemoryBrowser({ projectId }: MemoryBrowserProps) {
             <thead>
               <tr className="border-b bg-muted/20">
                 <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground w-20">Scope</th>
+                <th className="px-2 py-2 text-left text-xs font-medium text-muted-foreground w-32">Agent</th>
                 <th className="px-2 py-2 text-left text-xs font-medium text-muted-foreground w-20">Tier</th>
                 <th className="px-2 py-2 text-left text-xs font-medium text-muted-foreground w-16">Priority</th>
                 <th className="px-2 py-2 text-left text-xs font-medium text-muted-foreground w-24">Section</th>
@@ -248,6 +292,7 @@ export function MemoryBrowser({ projectId }: MemoryBrowserProps) {
                 <MemoryRow
                   key={m.id}
                   memory={m}
+                  agentName={m.agent_id ? (agentNameMap.get(m.agent_id) ?? null) : null}
                   onDelete={(id) => deleteMutation.mutate(id)}
                 />
               ))}

@@ -17,6 +17,8 @@ export const agents = pgTable('agents', {
   persona_seed:         jsonb('persona_seed').default(null),
   /** Timestamp when persona seed was applied. null = not yet seeded. */
   persona_seeded_at:    timestamp('persona_seeded_at'),
+  /** Plain-text persona prompt — injected directly into system prompt. Replaces memory-based persona when set. */
+  persona_prompt:       text('persona_prompt'),
   // Plan 11: heartbeat fields
   heartbeat_enabled:    boolean('heartbeat_enabled').notNull().default(false),
   heartbeat_cron:       varchar('heartbeat_cron', { length: 100 }),

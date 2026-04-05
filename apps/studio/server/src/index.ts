@@ -20,6 +20,7 @@ import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
 import { connectorRegistry } from './connectors/registry.ts'
 import { PluginLoader } from '@jiku/core'
+import ConnectorPlugin from '@jiku/plugin-connector'
 import TelegramPlugin from '@jiku/plugin-telegram'
 import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
@@ -76,6 +77,7 @@ async function bootstrap() {
   })
 
   sharedLoader.register(JikuStudioPlugin)
+  sharedLoader.register(ConnectorPlugin)
   sharedLoader.register(TelegramPlugin)
   await seedPluginRegistry(sharedLoader)
   runtimeManager.setPluginLoader(sharedLoader)

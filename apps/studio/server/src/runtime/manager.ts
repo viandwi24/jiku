@@ -126,6 +126,7 @@ export class JikuRuntimeManager {
         }),
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
+        (a as Record<string, unknown>).persona_prompt as string | null ?? null,
       )
 
       // Schedule heartbeat if enabled
@@ -206,6 +207,7 @@ export class JikuRuntimeManager {
       }),
       agentMemoryConfig,
       (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
+      (agent as Record<string, unknown>).persona_prompt as string | null ?? null,
     )
 
     // Reschedule heartbeat if config changed

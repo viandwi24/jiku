@@ -218,6 +218,13 @@ export const api = {
       request<{ success: boolean }>(`/api/agents/${agentId}/persona/reset`, { method: 'POST' }),
     getMemories: (agentId: string) =>
       request<{ memories: MemoryItem[] }>(`/api/agents/${agentId}/persona/memories`),
+    getPrompt: (agentId: string) =>
+      request<{ prompt: string | null }>(`/api/agents/${agentId}/persona/prompt`),
+    updatePrompt: (agentId: string, prompt: string | null) =>
+      request<{ prompt: string | null }>(`/api/agents/${agentId}/persona/prompt`, {
+        method: 'PATCH',
+        body: JSON.stringify({ prompt }),
+      }),
   },
 
   credentials: {

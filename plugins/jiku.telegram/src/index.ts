@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
 import type { ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
+import ConnectorPlugin from '@jiku/plugin-connector'
 
 const TELEGRAM_MAX_LENGTH = 4000
 
@@ -27,11 +28,11 @@ class TelegramAdapter extends ConnectorAdapter {
   readonly id = 'jiku.telegram'
   readonly displayName = 'Telegram'
   readonly credentialAdapterId = 'telegram'
-  readonly credentialDisplayName = 'Telegram Bot'
+  override readonly credentialDisplayName = 'Telegram Bot'
   readonly refKeys = ['message_id', 'chat_id']
   readonly supportedEvents = ['message', 'reaction', 'unreaction', 'edit', 'delete'] as const
 
-  readonly credentialSchema = z.object({
+  override readonly credentialSchema = z.object({
     bot_token: z.string().min(1).describe('secret|Bot Token obtained from @BotFather'),
   })
 
@@ -230,7 +231,8 @@ export default definePlugin({
     icon: 'telegram',
     category: 'channel',
   },
+  depends: [ConnectorPlugin],
   setup(ctx) {
-    ctx.hooks.callHook('connector:register', telegramAdapter).catch(() => {})
+    ctx.connector.register(telegramAdapter)
   },
 })

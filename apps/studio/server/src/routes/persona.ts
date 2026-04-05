@@ -3,6 +3,7 @@ import { authMiddleware } from '../middleware/auth.ts'
 import {
   getAgentById,
   updateAgentPersonaSeed,
+  updateAgentPersonaPrompt,
   resetAgentPersona,
   getAgentSelfMemories,
 } from '@jiku-studio/db'
@@ -78,6 +79,39 @@ router.post('/agents/:aid/persona/reset', authMiddleware, async (req, res) => {
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to reset persona' })
+  }
+})
+
+/**
+ * GET /agents/:aid/persona/prompt
+ * Get the plain-text persona prompt.
+ */
+router.get('/agents/:aid/persona/prompt', authMiddleware, async (req, res) => {
+  const agentId = req.params['aid']! as string
+  try {
+    const agent = await getAgentById(agentId)
+    if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+    res.json({ prompt: (agent as Record<string, unknown>).persona_prompt ?? null })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get persona prompt' })
+  }
+})
+
+/**
+ * PATCH /agents/:aid/persona/prompt
+ * Update the plain-text persona prompt.
+ */
+router.patch('/agents/:aid/persona/prompt', authMiddleware, async (req, res) => {
+  const agentId = req.params['aid']! as string
+  const { prompt } = req.body as { prompt: string | null }
+  try {
+    const agent = await getAgentById(agentId)
+    if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+    await updateAgentPersonaPrompt(agentId, prompt ?? null)
+    await runtimeManager.syncAgent(agent.project_id, agentId)
+    res.json({ prompt })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update persona prompt' })
   }
 })
 

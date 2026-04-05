@@ -1,30 +1,31 @@
 ## Phase
-Plan 11 complete — Task Mode, Heartbeat & Run History
+Post Plan 11 — UX polish & Persona refactor
 
 ## Currently Working On
-- Plan 11 implemented. Run `bun run db:push` to apply schema changes before testing.
+- Post-implementation polish on Run History, Run Detail, Memory browser, and Persona system.
 
 ## Relevant Files
-- `apps/studio/db/src/schema/conversations.ts` — extended with type, metadata, run_status, caller_id, parent_conversation_id, started_at, finished_at
-- `apps/studio/db/src/schema/agents.ts` — extended with heartbeat_* fields
-- `apps/studio/db/src/queries/conversation.ts` — new: createTaskConversation, listRunsByProject
-- `apps/studio/server/src/task/runner.ts` — runTaskConversation, spawnTask
-- `apps/studio/server/src/task/tools.ts` — buildRunTaskTool, buildTaskLifecycleTools
-- `apps/studio/server/src/task/heartbeat.ts` — HeartbeatScheduler, heartbeatScheduler singleton
-- `apps/studio/server/src/routes/runs.ts` — GET /projects/:pid/runs, POST /conversations/:id/cancel
-- `apps/studio/server/src/routes/heartbeat.ts` — GET/PATCH /agents/:aid/heartbeat, POST trigger
-- `apps/studio/web/app/.../runs/page.tsx` — Run History page
-- `apps/studio/web/app/.../runs/[conv]/page.tsx` — Run Detail page
-- `apps/studio/web/app/.../agents/[agent]/heartbeat/page.tsx` — Heartbeat settings tab
+- `apps/studio/db/src/schema/agents.ts` — added `persona_prompt text` column (needs `bun run db:push`)
+- `apps/studio/db/src/queries/memory.ts` — added `updateAgentPersonaPrompt()`
+- `apps/studio/server/src/routes/persona.ts` — added `GET/PATCH /agents/:aid/persona/prompt`
+- `packages/core/src/runtime.ts` — `addAgent()` accepts `personaPrompt` 4th arg
+- `packages/core/src/runner.ts` — if `personaPrompt` set, inject directly to system prompt (skip memory-based persona)
+- `apps/studio/server/src/runtime/manager.ts` — passes `persona_prompt` to `addAgent()` in wakeUp + syncAgent
+- `apps/studio/web/app/.../agents/[agent]/persona/page.tsx` — replaced multi-field form with single textarea
+- `apps/studio/web/components/memory/memory-browser.tsx` — table layout, agent column, filter by agent
+- `apps/studio/web/app/.../runs/[conv]/page.tsx` — uses ConversationViewer mode="readonly"
+- `apps/studio/web/app/.../runs/layout.tsx` — DELETED (was causing scroll block on list page)
+- `apps/studio/web/app/.../chats/[conv]/page.tsx` — uses ConversationViewer mode="edit"
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — shared component, mode edit/readonly
 
 ## Important Context / Temporary Decisions
-- Connector system uses in-memory rate limiting (not Redis) — sufficient for single-server.
-- SSE auth uses token as query param (EventSource doesn't support custom headers).
-- HeartbeatScheduler uses setTimeout (not a real cron library) — simplified 5-field cron parsing. Sufficient for hourly/daily schedules. Upgrade to a cron library if sub-minute schedules are needed.
-- run_task tool injected via built_in_tools in wakeUp/syncAgent. The tool's caller context getter is a stub — the real caller is inherited at call time via the tool execute context.
+- HeartbeatScheduler uses setTimeout (not a real cron library) — simplified 5-field cron parsing.
+- run_task tool injected via built_in_tools in wakeUp/syncAgent.
 - Conversations schema: `user_id` is now nullable (heartbeat/task convs have no user).
+- `persona_prompt` takes priority over memory-based persona in runner — if set, `agent_self` memories are NOT loaded for persona section.
+- Runs list page scroll: fixed by NOT having a shared layout.tsx — detail page sets its own `height: calc(100svh - 3rem)`.
+- ConversationViewer is shared between chat (edit) and run detail (readonly) — only difference is PromptInput visibility.
 
 ## Next Up
-- Run `bun run db:push` to apply schema changes (conversations + agents tables)
-- Test: trigger a heartbeat manually, view in Runs page
+- Run `bun run db:push` to apply `persona_prompt` column
 - Plan 12 or backlog items

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-06 — UX polish: Run Detail, Memory table, Persona refactor
+
+- **ConversationViewer** (`apps/studio/web/components/chat/conversation-viewer.tsx`): Extracted shared component from chat page. Accepts `mode: 'edit' | 'readonly'`. In readonly mode: no PromptInput, same ContextBar + MemoryPreviewSheet. Both chat and run detail now use this component.
+- **Run Detail page** (`runs/[conv]/page.tsx`): Replaced simple message list with `ConversationViewer mode="readonly"` — now has context bar, token count, tools preview, memory preview identical to chat page. Compact metadata bar (type/status/duration/goal/error/output) shown above.
+- **Run list scroll fix**: Removed `runs/layout.tsx` that was blocking scroll on the list page. Run detail sets its own `height: calc(100svh - 3rem)` directly.
+- **Memory browser** (`apps/studio/web/components/memory/memory-browser.tsx`): Converted card grid to compact table. Added **Agent** column (name resolved from agents list, fallback to UUID). Added **filter by agent** dropdown. Columns: Scope, Agent, Tier, Priority, Section, Content (truncated + tooltip), Hits, Created, Delete.
+- **Persona refactor**: New `persona_prompt text` column on `agents` table (run `bun run db:push`). `persona_prompt` is injected directly into system prompt, bypassing memory-based persona. `AgentRunner` and `JikuRuntime.addAgent()` accept `personaPrompt` param. Old memory-seeding path still works when `persona_prompt` is null. Persona page replaced with single textarea. New routes: `GET/PATCH /api/agents/:aid/persona/prompt`.
+- Files: `apps/studio/db/src/schema/agents.ts`, `apps/studio/db/src/queries/memory.ts`, `apps/studio/server/src/routes/persona.ts`, `packages/core/src/runner.ts`, `packages/core/src/runtime.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/chat/conversation-viewer.tsx`, `apps/studio/web/components/memory/memory-browser.tsx`, `apps/studio/web/app/.../runs/[conv]/page.tsx`, `apps/studio/web/app/.../chats/[conv]/page.tsx`, `apps/studio/web/app/.../agents/[agent]/persona/page.tsx`
+
 ## 2026-04-05 — Plan 11 Task Mode, Heartbeat & Run History
 
 - **DB schema**: Extended `conversations` table with `type`, `metadata`, `run_status`, `caller_id`, `parent_conversation_id`, `started_at`, `finished_at`, `error_message` (nullable `user_id`). Extended `agents` with `heartbeat_enabled`, `heartbeat_cron`, `heartbeat_prompt`, `heartbeat_last_run_at`, `heartbeat_next_run_at`.

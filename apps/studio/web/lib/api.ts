@@ -276,6 +276,61 @@ export const api = {
     unassignAgent: (agentId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}/credentials`, { method: 'DELETE' }),
   },
+
+  connectors: {
+    plugins: () => request<{ plugins: ConnectorPlugin[] }>('/api/connector-plugins'),
+    list: (projectId: string) => request<{ connectors: ConnectorItem[] }>(`/api/projects/${projectId}/connectors`),
+    create: (projectId: string, body: { plugin_id: string; display_name: string; credential_id?: string | null; config?: Record<string, unknown> }) =>
+      request<{ connector: ConnectorItem }>(`/api/projects/${projectId}/connectors`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    get: (id: string) => request<{ connector: ConnectorItem }>(`/api/connectors/${id}`),
+    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string }>) =>
+      request<{ connector: ConnectorItem }>(`/api/connectors/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (id: string) => request<{ ok: boolean }>(`/api/connectors/${id}`, { method: 'DELETE' }),
+    activate: (id: string) => request<{ ok: boolean; connector: ConnectorItem }>(`/api/connectors/${id}/activate`, { method: 'POST' }),
+    deactivate: (id: string) => request<{ ok: boolean; connector: ConnectorItem }>(`/api/connectors/${id}/deactivate`, { method: 'POST' }),
+
+    bindings: {
+      list: (connectorId: string) => request<{ bindings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/bindings`),
+      create: (connectorId: string, body: Partial<ConnectorBinding> & { agent_id: string }) =>
+        request<{ binding: ConnectorBinding }>(`/api/connectors/${connectorId}/bindings`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      update: (connectorId: string, bindingId: string, body: Partial<ConnectorBinding>) =>
+        request<{ binding: ConnectorBinding }>(`/api/connectors/${connectorId}/bindings/${bindingId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        }),
+      delete: (connectorId: string, bindingId: string) =>
+        request<{ ok: boolean }>(`/api/connectors/${connectorId}/bindings/${bindingId}`, { method: 'DELETE' }),
+    },
+
+    identities: {
+      list: (connectorId: string, bindingId: string) =>
+        request<{ identities: ConnectorIdentity[] }>(`/api/connectors/${connectorId}/bindings/${bindingId}/identities`),
+      update: (connectorId: string, bindingId: string, identityId: string, body: { status?: string; mapped_user_id?: string }) =>
+        request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/bindings/${bindingId}/identities/${identityId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        }),
+    },
+
+    events: {
+      list: (connectorId: string, limit?: number) =>
+        request<{ events: ConnectorEventItem[] }>(`/api/connectors/${connectorId}/events${limit ? `?limit=${limit}` : ''}`),
+    },
+
+    messages: {
+      list: (connectorId: string, limit?: number) =>
+        request<{ messages: ConnectorMessageItem[] }>(`/api/connectors/${connectorId}/messages${limit ? `?limit=${limit}` : ''}`),
+    },
+  },
 }
 
 // Types
@@ -546,4 +601,88 @@ export interface PersonaSeed {
   communication_style?: string
   background?: string
   initial_memories?: string[]
+}
+
+export interface ConnectorPlugin {
+  id: string
+  display_name: string
+  credential_adapter_id: string
+  ref_keys: string[]
+  supported_events: string[]
+}
+
+export interface ConnectorItem {
+  id: string
+  project_id: string
+  plugin_id: string
+  display_name: string
+  credential_id?: string | null
+  config: Record<string, unknown>
+  status: 'active' | 'inactive' | 'error'
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ConnectorBinding {
+  id: string
+  connector_id: string
+  agent_id: string
+  display_name?: string | null
+  source_type: string
+  source_ref_keys?: Record<string, string> | null
+  trigger_source: string
+  trigger_mode: string
+  trigger_keywords?: string[] | null
+  trigger_event_type?: string | null
+  trigger_event_filter?: Record<string, unknown> | null
+  adapter_type: string
+  require_approval: boolean
+  rate_limit_rpm?: number | null
+  context_window: number
+  include_sender_info: boolean
+  enabled: boolean
+  created_at: string
+}
+
+export interface ConnectorIdentity {
+  id: string
+  binding_id: string
+  external_ref_keys: Record<string, string>
+  display_name?: string | null
+  avatar_url?: string | null
+  status: 'pending' | 'approved' | 'blocked'
+  approved_by?: string | null
+  approved_at?: string | null
+  mapped_user_id?: string | null
+  conversation_id?: string | null
+  last_seen_at?: string | null
+  created_at: string
+}
+
+export interface ConnectorEventItem {
+  id: string
+  connector_id: string
+  binding_id?: string | null
+  identity_id?: string | null
+  event_type: string
+  ref_keys: Record<string, string>
+  target_ref_keys?: Record<string, string> | null
+  payload: Record<string, unknown>
+  metadata?: Record<string, unknown> | null
+  status: string
+  drop_reason?: string | null
+  processing_ms?: number | null
+  created_at: string
+}
+
+export interface ConnectorMessageItem {
+  id: string
+  connector_id: string
+  conversation_id?: string | null
+  direction: 'inbound' | 'outbound'
+  ref_keys: Record<string, string>
+  content_snapshot?: string | null
+  status: string
+  created_at: string
 }

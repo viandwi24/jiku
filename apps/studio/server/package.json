@@ -20,6 +20,7 @@
     "@jiku-studio/db": "workspace:*",
     "@jiku/core": "workspace:*",
     "@jiku/kit": "workspace:*",
+    "@jiku/plugin-telegram": "workspace:*",
     "@jiku/types": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.3.3",
     "ai": "^6.0.146",

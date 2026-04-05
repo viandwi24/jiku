@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, notInArray } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { plugins, project_plugins } from '../schema/plugins.ts'
 
@@ -48,6 +48,17 @@ export async function upsertPlugin(data: {
     })
     .returning()
   return row
+}
+
+/**
+ * Delete plugins whose IDs are not in the given list.
+ * project_plugins rows cascade-delete automatically via FK.
+ */
+export async function deleteObsoletePlugins(activeIds: string[]) {
+  if (activeIds.length === 0) {
+    return db.delete(plugins).returning({ id: plugins.id })
+  }
+  return db.delete(plugins).where(notInArray(plugins.id, activeIds)).returning({ id: plugins.id })
 }
 
 // Project plugin queries

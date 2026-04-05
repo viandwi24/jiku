@@ -12,6 +12,12 @@ import type {
   BasePluginContext,
   CallerContext,
   ProjectPluginContext,
+  ConnectorEvent,
+  ConnectorEventType,
+  ConnectorTarget,
+  ConnectorContent,
+  ConnectorSendResult,
+  ConnectorContext,
 } from '@jiku/types'
 
 export type {
@@ -24,6 +30,12 @@ export type {
   ContributesValue,
   BasePluginContext,
   ProjectPluginContext,
+  ConnectorEvent,
+  ConnectorEventType,
+  ConnectorTarget,
+  ConnectorContent,
+  ConnectorSendResult,
+  ConnectorContext,
 }
 
 // Minimal ZodObject shape — avoids importing zod as a dep in kit
@@ -102,4 +114,68 @@ export function defineAgent(def: AgentDefinition): AgentDefinition {
 
 export function getJikuContext(toolCtx: ToolContext): RuntimeContext {
   return toolCtx.runtime
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONNECTOR SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Abstract base class for connector adapters.
+ *
+ * Connector plugins are plain `definePlugin()` plugins. Inside `setup()`,
+ * register the adapter instance via the `connector:register` hook so the
+ * server ConnectorRegistry picks it up.
+ *
+ * @example
+ * class TelegramAdapter extends ConnectorAdapter {
+ *   readonly id = 'jiku.telegram'
+ *   // ...
+ * }
+ *
+ * const telegramAdapter = new TelegramAdapter()
+ *
+ * export default definePlugin({
+ *   meta: { id: 'jiku.telegram', name: 'Telegram', version: '1.0.0' },
+ *   setup(ctx) {
+ *     ctx.hooks.callHook('connector:register', telegramAdapter).catch(() => {})
+ *   },
+ * })
+ */
+// Minimal Zod-compatible shape for credential schemas — avoids importing zod as a dep in kit
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type CredentialSchemaLike = any
+
+export abstract class ConnectorAdapter {
+  abstract readonly id: string
+  abstract readonly displayName: string
+  /** Credential adapter_id this connector expects (e.g. 'telegram') */
+  abstract readonly credentialAdapterId: string
+  /** Optional display name for the credential type (defaults to displayName) */
+  readonly credentialDisplayName?: string
+  /** Platform-specific ref key names, e.g. ['message_id', 'chat_id'] */
+  abstract readonly refKeys: string[]
+  abstract readonly supportedEvents: readonly ConnectorEventType[]
+  /**
+   * Zod schema describing the credential fields this connector needs.
+   * Used to auto-generate the credential form UI.
+   * Fields with `z.string()` become plain text inputs.
+   * Fields described with `.describe('secret')` become password inputs.
+   *
+   * @example
+   * credentialSchema = z.object({
+   *   bot_token: z.string().describe('secret').min(1),
+   * })
+   */
+  readonly credentialSchema?: CredentialSchemaLike
+
+  abstract onActivate(ctx: ConnectorContext): Promise<void>
+  abstract onDeactivate(): Promise<void>
+  abstract parseEvent(raw: unknown): ConnectorEvent | null
+  abstract sendMessage(target: ConnectorTarget, content: ConnectorContent): Promise<ConnectorSendResult>
+
+  sendReaction?(target: ConnectorTarget, emoji: string): Promise<void>
+  deleteMessage?(target: ConnectorTarget): Promise<void>
+  editMessage?(target: ConnectorTarget, content: ConnectorContent): Promise<void>
+  getHistory?(refKeys: Record<string, string>, limit: number): Promise<ConnectorEvent[]>
 }

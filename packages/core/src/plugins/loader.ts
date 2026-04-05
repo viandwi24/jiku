@@ -47,8 +47,22 @@ export class PluginLoader implements PluginLoaderInterface {
   // New: per-project enabled plugin sets
   private projectEnabledPlugins = new Map<string, Set<string>>()
 
+  // Global hook listeners: event → handlers[]
+  private globalHookListeners = new Map<string, Array<(payload: unknown) => Promise<void>>>()
+
   setStorage(storage: JikuStorageAdapter): void {
     this.storage = storage
+  }
+
+  /**
+   * Register a global hook listener that fires whenever ANY plugin calls
+   * `ctx.hooks.callHook(event, payload)` during setup/boot.
+   * Must be registered before `boot()` is called.
+   */
+  onHook(event: string, handler: (payload: unknown) => Promise<void>): void {
+    const listeners = this.globalHookListeners.get(event) ?? []
+    listeners.push(handler)
+    this.globalHookListeners.set(event, listeners)
   }
 
   register(...plugins: AnyPluginDef[]): void {
@@ -125,6 +139,12 @@ export class PluginLoader implements PluginLoaderInterface {
       const pluginId = node.def.meta.id
       const pluginStorage = this.registry.makePluginStorage(pluginId, this.storage)
       const hookAPI = createHookAPI()
+      // Forward global hook listeners into this plugin's hookAPI
+      for (const [event, handlers] of this.globalHookListeners) {
+        for (const handler of handlers) {
+          hookAPI.hook(event, handler)
+        }
+      }
       const pendingTools: ToolDefinition[] = []
 
       // 3a: Resolve this plugin's contributes

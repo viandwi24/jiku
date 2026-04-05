@@ -1,3 +1,6 @@
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CredentialSchemaLike = any
+
 export interface AdapterField {
   key: string
   label: string
@@ -5,6 +8,7 @@ export interface AdapterField {
   required: boolean
   default?: string
   placeholder?: string
+  description?: string
 }
 
 export interface AdapterModel {
@@ -21,6 +25,45 @@ export interface CredentialAdapter {
   fields: AdapterField[]     // secret → encrypted
   metadata: AdapterField[]   // non-secret → plain JSON
   models: AdapterModel[]     // empty = dynamic fetch
+}
+
+/**
+ * Derive AdapterField[] from a Zod object schema.
+ * Convention: `.describe('secret|...')` marks a field as a secret (encrypted).
+ * Fields without 'secret' in description go to `metadata` (plain JSON).
+ *
+ * Returns `{ fields, metadata }` split.
+ */
+export function zodSchemaToAdapterFields(schema: CredentialSchemaLike): { fields: AdapterField[]; metadata: AdapterField[] } {
+  const fields: AdapterField[] = []
+  const metadata: AdapterField[] = []
+
+  for (const [key, zodField] of Object.entries(schema.shape) as [string, any][]) {
+    const desc: string = zodField.description ?? ''
+    const isSecret = desc.includes('secret')
+    const label = desc.replace('secret|', '').replace('secret', '').trim() || key
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase())
+
+    const typeName: string = zodField._def?.typeName ?? 'ZodString'
+    let type: AdapterField['type'] = 'string'
+    if (typeName === 'ZodNumber') type = 'number'
+    else if (typeName === 'ZodBoolean') type = 'boolean'
+    else if (isSecret) type = 'secret'
+
+    const required = !zodField.isOptional()
+    const checks: Array<{ kind: string; value?: unknown }> = zodField._def?.checks ?? []
+    const defaultCheck = checks.find(c => c.kind === 'default') as { value?: string } | undefined
+    const adapterField: AdapterField = { key, label, type, required, default: String(defaultCheck?.value ?? ''), description: desc.replace('secret|', '').replace('secret', '').trim() || undefined }
+
+    if (isSecret) {
+      fields.push(adapterField)
+    } else {
+      metadata.push(adapterField)
+    }
+  }
+
+  return { fields, metadata }
 }
 
 export const CREDENTIAL_ADAPTERS: CredentialAdapter[] = [
@@ -90,17 +133,6 @@ export const CREDENTIAL_ADAPTERS: CredentialAdapter[] = [
     ],
     models: [], // dynamic from Ollama instance
   },
-  {
-    group_id: 'channel',
-    adapter_id: 'telegram',
-    name: 'Telegram Bot',
-    icon: 'telegram',
-    fields: [
-      { key: 'bot_token', label: 'Bot Token', type: 'secret', required: true },
-    ],
-    metadata: [],
-    models: [],
-  },
 ]
 
 export function getAdapter(adapter_id: string): CredentialAdapter | undefined {
@@ -110,4 +142,47 @@ export function getAdapter(adapter_id: string): CredentialAdapter | undefined {
 export function getAdaptersByGroup(group_id?: string): CredentialAdapter[] {
   if (!group_id) return CREDENTIAL_ADAPTERS
   return CREDENTIAL_ADAPTERS.filter(a => a.group_id === group_id)
+}
+
+/**
+ * Derive CredentialAdapter entries from registered ConnectorAdapters that have a credentialSchema.
+ * These are merged into the credential adapter list at request time so plugins
+ * define their own credential fields via Zod — no hardcoded entries needed.
+ */
+export function getConnectorDerivedAdapters(): CredentialAdapter[] {
+  // Lazy import to avoid circular dep at module load time
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { connectorRegistry } = require('../connectors/registry.ts') as typeof import('../connectors/registry.ts')
+  const adapters: CredentialAdapter[] = []
+
+  for (const connectorAdapter of connectorRegistry.list()) {
+    if (!connectorAdapter.credentialSchema) continue
+    const { fields, metadata } = zodSchemaToAdapterFields(connectorAdapter.credentialSchema)
+    adapters.push({
+      group_id: 'channel',
+      adapter_id: connectorAdapter.credentialAdapterId,
+      name: connectorAdapter.credentialDisplayName ?? connectorAdapter.displayName,
+      icon: connectorAdapter.credentialAdapterId,
+      fields,
+      metadata,
+      models: [],
+    })
+  }
+
+  return adapters
+}
+
+/**
+ * Get all adapters — static list merged with connector-derived ones.
+ */
+export function getAllAdapters(group_id?: string): CredentialAdapter[] {
+  const connectorDerived = getConnectorDerivedAdapters()
+  // Deduplicate by adapter_id (static list takes precedence if both define the same id)
+  const staticIds = new Set(CREDENTIAL_ADAPTERS.map(a => a.adapter_id))
+  const merged = [
+    ...CREDENTIAL_ADAPTERS,
+    ...connectorDerived.filter(a => !staticIds.has(a.adapter_id)),
+  ]
+  if (!group_id) return merged
+  return merged.filter(a => a.group_id === group_id)
 }

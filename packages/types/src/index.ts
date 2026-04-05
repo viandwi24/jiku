@@ -300,6 +300,11 @@ export interface CallerContext {
    * Custom integrations (telegram, webhook, cron) can add their own.
    */
   attributes?: Record<string, string | string[]>
+  /**
+   * Set when a run is triggered from a connector (Telegram, Discord, etc.)
+   * Provides platform context for connector-aware tools.
+   */
+  connector_context?: ConnectorCallerContext
 }
 
 // ============================================================
@@ -669,5 +674,147 @@ export interface PluginLoaderInterface {
   setProjectEnabledPlugins(projectId: string, pluginIds: string[]): void
   activatePlugin(projectId: string, pluginId: string, config: unknown, options?: { updateSet?: boolean }): Promise<void>
   deactivatePlugin(projectId: string, pluginId: string, config?: Record<string, unknown>): Promise<void>
+}
+
+// ============================================================
+// CONNECTOR SYSTEM (Plan 10)
+// ============================================================
+
+export type ConnectorEventType =
+  | 'message'
+  | 'reaction'
+  | 'unreaction'
+  | 'edit'
+  | 'delete'
+  | 'pin'
+  | 'join'
+  | 'leave'
+  | 'custom'
+
+export interface ConnectorEvent {
+  type: ConnectorEventType
+  connector_id: string
+  /** Flexible platform-specific message/event keys, e.g. { message_id, chat_id } */
+  ref_keys: Record<string, string>
+  sender: {
+    external_id: string
+    display_name?: string
+    username?: string
+    is_bot?: boolean
+  }
+  /** For reaction/edit/delete events — ref to the original message */
+  target_ref_keys?: Record<string, string>
+  content?: {
+    text?: string
+    media?: { type: string; url?: string; data?: Uint8Array }
+    raw?: unknown
+  }
+  metadata?: Record<string, unknown>
+  timestamp: Date
+}
+
+export interface ConnectorTarget {
+  ref_keys: Record<string, string>
+  reply_to_ref_keys?: Record<string, string>
+}
+
+export interface ConnectorContent {
+  text?: string
+  markdown?: boolean
+  media?: { type: 'image' | 'video' | 'document'; url?: string; data?: Uint8Array }
+  buttons?: Array<{ text: string; data: string }>
+}
+
+export interface ConnectorSendResult {
+  success: boolean
+  ref_keys?: Record<string, string>
+  error?: string
+}
+
+export interface ConnectorContext {
+  projectId: string
+  connectorId: string
+  /** Decrypted credential fields (e.g. bot_token) */
+  fields: Record<string, string>
+  /** Plain metadata from the credential */
+  metadata: Record<string, string>
+  /** Emit a parsed ConnectorEvent into the routing pipeline */
+  onEvent(event: ConnectorEvent): Promise<void>
+}
+
+/** Binding record from DB */
+export interface ConnectorBinding {
+  id: string
+  connector_id: string
+  agent_id: string
+  display_name?: string | null
+  source_type: 'private' | 'group' | 'channel' | 'any'
+  source_ref_keys?: Record<string, string> | null
+  trigger_source: 'message' | 'event'
+  trigger_mode: 'always' | 'mention' | 'reply' | 'command' | 'keyword'
+  trigger_keywords?: string[] | null
+  trigger_event_type?: string | null
+  trigger_event_filter?: Record<string, unknown> | null
+  adapter_type: 'conversation' | 'task' | 'notify'
+  require_approval: boolean
+  rate_limit_rpm?: number | null
+  context_window: number
+  include_sender_info: boolean
+  enabled: boolean
+  created_at: Date
+}
+
+/** Identity record from DB */
+export interface ConnectorIdentity {
+  id: string
+  binding_id: string
+  external_ref_keys: Record<string, string>
+  display_name?: string | null
+  avatar_url?: string | null
+  status: 'pending' | 'approved' | 'blocked'
+  approved_by?: string | null
+  approved_at?: Date | null
+  mapped_user_id?: string | null
+  conversation_id?: string | null
+  last_seen_at?: Date | null
+  created_at: Date
+}
+
+/** User identity key-value store */
+export interface UserIdentity {
+  id: string
+  user_id: string
+  project_id: string
+  key: string
+  value: string
+  label?: string | null
+  source: 'user' | 'agent' | 'system'
+  visibility: 'private' | 'project'
+  created_at: Date
+  updated_at: Date
+}
+
+/** Connector definition (DB row) */
+export interface ConnectorRecord {
+  id: string
+  project_id: string
+  plugin_id: string
+  display_name: string
+  config: Record<string, unknown>
+  status: 'active' | 'inactive' | 'error'
+  error_message?: string | null
+  created_at: Date
+  updated_at: Date
+}
+
+/** Connector context added to CallerContext when a run is triggered from a connector */
+export interface ConnectorCallerContext {
+  connector_id: string
+  binding_id: string
+  identity_id: string
+  external_ref_keys: Record<string, string>
+  event_ref_keys: Record<string, string>
+  event_type: ConnectorEventType
+  platform: string
 }
 

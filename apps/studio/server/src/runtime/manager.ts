@@ -1,4 +1,4 @@
-import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById } from '@jiku-studio/db'
+import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById, getConnectors, deleteConnector } from '@jiku-studio/db'
 import { JikuRuntime, PluginLoader, createProviderDef, DEFAULT_PROJECT_MEMORY_CONFIG, resolveMemoryConfig } from '@jiku/core'
 import type { JikuRunParams, JikuRunResult, AgentMemoryConfig } from '@jiku/types'
 import { defineAgent } from '@jiku/kit'
@@ -6,6 +6,8 @@ import { StudioStorageAdapter } from './storage.ts'
 import { buildProvider, resolveAgentModel } from '../credentials/service.ts'
 import { buildMemoryTools } from '../memory/tools.ts'
 import { ensurePersonaSeeded } from '../memory/persona.ts'
+import { buildConnectorTools } from '../connectors/tools.ts'
+import { connectorRegistry } from '../connectors/registry.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -91,6 +93,10 @@ export class JikuRuntimeManager {
 
     await runtime.boot()
 
+    // Build connector tools if project has active connectors
+    const connectorRows = await getConnectors(projectId)
+    const connectorTools = connectorRows.length > 0 ? buildConnectorTools(projectId) : []
+
     for (const a of agentRows) {
       // Resolve per-agent memory config (merge project defaults + agent override)
       const agentMemoryConfig = resolveMemoryConfig(
@@ -109,7 +115,7 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
-          built_in_tools: memoryTools,
+          built_in_tools: [...memoryTools, ...connectorTools],
         }),
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
@@ -118,6 +124,25 @@ export class JikuRuntimeManager {
 
     this.runtimes.set(projectId, runtime)
     this.storages.set(projectId, storage)
+
+    // Cleanup + auto-activate connectors
+    const { activateConnector } = await import('../connectors/activation.ts')
+    for (const connector of connectorRows) {
+      // Plugin not in registry at all → connector is orphaned, delete it
+      if (!connectorRegistry.get(connector.plugin_id)) {
+        console.warn(`[wakeUp] connector plugin "${connector.plugin_id}" not found — deleting orphaned connector ${connector.id}`)
+        await deleteConnector(connector.id).catch(err =>
+          console.warn(`[wakeUp] failed to delete orphaned connector ${connector.id}:`, err)
+        )
+        continue
+      }
+      // Plugin exists but connector was active → re-activate (may error, that's ok)
+      if (connector.status === 'active' && connector.credential_id) {
+        activateConnector(connector.id).catch(err =>
+          console.warn(`[wakeUp] connector auto-activate failed (${connector.id}):`, err)
+        )
+      }
+    }
   }
 
   async sleep(projectId: string): Promise<void> {

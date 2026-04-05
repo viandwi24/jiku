@@ -1,13 +1,13 @@
 ## Backlog
 
-- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies persona_seed + persona_seeded_at columns (required for Plan 9 to work in production)
+- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies persona_seed + persona_seeded_at columns + 7 connector tables (connectors, bindings, identities, events, messages, message_events, user_identities)
+- [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
 - [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
-- [ ] Tambah built-in plugins — jiku.cron, jiku.skills (plugin files exist at plugins/jiku.cron + plugins/jiku.skills, belum diaktifkan di server)
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
-- [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (deferred from Plan 9)
+- [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
 
 ## Done
 

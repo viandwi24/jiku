@@ -1,5 +1,5 @@
 import { getAgentById, saveMemory, markAgentPersonaSeeded } from '@jiku-studio/db'
-import type { PersonaSeed } from '@jiku/types'
+import type { PersonaSeed, JikuStorageAdapter } from '@jiku/types'
 
 /**
  * Ensure the persona seed has been applied for an agent.

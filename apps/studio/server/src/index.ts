@@ -12,10 +12,13 @@ import { previewRouter } from './routes/preview.ts'
 import { pluginsRouter } from './routes/plugins.ts'
 import { memoryRouter } from './routes/memory.ts'
 import { personaRouter } from './routes/persona.ts'
+import connectorsRouter from './routes/connectors.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
+import { connectorRegistry } from './connectors/registry.ts'
 import { PluginLoader } from '@jiku/core'
+import TelegramPlugin from '@jiku/plugin-telegram'
 import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
 
@@ -36,6 +39,8 @@ app.use('/api', previewRouter)
 app.use('/api', pluginsRouter)
 app.use('/api', memoryRouter)
 app.use('/api', personaRouter)
+app.use('/api', connectorsRouter)
+app.use('/', connectorsRouter)  // webhook routes are at /webhook/:project_id/...
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -59,9 +64,15 @@ async function bootstrap() {
   await checkDbConnection()
   await seedPermissions()
 
-  // Create shared plugin loader and register built-in studio plugins.
   const sharedLoader = new PluginLoader()
+
+  // Listen for connector:register hook — any plugin calling this registers its adapter
+  sharedLoader.onHook('connector:register', async (adapter) => {
+    connectorRegistry.register(adapter as import('@jiku/kit').ConnectorAdapter)
+  })
+
   sharedLoader.register(JikuStudioPlugin)
+  sharedLoader.register(TelegramPlugin)
   await seedPluginRegistry(sharedLoader)
   runtimeManager.setPluginLoader(sharedLoader)
 

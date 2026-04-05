@@ -1,0 +1,233 @@
+import { defineTool } from '@jiku/kit'
+import { z } from 'zod'
+import {
+  getConnectorEvents,
+  getConnectorMessages,
+  updateBinding,
+  getUserIdentities,
+  upsertUserIdentity,
+  findUserByIdentity,
+} from '@jiku-studio/db'
+import { connectorRegistry } from './registry.ts'
+
+/**
+ * Build connector built-in tools.
+ * These are registered on agents when the project has active connectors.
+ * They are NOT plugin tools — they're injected directly as built_in_tools.
+ */
+export function buildConnectorTools(projectId: string) {
+  return [
+
+    // ── Query events on a message ────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_get_events',
+        name: 'Get Message Events',
+        description: 'Query events (reactions, edits, etc.) on a specific message or chat',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector ID'),
+        event_types: z.array(z.string()).optional().describe('Filter by event types'),
+        limit: z.number().int().min(1).max(100).default(20),
+      }),
+      execute: async (args) => {
+        const { connector_id, limit } = args as { connector_id: string; event_types?: string[]; limit: number }
+        const events = await getConnectorEvents(connector_id, limit)
+        return { events }
+      },
+    }),
+
+    // ── Get recent messages from a chat ──────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_get_thread',
+        name: 'Get Thread Messages',
+        description: 'Get recent messages from a connector conversation',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector ID'),
+        limit: z.number().int().min(1).max(50).default(10),
+      }),
+      execute: async (args) => {
+        const { connector_id, limit } = args as { connector_id: string; limit: number }
+        const messages = await getConnectorMessages(connector_id, limit)
+        return { messages }
+      },
+    }),
+
+    // ── Send a message to a platform ─────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_send',
+        name: 'Send Connector Message',
+        description: 'Send a message to a platform chat via connector',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string(),
+        target_ref_keys: z.record(z.string()),
+        text: z.string(),
+        reply_to_ref_keys: z.record(z.string()).optional(),
+        markdown: z.boolean().default(true),
+      }),
+      execute: async (args) => {
+        const { connector_id, target_ref_keys, text, reply_to_ref_keys, markdown } = args as {
+          connector_id: string
+          target_ref_keys: Record<string, string>
+          text: string
+          reply_to_ref_keys?: Record<string, string>
+          markdown: boolean
+        }
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id)
+        if (!adapter) return { success: false, error: 'Connector not active' }
+        return adapter.sendMessage(
+          { ref_keys: target_ref_keys, reply_to_ref_keys },
+          { text, markdown }
+        )
+      },
+    }),
+
+    // ── React to a message ───────────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_react',
+        name: 'React to Message',
+        description: 'React to a message with an emoji via connector',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string(),
+        target_ref_keys: z.record(z.string()),
+        emoji: z.string(),
+      }),
+      execute: async (args) => {
+        const { connector_id, target_ref_keys, emoji } = args as {
+          connector_id: string
+          target_ref_keys: Record<string, string>
+          emoji: string
+        }
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id)
+        if (!adapter || !adapter.sendReaction) return { success: false, error: 'Reaction not supported' }
+        await adapter.sendReaction({ ref_keys: target_ref_keys }, emoji)
+        return { success: true }
+      },
+    }),
+
+    // ── Update binding config ─────────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_binding_update',
+        name: 'Update Connector Binding',
+        description: 'Update a connector binding configuration (trigger mode, rate limit, etc.)',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        binding_id: z.string(),
+        trigger_mode: z.enum(['always', 'mention', 'reply', 'command', 'keyword']).optional(),
+        trigger_keywords: z.array(z.string()).optional(),
+        rate_limit_rpm: z.number().int().optional(),
+        context_window: z.number().int().optional(),
+      }),
+      execute: async (args) => {
+        const { binding_id, ...updates } = args as { binding_id: string; [key: string]: unknown }
+        const binding = await updateBinding(binding_id, updates as Parameters<typeof updateBinding>[1])
+        return { binding }
+      },
+    }),
+
+    // ── User identity: get ────────────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'identity_get',
+        name: 'Get User Identity',
+        description: 'Get identity attributes for a user (telegram_user_id, discord_id, etc.)',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        user_id: z.string().optional().describe('User ID (omit for current caller)'),
+        keys: z.array(z.string()).optional().describe('Filter by keys'),
+      }),
+      execute: async (args, ctx) => {
+        const { user_id, keys } = args as { user_id?: string; keys?: string[] }
+        const targetUserId = user_id ?? ctx.runtime.caller.user_id
+        const identities = await getUserIdentities(targetUserId, projectId, keys)
+        return { identities }
+      },
+    }),
+
+    // ── User identity: set ────────────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'identity_set',
+        name: 'Set User Identity',
+        description: 'Set an identity attribute for a user (e.g. telegram_user_id = 123)',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        user_id: z.string().optional(),
+        key: z.string(),
+        value: z.string(),
+        label: z.string().optional(),
+      }),
+      execute: async (args, ctx) => {
+        const { user_id, key, value, label } = args as { user_id?: string; key: string; value: string; label?: string }
+        const targetUserId = user_id ?? ctx.runtime.caller.user_id
+        const identity = await upsertUserIdentity({
+          user_id: targetUserId,
+          project_id: projectId,
+          key,
+          value,
+          label,
+          source: 'agent',
+        })
+        return { identity }
+      },
+    }),
+
+    // ── User identity: find ───────────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'identity_find',
+        name: 'Find User by Identity',
+        description: 'Find users by identity attribute — e.g. who has telegram_user_id = 123',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        key: z.string(),
+        value: z.string(),
+      }),
+      execute: async (args) => {
+        const { key, value } = args as { key: string; value: string }
+        const results = await findUserByIdentity(projectId, key, value)
+        return { results }
+      },
+    }),
+
+  ]
+}

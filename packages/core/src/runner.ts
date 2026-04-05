@@ -379,6 +379,18 @@ export class AgentRunner {
             model,
             storage,
           }).catch(() => {})
+
+          // Post-run persona extraction (fire and forget)
+          if (storage.saveMemory) {
+            const { extractPersonaPostRun } = await import('./memory/persona-extraction.ts')
+            extractPersonaPostRun({
+              runtime_id: runtimeId,
+              agent_id: agentId,
+              messages: runMessages.slice(-6),
+              model,
+              storage,
+            }).catch(() => {})
+          }
         }
       },
 

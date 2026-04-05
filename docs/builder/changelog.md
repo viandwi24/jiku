@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-04-05 — Plan 10 Channels & Connector System
+
+**Changed:** Full implementation of the Channels & Connector System (Plan 10).
+
+- **Types** (`@jiku/types`): `ConnectorEventType`, `ConnectorEvent`, `ConnectorTarget`, `ConnectorContent`, `ConnectorSendResult`, `ConnectorContext`, `ConnectorBinding`, `ConnectorIdentity`, `UserIdentity`, `ConnectorRecord`, `ConnectorCallerContext`. Extended `CallerContext` with `connector_context?`.
+- **Kit** (`@jiku/kit`): `ConnectorAdapter` abstract base class + `defineConnector()` factory that wraps a connector class as a JikuPlugin with `connector:register/activate/deactivate` hooks.
+- **DB schema**: 7 new tables — `connectors`, `connector_bindings`, `connector_identities`, `connector_events`, `connector_messages`, `connector_message_events`, `user_identities`. GIN indexes on jsonb `ref_keys` columns. (Migration pending: `bun run db:push`)
+- **DB queries** (`@jiku-studio/db`): Full CRUD for connectors, bindings, identities, events, messages, user_identities. `findIdentityByExternalId` via SQL jsonb query. `upsertUserIdentity` with `onConflictDoUpdate`.
+- **ConnectorRegistry** (`server/src/connectors/registry.ts`): Singleton tracking registered adapters + active connector instances per project.
+- **ConnectorEventRouter** (`server/src/connectors/event-router.ts`): `routeConnectorEvent()` — matches bindings, creates/updates identities, approval/rate-limit checks, logs events, executes conversation/task adapters via `runtimeManager.run()`, drains stream, sends response back via adapter.
+- **Connector Routes** (`server/src/routes/connectors.ts`): Full CRUD API, binding CRUD, identity management, event/message read endpoints, SSE live event stream, inbound webhook route (`POST /webhook/:project_id/connector/:connector_id`), `GET /connector-plugins` listing.
+- **Connector Tools** (`server/src/connectors/tools.ts`): 8 built-in tools: `connector_get_events`, `connector_get_thread`, `connector_send`, `connector_react`, `connector_binding_update`, `identity_get`, `identity_set`, `identity_find`. All tagged `group: 'connector'`.
+- **RuntimeManager** updated to load connector tools alongside memory tools at wakeUp().
+- **Telegram Plugin** (`plugins/jiku.connector.telegram`): `TelegramConnector` extends `ConnectorAdapter`. Supports message/reaction/edit events via Telegraf. Handles polling + webhook modes. `sendMessage`, `sendReaction`, `deleteMessage`, `editMessage`.
+- **Server bootstrap** (`server/src/index.ts`): Registers `telegramConnectorAdapter` in `connectorRegistry` + `TelegramConnectorPlugin` in shared plugin loader.
+- **Web UI** — 6 new pages under `/channels`:
+  - `channels/page.tsx` — connector overview cards with status badge
+  - `channels/new/page.tsx` — 2-step add connector (select plugin → configure)
+  - `channels/[connector]/page.tsx` — detail: status, quick nav, bindings list, config display
+  - `channels/[connector]/bindings/[binding]/page.tsx` — binding settings + identity approval workflow
+  - `channels/[connector]/events/page.tsx` — event log + SSE live stream
+  - `channels/[connector]/messages/page.tsx` — inbound/outbound message log with auto-refresh
+- **Sidebar**: Channels nav item already present with `Webhook` icon.
+- **API client** (`web/lib/api.ts`): `api.connectors` namespace with all CRUD + events/messages/plugins endpoints.
+- **Carry-over Plan 9**: `extractPersonaPostRun()` in `packages/core/src/memory/persona-extraction.ts` — fire-and-forget LLM persona signal extraction, keyword-gated, saves as `agent_self` scope memories.
+
+**Files touched:** `packages/types/src/index.ts`, `packages/kit/src/index.ts`, `apps/studio/db/src/schema/connectors.ts` *(new)*, `apps/studio/db/src/queries/connector.ts` *(new)*, `apps/studio/server/src/connectors/registry.ts` *(new)*, `apps/studio/server/src/connectors/event-router.ts` *(new)*, `apps/studio/server/src/connectors/tools.ts` *(new)*, `apps/studio/server/src/routes/connectors.ts` *(new)*, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/index.ts`, `apps/studio/server/package.json`, `plugins/jiku.connector.telegram/` *(new)*, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../channels/**` *(6 new pages)*, `packages/core/src/memory/persona-extraction.ts` *(new)*
+
+---
+
 ## 2026-04-05 — Plan 9 Persona System + Active Tools UI + Tool Groups
 
 **Changed:** Implemented the complete Persona System (Plan 9) plus two enhancements: Active Tools debug UI and tool group metadata.

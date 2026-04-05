@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Puzzle,
   Settings,
+  Webhook,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth.store'
@@ -93,6 +94,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     { href: '/agents', label: 'Agents', icon: Bot, badge: agentsData?.agents.length, exact: false },
     { href: '/chats', label: 'Chats', icon: MessageSquare },
     { href: '/memory', label: 'Memory', icon: Brain },
+    { href: '/channels', label: 'Channels', icon: Webhook },
     { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },
   ]
 

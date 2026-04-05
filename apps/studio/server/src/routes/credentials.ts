@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { getCompanyBySlug, getProjectById, getCompanyCredentials, getProjectCredentials, getAvailableCredentials, getCredentialById, createCredential, updateCredential, deleteCredential, getAgentCredential, assignAgentCredential, updateAgentCredential, unassignAgentCredential } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { encryptFields } from '../credentials/encryption.ts'
-import { getAdaptersByGroup } from '../credentials/adapters.ts'
+import { getAllAdapters } from '../credentials/adapters.ts'
 import { formatCredential, testCredential } from '../credentials/service.ts'
 
 const router = Router()
@@ -10,7 +10,7 @@ router.use(authMiddleware)
 
 router.get('/credentials/adapters', (req, res) => {
   const group_id = req.query['group_id'] as string | undefined
-  res.json({ adapters: getAdaptersByGroup(group_id) })
+  res.json({ adapters: getAllAdapters(group_id) })
 })
 
 router.get('/companies/:slug/credentials', async (req, res) => {

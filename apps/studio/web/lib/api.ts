@@ -526,6 +526,62 @@ export const api = {
     delete: (projectId: string, id: string) =>
       request<{ success: boolean }>(`/api/projects/${projectId}/attachments/${id}`, { method: 'DELETE' }),
   },
+
+  acl: {
+    // Project roles
+    listRoles: (projectId: string) =>
+      request<{ roles: ProjectRole[] }>(`/api/projects/${projectId}/roles`),
+    createRole: (projectId: string, body: { name: string; description?: string; permissions?: string[]; is_default?: boolean }) =>
+      request<{ role: ProjectRole }>(`/api/projects/${projectId}/roles`, { method: 'POST', body: JSON.stringify(body) }),
+    updateRole: (projectId: string, roleId: string, body: { name?: string; description?: string; permissions?: string[]; is_default?: boolean }) =>
+      request<{ role: ProjectRole }>(`/api/projects/${projectId}/roles/${roleId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    deleteRole: (projectId: string, roleId: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/roles/${roleId}`, { method: 'DELETE' }),
+    getRolePresets: (projectId: string) =>
+      request<{ presets: Record<string, { name: string; permissions: string[] }> }>(`/api/projects/${projectId}/roles/presets`),
+
+    // Project members
+    listMembers: (projectId: string) =>
+      request<{ members: ProjectMember[] }>(`/api/projects/${projectId}/members`),
+    getMyPermissions: (projectId: string) =>
+      request<ResolvedProjectPermissions>(`/api/projects/${projectId}/members/me/permissions`),
+    assignRole: (projectId: string, userId: string, roleId: string | null) =>
+      request<{ membership: ProjectMembership }>(`/api/projects/${projectId}/members/${userId}/role`, { method: 'PATCH', body: JSON.stringify({ role_id: roleId }) }),
+    setSuperadmin: (projectId: string, userId: string, grant: boolean) =>
+      request<{ membership: ProjectMembership }>(`/api/projects/${projectId}/members/${userId}/superadmin`, { method: 'PATCH', body: JSON.stringify({ grant }) }),
+    setAgentRestrictions: (projectId: string, userId: string, agent_restrictions: Record<string, boolean>) =>
+      request<{ membership: ProjectMembership }>(`/api/projects/${projectId}/members/${userId}/agent-restrictions`, { method: 'PATCH', body: JSON.stringify({ agent_restrictions }) }),
+    removeMember: (projectId: string, userId: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/members/${userId}`, { method: 'DELETE' }),
+
+    // Invitations (user side)
+    listMyInvitations: () =>
+      request<{ invitations: InvitationItem[] }>('/api/auth/invitations'),
+    acceptInvitation: (id: string) =>
+      request<{ ok: boolean }>(`/api/auth/invitations/${id}/accept`, { method: 'POST' }),
+    declineInvitation: (id: string) =>
+      request<{ ok: boolean }>(`/api/auth/invitations/${id}/decline`, { method: 'POST' }),
+
+    // Company members (admin side)
+    listCompanyMembers: (companyId: string) =>
+      request<{ members: CompanyMemberItem[] }>(`/api/companies/${companyId}/members`),
+    removeCompanyMember: (companyId: string, userId: string) =>
+      request<{ ok: boolean }>(`/api/companies/${companyId}/members/${userId}`, { method: 'DELETE' }),
+    listMemberProjects: (companyId: string, userId: string) =>
+      request<{ memberships: MemberProjectItem[] }>(`/api/companies/${companyId}/members/${userId}/projects`),
+    grantMemberProject: (companyId: string, userId: string, body: { project_id: string; role_id?: string }) =>
+      request<{ membership: ProjectMembership }>(`/api/companies/${companyId}/members/${userId}/projects`, { method: 'POST', body: JSON.stringify(body) }),
+    revokeMemberProject: (companyId: string, userId: string, projectId: string) =>
+      request<{ ok: boolean }>(`/api/companies/${companyId}/members/${userId}/projects/${projectId}`, { method: 'DELETE' }),
+
+    // Invitations (admin side)
+    listCompanyInvitations: (companyId: string) =>
+      request<{ invitations: InvitationItem[] }>(`/api/companies/${companyId}/invitations`),
+    sendInvitation: (companyId: string, body: { email: string; project_grants: Array<{ project_id: string; role_id: string }> }) =>
+      request<{ invitation: InvitationItem }>(`/api/companies/${companyId}/invitations`, { method: 'POST', body: JSON.stringify(body) }),
+    cancelInvitation: (companyId: string, invitationId: string) =>
+      request<{ ok: boolean }>(`/api/companies/${companyId}/invitations/${invitationId}`, { method: 'DELETE' }),
+  },
 }
 
 // Types
@@ -633,6 +689,8 @@ export interface Agent {
   compaction_threshold?: number | null
   file_delivery?: 'base64' | 'proxy_url' | null
   attachment_scope?: 'per_user' | 'shared' | null
+  /** null = allow all, [] = deny all, [id…] = allow specific agents */
+  task_allowed_agents?: string[] | null
   created_at: string | null
 }
 
@@ -1030,3 +1088,86 @@ export interface ConnectorMessageItem {
   status: string
   created_at: string
 }
+
+// ─── ACL Types (Plan 12) ──────────────────────────────────────────────────────
+
+export interface ProjectRole {
+  id: string
+  project_id: string
+  name: string
+  description: string | null
+  permissions: string[]
+  is_default: boolean
+  member_count?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectMembership {
+  id: string
+  project_id: string
+  user_id: string
+  role_id: string | null
+  is_superadmin: boolean
+  agent_restrictions: Record<string, boolean>
+  tool_restrictions: Record<string, Record<string, boolean>>
+  joined_at: string
+}
+
+export interface ProjectMember {
+  id: string
+  project_id: string
+  user_id: string
+  role_id: string | null
+  is_superadmin: boolean
+  agent_restrictions: Record<string, boolean>
+  tool_restrictions: Record<string, Record<string, boolean>>
+  joined_at: string
+  user: { id: string; name: string; email: string }
+  role: ProjectRole | null
+}
+
+export interface ResolvedProjectPermissions {
+  granted: boolean
+  isSuperadmin: boolean
+  permissions: string[]
+  agentRestrictions: Record<string, boolean>
+  toolRestrictions: Record<string, Record<string, boolean>>
+}
+
+export interface MemberProjectItem {
+  id: string
+  project_id: string
+  user_id: string
+  role_id: string | null
+  is_superadmin: boolean
+  joined_at: string
+  role: ProjectRole | null
+  project: { id: string; name: string; slug: string; company_id: string }
+}
+
+export interface CompanyMemberItem {
+  id: string
+  company_id: string
+  user_id: string
+  role_id: string
+  joined_at: string
+  user: { id: string; name: string; email: string }
+  role: { id: string; name: string; is_system: boolean }
+}
+
+export interface InvitationItem {
+  id: string
+  company_id: string
+  email: string
+  project_grants: Array<{ project_id: string; role_id: string }>
+  status: 'pending' | 'accepted' | 'declined' | 'expired' | 'cancelled'
+  invited_by: string
+  expires_at: string
+  accepted_by: string | null
+  accepted_at: string | null
+  created_at: string
+  company?: { id: string; name: string; slug: string }
+  invited_by_user?: { id: string; name: string; email: string }
+}
+

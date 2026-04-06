@@ -11,13 +11,16 @@ import { credentials, agent_credentials } from './credentials.ts'
 import { usage_logs } from './usage_logs.ts'
 import { project_filesystem_config, project_files } from './filesystem.ts'
 import { project_attachments } from './attachments.ts'
+import { project_roles, project_memberships, invitations, superadmin_transfers } from './acl.ts'
 
 export const usersRelations = relations(users, ({ many }) => ({
   companies: many(companies),
   company_members: many(company_members),
+  project_memberships: many(project_memberships),
   agent_user_policies: many(agent_user_policies),
   conversations: many(conversations),
   credentials: many(credentials),
+  sent_invitations: many(invitations, { relationName: 'invited_by' }),
 }))
 
 export const companiesRelations = relations(companies, ({ one, many }) => ({
@@ -26,6 +29,7 @@ export const companiesRelations = relations(companies, ({ one, many }) => ({
   company_members: many(company_members),
   projects: many(projects),
   policies: many(policies),
+  invitations: many(invitations),
 }))
 
 export const rolesRelations = relations(roles, ({ one, many }) => ({
@@ -54,6 +58,31 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   agents: many(agents),
   filesystem_config: many(project_filesystem_config),
   files: many(project_files),
+  project_roles: many(project_roles),
+  project_memberships: many(project_memberships),
+}))
+
+export const projectRolesRelations = relations(project_roles, ({ one, many }) => ({
+  project: one(projects, { fields: [project_roles.project_id], references: [projects.id] }),
+  memberships: many(project_memberships),
+}))
+
+export const projectMembershipsRelations = relations(project_memberships, ({ one }) => ({
+  project: one(projects, { fields: [project_memberships.project_id], references: [projects.id] }),
+  user: one(users, { fields: [project_memberships.user_id], references: [users.id] }),
+  role: one(project_roles, { fields: [project_memberships.role_id], references: [project_roles.id] }),
+}))
+
+export const invitationsRelations = relations(invitations, ({ one }) => ({
+  company: one(companies, { fields: [invitations.company_id], references: [companies.id] }),
+  invited_by_user: one(users, { fields: [invitations.invited_by], references: [users.id] }),
+  accepted_by_user: one(users, { fields: [invitations.accepted_by], references: [users.id] }),
+}))
+
+export const superadminTransfersRelations = relations(superadmin_transfers, ({ one }) => ({
+  project: one(projects, { fields: [superadmin_transfers.project_id], references: [projects.id] }),
+  from_user: one(users, { fields: [superadmin_transfers.from_user_id], references: [users.id] }),
+  to_user: one(users, { fields: [superadmin_transfers.to_user_id], references: [users.id] }),
 }))
 
 export const projectFilesystemConfigRelations = relations(project_filesystem_config, ({ one }) => ({

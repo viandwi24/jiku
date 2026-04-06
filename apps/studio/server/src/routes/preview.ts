@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission, loadPerms } from '../middleware/permission.ts'
 import { resolveCaller } from '../runtime/caller.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { getAgentById, getConversationById, getProjectById } from '@jiku-studio/db'
@@ -13,7 +14,7 @@ router.use(authMiddleware)
  * POST /agents/:aid/preview
  * Preview context for an agent without an existing conversation.
  */
-router.post('/agents/:aid/preview', async (req, res) => {
+router.post('/agents/:aid/preview', requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']!
   const userId = res.locals['user_id'] as string
   const { mode = 'chat' } = req.body as { mode?: 'chat' | 'task' }
@@ -65,6 +66,15 @@ router.post('/conversations/:id/preview', async (req, res) => {
 
   const agent = await getAgentById(conversation.agent_id)
   if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+
+  // Set project context and verify membership
+  res.locals['project_id'] = agent.project_id
+  const permResult = await loadPerms(req, res)
+  if (!permResult) { res.status(400).json({ error: 'Project context required' }); return }
+  if (!permResult.resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+  if (!permResult.resolved.isSuperadmin && !permResult.resolved.permissions.includes('chats:read')) {
+    res.status(403).json({ error: 'Missing permission: chats:read' }); return
+  }
 
   const project = await getProjectById(agent.project_id)
   if (!project) { res.status(404).json({ error: 'Project not found' }); return }

@@ -73,7 +73,7 @@ function formatRelative(dateStr: string | null): string {
   return `${Math.floor(diff / 86400000)}d ago`
 }
 
-export default function RunsPage({ params }: PageProps) {
+function RunsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const router = useRouter()
   const qc = useQueryClient()
@@ -259,3 +259,5 @@ function RunRow({ run, base, onCancel }: { run: RunRow; base: string; onCancel: 
     </tr>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(RunsPage, 'runs:read')

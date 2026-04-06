@@ -2,6 +2,7 @@ import { Router } from 'express'
 import nodePath from 'node:path'
 import busboy from 'busboy'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import {
   getFilesystemConfig,
   upsertFilesystemConfig,
@@ -37,7 +38,7 @@ function handleFsError(res: import('express').Response, err: unknown) {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 // GET /projects/:pid/filesystem/config
-router.get('/projects/:pid/filesystem/config', async (req, res) => {
+router.get('/projects/:pid/filesystem/config', requirePermission('settings:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const config = await getFilesystemConfig(projectId)
   res.json({ config: config ?? null })
@@ -46,7 +47,7 @@ router.get('/projects/:pid/filesystem/config', async (req, res) => {
 // PATCH /projects/:pid/filesystem/config
 // If adapter_id or credential_id changes while files exist, returns migration_needed=true.
 // Client should show a migration modal before applying the change.
-router.patch('/projects/:pid/filesystem/config', async (req, res) => {
+router.patch('/projects/:pid/filesystem/config', requirePermission('settings:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const body = req.body as { adapter_id?: string; credential_id?: string | null; enabled?: boolean }
   try {
@@ -89,7 +90,7 @@ router.patch('/projects/:pid/filesystem/config', async (req, res) => {
 })
 
 // POST /projects/:pid/filesystem/test
-router.post('/projects/:pid/filesystem/test', async (req, res) => {
+router.post('/projects/:pid/filesystem/test', requirePermission('settings:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const result = await testFilesystemConnection(projectId)
   res.json(result)
@@ -98,7 +99,7 @@ router.post('/projects/:pid/filesystem/test', async (req, res) => {
 // ─── File listing & content ───────────────────────────────────────────────────
 
 // GET /projects/:pid/files?path=/src
-router.get('/projects/:pid/files', async (req, res) => {
+router.get('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = (req.query['path'] as string) ?? '/'
 
@@ -113,7 +114,7 @@ router.get('/projects/:pid/files', async (req, res) => {
 })
 
 // GET /projects/:pid/files/content?path=/src/index.ts
-router.get('/projects/:pid/files/content', async (req, res) => {
+router.get('/projects/:pid/files/content', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = (req.query['path'] as string)
   if (!filePath) return res.status(400).json({ error: 'path query param required' })
@@ -129,7 +130,7 @@ router.get('/projects/:pid/files/content', async (req, res) => {
 })
 
 // GET /projects/:pid/files/search?q=&ext=
-router.get('/projects/:pid/files/search', async (req, res) => {
+router.get('/projects/:pid/files/search', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const query = (req.query['q'] as string) ?? ''
   const ext = req.query['ext'] as string | undefined
@@ -151,7 +152,7 @@ router.get('/projects/:pid/files/search', async (req, res) => {
 // mode=download            — forces browser download
 // mode=preview             — same as inline but sets cache headers
 
-router.get('/projects/:pid/files/proxy', async (req, res) => {
+router.get('/projects/:pid/files/proxy', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = (req.query['path'] as string)
   const mode = (req.query['mode'] as string) ?? 'inline'
@@ -214,7 +215,7 @@ router.get('/projects/:pid/files/proxy', async (req, res) => {
 // ─── Write / create ───────────────────────────────────────────────────────────
 
 // POST /projects/:pid/files  { path, content }
-router.post('/projects/:pid/files', async (req, res) => {
+router.post('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const { path: filePath, content } = req.body as { path: string; content: string }
 
@@ -235,7 +236,7 @@ router.post('/projects/:pid/files', async (req, res) => {
 // ─── Move ─────────────────────────────────────────────────────────────────────
 
 // PATCH /projects/:pid/files/move  { from, to }
-router.patch('/projects/:pid/files/move', async (req, res) => {
+router.patch('/projects/:pid/files/move', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const { from, to } = req.body as { from: string; to: string }
 
@@ -254,7 +255,7 @@ router.patch('/projects/:pid/files/move', async (req, res) => {
 // ─── Delete ───────────────────────────────────────────────────────────────────
 
 // DELETE /projects/:pid/files?path=/x
-router.delete('/projects/:pid/files', async (req, res) => {
+router.delete('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = req.query['path'] as string
   if (!filePath) return res.status(400).json({ error: 'path query param required' })
@@ -270,7 +271,7 @@ router.delete('/projects/:pid/files', async (req, res) => {
 })
 
 // DELETE /projects/:pid/files/folder?path=/src
-router.delete('/projects/:pid/files/folder', async (req, res) => {
+router.delete('/projects/:pid/files/folder', requirePermission('agents:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = req.query['path'] as string
   if (!folderPath) return res.status(400).json({ error: 'path query param required' })
@@ -288,7 +289,7 @@ router.delete('/projects/:pid/files/folder', async (req, res) => {
 // ─── Upload (multipart) ───────────────────────────────────────────────────────
 
 // POST /projects/:pid/files/upload
-router.post('/projects/:pid/files/upload', (req, res) => {
+router.post('/projects/:pid/files/upload', requirePermission('agents:read'), (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = normalizePath((req.query['path'] as string) ?? '/')
 
@@ -356,7 +357,7 @@ router.post('/projects/:pid/files/upload', (req, res) => {
 // POST /projects/:pid/filesystem/migrate
 // Body: { credential_id, adapter_id, action: 'migrate' | 'reset' }
 // Copies all files to new adapter (or resets DB), then applies new config.
-router.post('/projects/:pid/filesystem/migrate', async (req, res) => {
+router.post('/projects/:pid/filesystem/migrate', requirePermission('settings:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const body = req.body as {
     credential_id: string

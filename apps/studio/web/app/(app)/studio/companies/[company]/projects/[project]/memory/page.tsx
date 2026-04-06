@@ -11,7 +11,7 @@ interface PageProps {
   params: Promise<{ company: string; project: string }>
 }
 
-export default function MemoryPage({ params }: PageProps) {
+function MemoryPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
 
   const { data: companyData } = useQuery({
@@ -56,3 +56,5 @@ export default function MemoryPage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(MemoryPage, 'memory:read')

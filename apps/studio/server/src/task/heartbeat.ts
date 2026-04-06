@@ -61,6 +61,10 @@ export class HeartbeatScheduler {
   async scheduleAgent(agentId: string, projectId: string): Promise<void> {
     const agent = await getAgentById(agentId)
     if (!agent?.heartbeat_enabled || !agent.heartbeat_cron) return
+    if (!(agent.allowed_modes ?? []).includes('task')) {
+      console.warn(`[heartbeat] Not scheduling agent ${agentId}: task mode not enabled`)
+      return
+    }
 
     this.stopAgent(agentId)
 
@@ -75,7 +79,11 @@ export class HeartbeatScheduler {
         await this.triggerHeartbeat(agentId, projectId)
         // Reschedule after trigger
         const updatedAgent = await getAgentById(agentId)
-        if (updatedAgent?.heartbeat_enabled && updatedAgent.heartbeat_cron) {
+        if (
+          updatedAgent?.heartbeat_enabled &&
+          updatedAgent.heartbeat_cron &&
+          (updatedAgent.allowed_modes ?? []).includes('task')
+        ) {
           scheduleNext()
         }
       }, delayMs)
@@ -93,6 +101,13 @@ export class HeartbeatScheduler {
   async triggerHeartbeat(agentId: string, projectId: string): Promise<string> {
     const agent = await getAgentById(agentId)
     if (!agent) throw new Error(`Agent ${agentId} not found`)
+
+    // Guard: heartbeat runs as a task — skip if task mode is not enabled for this agent
+    const allowedModes = agent.allowed_modes ?? []
+    if (!allowedModes.includes('task')) {
+      console.warn(`[heartbeat] Skipping agent ${agentId}: task mode not enabled (allowed_modes=${JSON.stringify(allowedModes)})`)
+      throw new Error(`Agent ${agentId} does not have task mode enabled`)
+    }
 
     const now = new Date()
     const prompt = buildHeartbeatPrompt(agent)

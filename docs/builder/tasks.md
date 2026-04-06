@@ -1,7 +1,8 @@
 ## Backlog
 
+- [ ] Plan 12 — ACL system (full spec in `docs/plans/12-acl.md`)
 - [ ] Verify Telegram bot responds end-to-end (test: send message → typing indicator → get_datetime tool call → MarkdownV2 response)
-- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies `persona_prompt` column on agents + all pending schema changes
+- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies all pending schema changes (filesystem, attachments, persona_prompt, etc.)
 - [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
 - [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
@@ -9,6 +10,8 @@
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
 - [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
+- [ ] Browser automation: verify Playwright is installed on host (bun x playwright install chromium)
+- [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
 
@@ -59,3 +62,6 @@
 - [x] Real-time streaming for connector conversations — streamRegistry teed in event-router, useLiveConversation hook polls /live-parts — completed 2026-04-06
 - [x] `get_datetime` system tool — returns iso/timezone/local/unix; injected into all agents — completed 2026-04-06
 - [x] Telegram user timezone context — language_code → timezone map injected into connector context string — completed 2026-04-06
+- [x] Plan 13 — Browser Automation: OpenClaw engine ported, browser tools injected at wakeUp(), settings UI — completed 2026-04-06
+- [x] Plan 14 — Filesystem: S3/RustFS adapter, virtual path DB, agent tools (fs_list/read/write/move/delete/search), file manager UI (/disk), settings page — completed 2026-04-06
+- [x] Chat image attachments: upload + serve endpoint (/api/attachments), project_attachments DB table, image rendering in chat, ImageGallery fullscreen preview component — completed 2026-04-06

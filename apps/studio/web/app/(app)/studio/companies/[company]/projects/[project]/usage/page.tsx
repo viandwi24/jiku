@@ -67,7 +67,7 @@ function RawDataDialog({ log }: { log: ProjectUsageLog }) {
   )
 }
 
-export default function ProjectUsagePage({ params }: PageProps) {
+function ProjectUsagePage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const [page, setPage] = useState(0)
   const pageSize = 100
@@ -350,3 +350,5 @@ export default function ProjectUsagePage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ProjectUsagePage, 'settings:read')

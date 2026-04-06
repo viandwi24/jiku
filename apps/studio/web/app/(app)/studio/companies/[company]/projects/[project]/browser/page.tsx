@@ -22,7 +22,7 @@ type PingResult = {
   port?: number
 }
 
-export default function ProjectBrowserPage({ params }: PageProps) {
+function ProjectBrowserPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const qc = useQueryClient()
 
@@ -367,3 +367,5 @@ export default function ProjectBrowserPage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ProjectBrowserPage, 'agents:read')

@@ -775,6 +775,159 @@ GET    /api/projects/:pid/members/me/permissions        → resolved permissions
 
 ---
 
+## 13. Guard System — Implementation Notes (2026-04-06)
+
+### How Permission, Role, & Policy Work Together
+
+```
+                    ┌─────────────────────────────────────────────┐
+  ROLES             │  project_memberships                         │
+  (project-level)   │   user_id, role_id, is_superadmin            │
+  ──────────────    └───────────────┬─────────────────────────────┘
+  What menu items               resolved via
+  a user can SEE                    │
+  and which pages                   ▼
+  they can visit           resolveProjectPermissions()
+                               returns: {
+                                 granted, isSuperadmin,
+                                 permissions: string[]
+                               }
+                                     │
+                            ┌────────┴──────────┐
+                            │                   │
+                    BACKEND GUARD         FRONTEND GUARD
+                    requirePermission()   withPermissionGuard()
+                    (middleware)          (HOC / component)
+                            │                   │
+                      403 response         Access Denied UI
+                      if missing           or redirect
+                      permission
+
+  POLICIES          ┌───────────────────────────────────────────┐
+  (agent-level)     │  agent_policies: agent ↔ policy           │
+  ─────────────     │  policy_rules: { resource_id, subject,    │
+  What TOOLS        │    effect: allow|deny, priority }         │
+  each caller can   └───────────────────────────────────────────┘
+  INVOKE on the
+  agent at runtime.   Checked in AgentRunner.run() via
+                      checkAccess() (packages/core)
+```
+
+**Key separation:**
+- **Roles / PERMISSIONS** = which *pages and features* a user can access (Studio UI + API)
+- **Policies / PolicyRules** = which *tools* a caller can invoke via the agent at runtime
+
+### Backend — `requirePermission()` middleware
+
+Located: `apps/studio/server/src/middleware/permission.ts`
+
+```typescript
+// Resolves project_id from :pid param, :aid param (agent lookup), or res.locals
+async function resolveProjectId(req, res): Promise<string | null>
+
+// Loads + caches permissions in res.locals['resolved_perms']
+async function loadPerms(req, res): Promise<ResolvedProjectPermissions | null>
+
+// Middleware factory
+export function requirePermission(permission: string): RequestHandler
+
+// Usage in routes:
+router.get('/projects/:pid/agents', requirePermission('agents:read'), handler)
+router.patch('/agents/:aid', requirePermission('agents:write'), handler)  // auto-resolves via agent lookup
+```
+
+**All guarded routes:**
+
+| Route | Permission |
+|-------|-----------|
+| GET `/projects/:pid/agents` | `agents:read` |
+| POST `/projects/:pid/agents` | `agents:create` |
+| PATCH `/agents/:aid` | `agents:write` |
+| DELETE `/agents/:aid` | `agents:delete` |
+| GET `/agents/:aid/usage` | `settings:read` |
+| GET `/projects/:pid/conversations` | `chats:read` |
+| GET/POST `/agents/:aid/conversations` | `chats:read`/`chats:create` |
+| GET `/projects/:pid/runs` | `runs:read` |
+| GET `/agents/:aid/memories` | `memory:read` |
+| GET/PATCH memory config | `memory:read`/`settings:write` |
+| GET `/projects/:pid/plugins` | `plugins:read` |
+| POST enable/disable/config | `plugins:write` |
+| GET `/projects/:pid/connectors` | `channels:read` |
+| POST connectors | `channels:write` |
+| GET project credentials | `settings:read` |
+| POST credentials | `settings:write` |
+
+### Frontend — Hooks & Components
+
+**Hook:** `apps/studio/web/lib/permissions.ts`
+
+```typescript
+// Core hook — wraps api.acl.getMyPermissions
+export function useProjectPermission(projectId: string | undefined): ProjectPermissionState
+  // returns: { can(permission), isSuperadmin, isMember, permissions, isLoading, resolved }
+  // can() returns true while loading (prevents flash), then checks after data arrives
+
+// Slug-based variant (resolves projectId from company+project slugs)
+export function useProjectPermissionBySlugs(companySlug, projectSlug): ProjectPermissionState
+```
+
+**Components:** `apps/studio/web/components/permissions/permission-guard.tsx`
+
+```typescript
+// Inline guard — hide/show a block
+<PermissionGuard projectId={id} permission="agents:write" fallback={<p>No access</p>}>
+  <Button>Edit Agent</Button>
+</PermissionGuard>
+
+// Page-level guard — shows 403 UI or "not a member" if access denied
+<ProjectPageGuard companySlug={company} projectSlug={project} permission="chats:read">
+  {children}
+</ProjectPageGuard>
+
+// HOC for client page components — wraps page in ProjectPageGuard
+export default withPermissionGuard(MyPage, 'runs:read')
+// Requirement: page must accept params: Promise<{ company: string; project: string }>
+```
+
+**Applied to all project pages:**
+
+| Page | Permission |
+|------|-----------|
+| `chats/page.tsx` | `chats:read` |
+| `runs/page.tsx` | `runs:read` |
+| `memory/page.tsx` | `memory:read` |
+| `agents/page.tsx` | `agents:read` |
+| `plugins/page.tsx` | `plugins:read` |
+| `channels/page.tsx` | `channels:read` |
+| `usage/page.tsx` | `settings:read` |
+| `disk/page.tsx` | `agents:read` |
+| `browser/page.tsx` | `agents:read` |
+
+**Sidebar filtering:** `apps/studio/web/components/sidebar/project-sidebar.tsx`  
+Each nav item has a `permission` field. `canSee()` filters based on `getMyPermissions` query.
+
+### Policy Config — Reusable Component
+
+**Component:** `apps/studio/web/components/permissions/agent-policy-config.tsx`
+
+```typescript
+<AgentPolicyConfig
+  agentId={agentId}
+  companyId={companyId}
+  projectId={projectId}
+  compact={false}  // true = no outer padding, used inside accordions
+/>
+```
+
+Features: attach existing policies, create new policy with initial rule, detach policies, view/delete rules, view user self-restriction policies.
+
+**Usage locations:**
+1. `agents/[agent]/permissions/page.tsx` — full mode per agent
+2. `settings/policies/page.tsx` — compact mode, all agents in accordion per project
+
+---
+
 *Plan 12 — Auth & ACL System*  
 *Depends on: Plan 3 (Studio Base)*  
-*Generated: 2026-04-05*
+*Generated: 2026-04-05*  
+*Guard system implemented: 2026-04-06*

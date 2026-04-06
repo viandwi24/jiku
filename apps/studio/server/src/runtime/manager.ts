@@ -9,7 +9,7 @@ import { ensurePersonaSeeded } from '../memory/persona.ts'
 import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
-import { buildRunTaskTool } from '../task/tools.ts'
+import { buildRunTaskTool, buildListAgentsTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
 import { buildBrowserTools } from '../browser/tool.js'
@@ -172,6 +172,7 @@ export class JikuRuntimeManager {
       const runTaskTool = buildRunTaskTool(projectId, a.id, () => ({
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
+      const listAgentsTool = buildListAgentsTool(projectId)
 
       runtime.addAgent(
         defineAgent({
@@ -188,6 +189,7 @@ export class JikuRuntimeManager {
             ...shared.browserTools,
             ...shared.filesystemTools,
             runTaskTool,
+            listAgentsTool,
           ],
         }),
         agentMemoryConfig,
@@ -264,6 +266,7 @@ export class JikuRuntimeManager {
       const runTaskTool = buildRunTaskTool(projectId, a.id, () => ({
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
+      const listAgentsTool = buildListAgentsTool(projectId)
 
       runtime.addAgent(
         defineAgent({
@@ -280,6 +283,7 @@ export class JikuRuntimeManager {
             ...shared.browserTools,
             ...shared.filesystemTools,
             runTaskTool,
+            listAgentsTool,
           ],
         }),
         agentMemoryConfig,
@@ -318,6 +322,7 @@ export class JikuRuntimeManager {
     const runTaskTool = buildRunTaskTool(projectId, agent.id, () => ({
       user_id: 'system', roles: [], permissions: [], user_data: {},
     }), () => undefined)
+    const listAgentsTool = buildListAgentsTool(projectId)
 
     // Include current shared tools so syncAgent doesn't strip them
     const shared = this.getSharedTools(projectId)
@@ -337,6 +342,7 @@ export class JikuRuntimeManager {
           ...shared.browserTools,
           ...shared.filesystemTools,
           runTaskTool,
+          listAgentsTool,
         ],
       }),
       agentMemoryConfig,

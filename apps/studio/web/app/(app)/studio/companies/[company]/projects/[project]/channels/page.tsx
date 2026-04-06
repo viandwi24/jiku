@@ -39,7 +39,7 @@ function StatusBadge({ status }: { status: ConnectorItem['status'] }) {
   )
 }
 
-export default function ChannelsPage({ params }: PageProps) {
+function ChannelsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const router = useRouter()
   const qc = useQueryClient()
@@ -175,3 +175,5 @@ export default function ChannelsPage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ChannelsPage, 'channels:read')

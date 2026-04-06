@@ -914,7 +914,7 @@ function AttachmentsTab({ projectId }: { projectId: string }) {
 
 type Tab = 'explorer' | 'attachments' | 'config'
 
-export default function FilesPage({ params }: PageProps) {
+function FilesPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const projectId = useProjectId(companySlug, projectSlug)
   const [tab, setTab] = useState<Tab>('explorer')
@@ -983,3 +983,5 @@ export default function FilesPage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(FilesPage, 'agents:read')

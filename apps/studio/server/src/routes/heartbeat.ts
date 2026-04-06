@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { getAgentById, updateAgent } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 
@@ -8,7 +9,7 @@ const router = Router()
 router.use(authMiddleware)
 
 // GET /agents/:aid/heartbeat — get heartbeat status for an agent
-router.get('/agents/:aid/heartbeat', async (req, res) => {
+router.get('/agents/:aid/heartbeat', requirePermission('agents:read'), async (req, res) => {
   const agent = await getAgentById(req.params['aid']!)
   if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
 
@@ -22,7 +23,7 @@ router.get('/agents/:aid/heartbeat', async (req, res) => {
 })
 
 // PATCH /agents/:aid/heartbeat — update heartbeat config
-router.patch('/agents/:aid/heartbeat', async (req, res) => {
+router.patch('/agents/:aid/heartbeat', requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']!
   const agent = await getAgentById(agentId)
   if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
@@ -52,7 +53,7 @@ router.patch('/agents/:aid/heartbeat', async (req, res) => {
 })
 
 // POST /agents/:aid/heartbeat/trigger — manual trigger
-router.post('/agents/:aid/heartbeat/trigger', async (req, res) => {
+router.post('/agents/:aid/heartbeat/trigger', requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']!
   const agent = await getAgentById(agentId)
   if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }

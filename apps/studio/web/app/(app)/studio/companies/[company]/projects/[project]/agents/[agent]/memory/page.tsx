@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState } from 'react'
+import { use, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { AgentMemoryConfig, ResolvedMemoryConfig } from '@/lib/api'
@@ -113,15 +113,14 @@ export default function AgentMemoryPage({ params }: PageProps) {
   const [crossUserRead, setCrossUserRead] = useState<InheritOrBool>('inherit')
   const [extractionEnabled, setExtractionEnabled] = useState<InheritOrBool>('inherit')
 
-  // Initialize from loaded config
-  const [initialized, setInitialized] = useState(false)
-  if (resolvedData && !initialized) {
-    setReadRuntime(toInherit(agentConfig?.policy?.read?.runtime_global ?? null))
-    setWriteRuntime(toInherit(agentConfig?.policy?.write?.runtime_global ?? null))
-    setCrossUserRead(toInherit(agentConfig?.policy?.read?.cross_user ?? null))
-    setExtractionEnabled(toInherit(agentConfig?.extraction?.enabled ?? null))
-    setInitialized(true)
-  }
+  // Sync form state whenever fresh data arrives from the server
+  useEffect(() => {
+    if (!resolvedData) return
+    setReadRuntime(toInherit(resolvedData.agent_config?.policy?.read?.runtime_global ?? null))
+    setWriteRuntime(toInherit(resolvedData.agent_config?.policy?.write?.runtime_global ?? null))
+    setCrossUserRead(toInherit(resolvedData.agent_config?.policy?.read?.cross_user ?? null))
+    setExtractionEnabled(toInherit(resolvedData.agent_config?.extraction?.enabled ?? null))
+  }, [resolvedData])
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -150,7 +149,6 @@ export default function AgentMemoryPage({ params }: PageProps) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agent-memory-config-resolved', agentId] })
-      setInitialized(false)
       toast.success('Memory config saved')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save'),
@@ -160,7 +158,6 @@ export default function AgentMemoryPage({ params }: PageProps) {
     mutationFn: () => api.memoryConfig.updateAgent(agentId, null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agent-memory-config-resolved', agentId] })
-      setInitialized(false)
       toast.success('Reset to project defaults')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to reset'),

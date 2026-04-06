@@ -15,6 +15,7 @@ import {
   Paperclip,
   Shield,
   Sparkles,
+  ListTodo,
   Wrench,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -37,6 +38,7 @@ export default function AgentLayout({ children, params }: LayoutProps) {
     { value: 'prompt', label: 'prompt', icon: FileText, href: `${base}/prompt` },
     { value: 'persona', label: 'persona', icon: Sparkles, href: `${base}/persona` },
     { value: 'tools', label: 'tools', icon: Wrench, href: `${base}/tools` },
+    { value: 'task', label: 'task', icon: ListTodo, href: `${base}/task` },
     { value: 'memory', label: 'memory', icon: Brain, href: `${base}/memory` },
     { value: 'files', label: 'files', icon: Paperclip, href: `${base}/files` },
     { value: 'heartbeat', label: 'heartbeat', icon: Activity, href: `${base}/heartbeat` },

@@ -1,5 +1,25 @@
 # Memory
 
+## ACL: project_memberships vs company_members
+
+Two separate membership systems:
+- `company_members` (existing) — user in a company, has a company-level `role_id` (old roles table with `role_permissions`)
+- `project_memberships` (Plan 12) — user in a project, has `is_superadmin` + `role_id` (project_roles table with `permissions text[]`)
+
+Never confuse them. `resolveProjectPermissions()` reads from `project_memberships + project_roles`. `getMember()` reads from `company_members`.
+
+## ACL: requirePermission middleware caches in res.locals
+
+`requirePermission()` and `requireSuperadmin()` store resolved permissions in `res.locals['resolved_permissions']`. If multiple middleware run on the same request, DB is only hit once. The `project_id` is read from `req.params['pid']` (cast to string).
+
+## ACL: PERMISSIONS const location
+
+`PERMISSIONS`, `Permission`, `ROLE_PRESETS`, `ResolvedPermissions`, `ProjectGrant` are all in `packages/types/src/index.ts`. Import from `@jiku/types`.
+
+## ACL: invitation accept creates project_memberships from project_grants
+
+`project_grants` in `invitations` is `[{ project_id, role_id }]`. On accept: create `company_member` (if not exists) + create `project_membership` per grant. Superadmin on created membership is always `false` — must be granted separately.
+
 ## Radix ScrollArea breaks text-overflow ellipsis
 
 `@radix-ui/react-scroll-area` injects `min-width: 100%; display: table` on the inner viewport div. This causes flex children to stretch to content width, preventing `text-overflow: ellipsis` from working no matter how many Tailwind truncation classes are applied. Use a plain `<div className="overflow-y-auto h-full">` instead whenever truncated text lives inside the scroll container.
@@ -189,6 +209,58 @@ const modeTools = [
 ## shortToolId convention in UI
 
 In `context-preview-sheet.tsx`, the displayed tool ID strips the `__builtin__:` prefix to save space: `memory_search` instead of `__builtin__:memory_search`. The full ID is still used internally for grouping logic.
+
+## Filesystem route is /disk not /files
+
+The virtual disk file manager page lives at `/disk` (not `/files`). The settings page is at `/settings/filesystem`. The DB config table is `project_filesystem_config`. "Files" was avoided because `/agents/[agent]/files` already exists for a different purpose.
+
+## S3 adapter: forcePathStyle required for RustFS/MinIO
+
+`S3FilesystemAdapter` sets `forcePathStyle: true` on the S3Client. This is required for MinIO-compatible servers (RustFS) — they don't support virtual-hosted-style bucket URLs. Without this, requests fail with 404/403.
+
+## Filesystem content cache threshold: 50 KB
+
+Files ≤ 50,000 bytes store content in `project_files.content_cache`. This avoids S3 round-trips for small text files. `fs_read` returns `content_cache` if set, otherwise downloads from S3. Always sync cache on write.
+
+## Browser engine is OpenClaw port — don't modify core files
+
+`apps/studio/server/src/browser/browser/` contains ~60 files ported verbatim from OpenClaw. Only import paths were changed. Do not refactor these files. New glue code lives in `apps/studio/server/src/browser/` (top-level only): `index.ts`, `tool-schema.ts`, `node-server-entry.ts`.
+
+## Attachments vs project_files: different concepts
+
+- `project_attachments` — ephemeral chat images uploaded alongside messages. Accessible via `/api/attachments/:id`. Agents see them as image parts in message history.
+- `project_files` — persistent virtual disk. Accessible via `fs_*` tools and the /disk UI. Text files only (≤5MB, allowed extensions only).
+
+Do not confuse these or use one for the other's purpose.
+
+## ImageGallery component: click outside closes
+
+`ImageGallery` (`apps/studio/web/components/ui/image-gallery.tsx`) is a fullscreen overlay. Click the backdrop (not the image itself) closes it. Arrow keys navigate. Minimap strip at bottom shows thumbnails for multi-image messages. `open/onClose` props control visibility.
+
+## DB tool part format vs UI format
+
+DB stores tool calls as `{ type: 'tool-invocation', toolInvocationId, toolName, args, state: 'result', result }`. AI SDK v6 expects `{ type: 'dynamic-tool', toolCallId, state: 'output-available', input, output }`. Always convert via `dbPartsToUIParts()` in `apps/studio/web/lib/messages.ts` when loading messages for display.
+
+## task_allowed_agents: null vs [] vs [id…]
+
+`agents.task_allowed_agents` column controls delegation in `run_task`:
+- `null` (default) = unrestricted, can delegate to any agent
+- `[]` = delegation fully disabled
+- `[id1, id2]` = only the listed agent IDs are allowed as targets
+
+Check is enforced server-side in `checkTaskDelegationPermission()` in `apps/studio/server/src/task/tools.ts`. Self-delegation (same agent ID) always bypasses the check.
+
+## Heartbeat requires task mode
+
+`heartbeatScheduler.scheduleAgent()` silently returns if `task` is not in `agent.allowed_modes`. `triggerHeartbeat()` throws if task mode absent. This prevents heartbeat runs from spawning conversations in agents that have task mode disabled. Always check `allowed_modes` before scheduling.
+
+## serializeToolSchema: Zod → JSON Schema for preview
+
+`previewRun()` in `packages/core/src/runner.ts` uses `serializeToolSchema(t.input)` to convert each tool's Zod input schema to a plain JSON Schema object before serializing to the API response. This is needed because Zod objects are not JSON-serializable. Uses `zodToJsonSchema` from `zod-to-json-schema` (already a dep of `@jiku/core`).
+
+## Agent memory config: useEffect not initialized flag
+
+`apps/studio/web/app/.../agents/[agent]/memory/page.tsx` uses `useEffect(() => { ... }, [resolvedData])` to sync form state from server data. Do NOT use the `initialized` flag + if-inside-render pattern — it causes desync because `invalidateQueries` is async and stale data triggers a premature re-init before fresh data arrives.
 
 ## Wrap stream untuk cleanup after full consume
 

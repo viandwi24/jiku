@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission, loadPerms } from '../middleware/permission.ts'
 import {
   listProjectMemories,
   deleteMemory,
@@ -22,7 +23,7 @@ const router = Router()
  * GET /projects/:pid/memories
  * List all memories for a project with optional filters.
  */
-router.get('/projects/:pid/memories', authMiddleware, async (req, res) => {
+router.get('/projects/:pid/memories', authMiddleware, requirePermission('memory:read'), async (req, res) => {
   const projectId = req.params['pid']! as string
   const { agent_id, user_id, scope, tier, limit, offset } = req.query as Record<string, string>
 
@@ -55,6 +56,16 @@ router.delete('/memories/:id', authMiddleware, async (req, res) => {
       res.status(404).json({ error: 'Memory not found' })
       return
     }
+    // Inject project context so requirePermission can resolve it
+    res.locals['project_id'] = memory.project_id
+    const result = await loadPerms(req, res)
+    if (!result) { res.status(400).json({ error: 'Project context required' }); return }
+    const { resolved } = result
+    if (!resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (!resolved.isSuperadmin && !resolved.permissions.includes('memory:delete')) {
+      res.status(403).json({ error: 'Missing permission: memory:delete' }); return
+    }
+
     await deleteMemory(memoryId)
     res.json({ success: true })
   } catch (err) {
@@ -69,7 +80,7 @@ router.delete('/memories/:id', authMiddleware, async (req, res) => {
 /**
  * GET /projects/:pid/memory-config
  */
-router.get('/projects/:pid/memory-config', authMiddleware, async (req, res) => {
+router.get('/projects/:pid/memory-config', authMiddleware, requirePermission('memory:read'), async (req, res) => {
   const projectId = req.params['pid']! as string
   try {
     const project = await getProjectById(projectId)
@@ -84,7 +95,7 @@ router.get('/projects/:pid/memory-config', authMiddleware, async (req, res) => {
 /**
  * PATCH /projects/:pid/memory-config
  */
-router.patch('/projects/:pid/memory-config', authMiddleware, async (req, res) => {
+router.patch('/projects/:pid/memory-config', authMiddleware, requirePermission('settings:write'), async (req, res) => {
   const projectId = req.params['pid']! as string
   const updates = req.body as Partial<ProjectMemoryConfig>
   try {
@@ -108,7 +119,7 @@ router.patch('/projects/:pid/memory-config', authMiddleware, async (req, res) =>
 /**
  * GET /agents/:aid/memory-config
  */
-router.get('/agents/:aid/memory-config', authMiddleware, async (req, res) => {
+router.get('/agents/:aid/memory-config', authMiddleware, requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const agent = await getAgentById(agentId)
@@ -123,7 +134,7 @@ router.get('/agents/:aid/memory-config', authMiddleware, async (req, res) => {
 /**
  * PATCH /agents/:aid/memory-config
  */
-router.patch('/agents/:aid/memory-config', authMiddleware, async (req, res) => {
+router.patch('/agents/:aid/memory-config', authMiddleware, requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']! as string
   const updates = req.body as AgentMemoryConfig | null
   try {
@@ -140,7 +151,7 @@ router.patch('/agents/:aid/memory-config', authMiddleware, async (req, res) => {
  * GET /agents/:aid/memory-config/resolved
  * Returns the fully resolved config (project defaults merged with agent override).
  */
-router.get('/agents/:aid/memory-config/resolved', authMiddleware, async (req, res) => {
+router.get('/agents/:aid/memory-config/resolved', authMiddleware, requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const agent = await getAgentById(agentId)

@@ -75,7 +75,7 @@ function AttachmentPreviews() {
   )
 }
 
-export default function ChatsPage({ params, searchParams }: PageProps) {
+function ChatsPage({ params, searchParams }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const { agent: preselectedAgentSlug } = use(searchParams)
   const router = useRouter()
@@ -210,3 +210,5 @@ export default function ChatsPage({ params, searchParams }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ChatsPage, 'chats:read')

@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authMiddleware, verifyJwt } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import { getFilesystemService } from '../filesystem/service.ts'
 import {
   createAttachment,
@@ -47,7 +48,7 @@ function verifyProxyToken(token: string): string | null {
 // POST /projects/:pid/attachments/upload
 // Multipart upload. Returns { attachment_id, storage_key, proxy_url }.
 
-router.post('/projects/:pid/attachments/upload', authMiddleware, async (req, res) => {
+router.post('/projects/:pid/attachments/upload', authMiddleware, requirePermission('chats:create'), async (req, res) => {
   const projectId = req.params['pid']
   const userId = res.locals['user_id'] as string
   const { agent_id, conversation_id } = req.query as { agent_id?: string; conversation_id?: string }
@@ -144,7 +145,7 @@ router.post('/projects/:pid/attachments/upload', authMiddleware, async (req, res
 // ─── List ─────────────────────────────────────────────────────────────────────
 // GET /projects/:pid/attachments
 
-router.get('/projects/:pid/attachments', authMiddleware, async (req, res) => {
+router.get('/projects/:pid/attachments', authMiddleware, requirePermission('chats:read'), async (req, res) => {
   const projectId = req.params['pid']
   const limit = Math.min(Number(req.query['limit'] ?? 50), 100)
   const offset = Number(req.query['offset'] ?? 0)
@@ -155,7 +156,7 @@ router.get('/projects/:pid/attachments', authMiddleware, async (req, res) => {
 // ─── Delete ───────────────────────────────────────────────────────────────────
 // DELETE /projects/:pid/attachments/:id
 
-router.delete('/projects/:pid/attachments/:id', authMiddleware, async (req, res) => {
+router.delete('/projects/:pid/attachments/:id', authMiddleware, requirePermission('chats:create'), async (req, res) => {
   const projectId = req.params['pid']
   const id = req.params['id']
 
@@ -178,7 +179,7 @@ router.delete('/projects/:pid/attachments/:id', authMiddleware, async (req, res)
 // POST /projects/:pid/attachments/:id/token
 // Returns a short-lived signed token to use in proxy URL.
 
-router.post('/projects/:pid/attachments/:id/token', authMiddleware, async (req, res) => {
+router.post('/projects/:pid/attachments/:id/token', authMiddleware, requirePermission('chats:read'), async (req, res) => {
   const projectId = req.params['pid']
   const id = req.params['id']
 

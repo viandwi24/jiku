@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import {
   getAgentById,
   updateAgentPersonaSeed,
@@ -16,7 +17,7 @@ const router = Router()
  * GET /agents/:aid/persona/memories
  * List all agent_self memories (live persona managed by agent).
  */
-router.get('/agents/:aid/persona/memories', authMiddleware, async (req, res) => {
+router.get('/agents/:aid/persona/memories', authMiddleware, requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const memories = await getAgentSelfMemories(agentId)
@@ -30,7 +31,7 @@ router.get('/agents/:aid/persona/memories', authMiddleware, async (req, res) => 
  * GET /agents/:aid/persona/seed
  * Get the current persona seed config.
  */
-router.get('/agents/:aid/persona/seed', authMiddleware, async (req, res) => {
+router.get('/agents/:aid/persona/seed', authMiddleware, requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const agent = await getAgentById(agentId)
@@ -48,7 +49,7 @@ router.get('/agents/:aid/persona/seed', authMiddleware, async (req, res) => {
  * PATCH /agents/:aid/persona/seed
  * Update the persona seed. Does not affect already-seeded persona memories.
  */
-router.patch('/agents/:aid/persona/seed', authMiddleware, async (req, res) => {
+router.patch('/agents/:aid/persona/seed', authMiddleware, requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']! as string
   const seed = req.body as PersonaSeed | null
   try {
@@ -68,7 +69,7 @@ router.patch('/agents/:aid/persona/seed', authMiddleware, async (req, res) => {
  * Delete all agent_self memories and clear persona_seeded_at.
  * Next run will re-seed from persona_seed.
  */
-router.post('/agents/:aid/persona/reset', authMiddleware, async (req, res) => {
+router.post('/agents/:aid/persona/reset', authMiddleware, requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const agent = await getAgentById(agentId)
@@ -86,7 +87,7 @@ router.post('/agents/:aid/persona/reset', authMiddleware, async (req, res) => {
  * GET /agents/:aid/persona/prompt
  * Get the plain-text persona prompt.
  */
-router.get('/agents/:aid/persona/prompt', authMiddleware, async (req, res) => {
+router.get('/agents/:aid/persona/prompt', authMiddleware, requirePermission('agents:read'), async (req, res) => {
   const agentId = req.params['aid']! as string
   try {
     const agent = await getAgentById(agentId)
@@ -101,7 +102,7 @@ router.get('/agents/:aid/persona/prompt', authMiddleware, async (req, res) => {
  * PATCH /agents/:aid/persona/prompt
  * Update the plain-text persona prompt.
  */
-router.patch('/agents/:aid/persona/prompt', authMiddleware, async (req, res) => {
+router.patch('/agents/:aid/persona/prompt', authMiddleware, requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']! as string
   const { prompt } = req.body as { prompt: string | null }
   try {

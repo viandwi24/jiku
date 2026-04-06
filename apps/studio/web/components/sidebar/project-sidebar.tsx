@@ -48,6 +48,26 @@ interface ProjectSidebarProps {
   projectSlug: string
 }
 
+// Map each nav item to the permission required to see it (null = always visible)
+const NAV_ITEMS: Array<{
+  href: string
+  label: string
+  icon: React.ElementType
+  permission: string | null
+  badgeKey?: string
+}> = [
+  { href: '',          label: 'Dashboard', icon: LayoutDashboard, permission: null },
+  { href: '/agents',   label: 'Agents',    icon: Bot,             permission: 'agents:read' },
+  { href: '/chats',    label: 'Chats',     icon: MessageSquare,   permission: 'chats:read' },
+  { href: '/runs',     label: 'Runs',      icon: Activity,        permission: 'runs:read' },
+  { href: '/memory',   label: 'Memory',    icon: Brain,           permission: 'memory:read' },
+  { href: '/channels', label: 'Channels',  icon: Webhook,         permission: 'channels:read' },
+  { href: '/browser',  label: 'Browser',   icon: Globe,           permission: 'agents:read' },
+  { href: '/disk',     label: 'Disk',      icon: FolderOpen,      permission: 'agents:read' },
+  { href: '/plugins',  label: 'Plugins',   icon: Puzzle,          permission: 'plugins:read', badgeKey: 'plugins' },
+  { href: '/usage',    label: 'Usage',     icon: BarChart2,       permission: 'settings:read' },
+]
+
 export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
@@ -72,20 +92,43 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
   })
 
   const projectData = projectsData?.projects.find(p => p.slug === projectSlug) ?? null
+  const projectId = projectData?.id ?? ''
+
+  const { data: myPerms } = useQuery({
+    queryKey: ['acl-my-perms', projectId],
+    queryFn: () => api.acl.getMyPermissions(projectId),
+    enabled: !!projectId,
+  })
 
   const { data: agentsData } = useQuery({
-    queryKey: ['agents', projectData?.id],
-    queryFn: () => api.agents.list(projectData!.id),
-    enabled: !!projectData?.id,
+    queryKey: ['agents', projectId],
+    queryFn: () => api.agents.list(projectId),
+    // Only fetch for badge count if user can manage agents; chat-only users don't need the count
+    enabled: !!projectId && (!myPerms || myPerms.isSuperadmin || myPerms.permissions.includes('agents:read')),
   })
 
   const { data: projectPluginsData } = useQuery({
-    queryKey: ['project-plugins', projectData?.id],
-    queryFn: () => api.plugins.listProject(projectData!.id),
-    enabled: !!projectData?.id,
+    queryKey: ['project-plugins', projectId],
+    queryFn: () => api.plugins.listProject(projectId),
+    enabled: !!projectId,
   })
 
+  const isSuperadmin = myPerms?.isSuperadmin ?? false
+  const permSet = new Set(myPerms?.permissions ?? [])
+  // While loading (myPerms undefined) show all; once loaded restrict by permissions
+  const permsLoaded = myPerms != null
+  const canSee = (permission: string | null) => {
+    if (!permsLoaded) return true
+    if (permission === null) return true
+    return isSuperadmin || permSet.has(permission)
+  }
+  const canSeeSettings = !permsLoaded || isSuperadmin || permSet.has('settings:read')
+
   const activePluginCount = (projectPluginsData?.plugins ?? []).filter(p => p.enabled).length
+  const badges: Record<string, number | undefined> = {
+    agents: agentsData?.agents.length,
+    plugins: activePluginCount || undefined,
+  }
 
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}`
   const isActive = (path: string) => {
@@ -93,19 +136,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     return path === '' ? pathname === base : pathname.startsWith(full)
   }
 
-  const mainNav = [
-    { href: '', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/agents', label: 'Agents', icon: Bot, badge: agentsData?.agents.length, exact: false },
-    { href: '/chats', label: 'Chats', icon: MessageSquare },
-    { href: '/runs', label: 'Runs', icon: Activity },
-    { href: '/memory', label: 'Memory', icon: Brain },
-    { href: '/channels', label: 'Channels', icon: Webhook },
-    { href: '/browser', label: 'Browser', icon: Globe },
-    { href: '/disk', label: 'Disk', icon: FolderOpen },
-    { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },
-    { href: '/usage', label: 'Usage', icon: BarChart2 },
-  ]
-
+  const visibleNav = NAV_ITEMS.filter(item => canSee(item.permission))
 
   return (
     <Sidebar collapsible="icon">
@@ -124,11 +155,13 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
           {projectLoading
             ? <Skeleton className="h-4 w-28" />
             : <span className="font-semibold text-sm truncate">{projectData?.name ?? projectSlug}</span>}
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" asChild>
-            <Link href={`${base}/settings/general`}>
-              <Settings className="h-3.5 w-3.5" />
-            </Link>
-          </Button>
+          {canSeeSettings && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" asChild>
+              <Link href={`${base}/settings/general`}>
+                <Settings className="h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          )}
         </div>
       </SidebarHeader>
 
@@ -136,7 +169,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu className="gap-0.5">
-              {mainNav.map(item => (
+              {visibleNav.map(item => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={isActive(item.href)}>
                     <Link href={`${base}${item.href}`}>
@@ -144,19 +177,24 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
                       {item.label}
                     </Link>
                   </SidebarMenuButton>
-                  {item.badge !== undefined && (
-                    <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
+                  {item.href === '/agents' && badges.agents !== undefined && (
+                    <SidebarMenuBadge>{badges.agents}</SidebarMenuBadge>
+                  )}
+                  {item.badgeKey === 'plugins' && badges.plugins !== undefined && (
+                    <SidebarMenuBadge>{badges.plugins}</SidebarMenuBadge>
                   )}
                 </SidebarMenuItem>
               ))}
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive('/settings')}>
-                  <Link href={`${base}/settings/general`}>
-                    <Settings className="h-4 w-4" />
-                    Settings
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              {canSeeSettings && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild isActive={isActive('/settings')}>
+                    <Link href={`${base}/settings/general`}>
+                      <Settings className="h-4 w-4" />
+                      Settings
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

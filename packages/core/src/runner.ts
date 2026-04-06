@@ -9,6 +9,7 @@ import {
   type ModelMessage,
   type ToolContent,
 } from 'ai'
+import { zodToJsonSchema } from 'zod-to-json-schema'
 import type {
   AgentDefinition,
   JikuRunParams,
@@ -40,6 +41,22 @@ import type { PluginLoader } from './plugins/loader.ts'
 import { estimateTokens, getModelContextWindow } from './utils/tokens.ts'
 import { compactMessages, applyCompactBoundary } from './compaction.ts'
 import { buildMemoryContext, formatMemorySection, formatPersonaSection } from './memory/builder.ts'
+
+/**
+ * Serialize a tool input schema (Zod or plain JSON Schema) to a plain JSON Schema object
+ * suitable for sending over the wire (e.g. preview API response).
+ */
+function serializeToolSchema(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== 'object') return { type: 'object', properties: {} }
+  if ('_def' in (input as Record<string, unknown>)) {
+    try {
+      return zodToJsonSchema(input as Parameters<typeof zodToJsonSchema>[0]) as Record<string, unknown>
+    } catch {
+      return { type: 'object', properties: {} }
+    }
+  }
+  return input as Record<string, unknown>
+}
 
 /**
  * Convert a tool input schema (Zod v3) to an AI SDK-compatible schema.
@@ -721,7 +738,7 @@ export class AgentRunner {
         permission: t.resolved_permission,
         has_prompt: !!t.prompt,
         token_estimate: t.prompt ? estimateTokens(t.prompt) : 0,
-        input_schema: t.input,
+        input_schema: serializeToolSchema(t.input),
         group: t.meta.group,
       })),
       active_plugins: this.plugins.getLoadOrder().map(id => ({

@@ -25,6 +25,13 @@ export const agents = pgTable('agents', {
   heartbeat_prompt:     text('heartbeat_prompt'),
   heartbeat_last_run_at: timestamp('heartbeat_last_run_at'),
   heartbeat_next_run_at: timestamp('heartbeat_next_run_at'),
+  /**
+   * Controls which agents this agent is allowed to delegate tasks to via run_task.
+   * null  = no restriction (can spawn tasks to any agent in the project)
+   * []    = cannot delegate to any agent (delegation fully disabled)
+   * [id…] = can only delegate to the listed agent IDs
+   */
+  task_allowed_agents:  text('task_allowed_agents').array().default(null),
   /** How to deliver chat attachments to the model. 'base64' = inline data URI. 'proxy_url' = server proxy URL. Default base64 (dev-friendly). */
   file_delivery:        varchar('file_delivery', { length: 20 }).notNull().default('base64'),
   /** Scope for chat attachments uploaded by users. 'per_user' or 'shared'. */

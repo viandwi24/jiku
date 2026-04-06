@@ -10,6 +10,7 @@ import {
   getProjectById,
 } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 
 const router = Router()
@@ -36,7 +37,7 @@ router.get('/plugins/:id/config-schema', async (req, res) => {
 
 // ─── Project plugin management ───────────────────────────────────────────────
 
-router.get('/projects/:pid/plugins', async (req, res) => {
+router.get('/projects/:pid/plugins', requirePermission('plugins:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const project = await getProjectById(projectId)
   if (!project) { res.status(404).json({ error: 'Project not found' }); return }
@@ -64,7 +65,7 @@ router.get('/projects/:pid/plugins', async (req, res) => {
   res.json({ plugins })
 })
 
-router.get('/projects/:pid/plugins/active', async (req, res) => {
+router.get('/projects/:pid/plugins/active', requirePermission('plugins:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const project = await getProjectById(projectId)
   if (!project) { res.status(404).json({ error: 'Project not found' }); return }
@@ -73,7 +74,7 @@ router.get('/projects/:pid/plugins/active', async (req, res) => {
   res.json({ plugins: enabled })
 })
 
-router.post('/projects/:pid/plugins/:pluginId/enable', async (req, res) => {
+router.post('/projects/:pid/plugins/:pluginId/enable', requirePermission('plugins:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const pluginId = req.params['pluginId']!
   const config = (req.body as { config?: Record<string, unknown> }).config ?? {}
@@ -107,7 +108,7 @@ router.post('/projects/:pid/plugins/:pluginId/enable', async (req, res) => {
   res.json({ plugin: row })
 })
 
-router.post('/projects/:pid/plugins/:pluginId/disable', async (req, res) => {
+router.post('/projects/:pid/plugins/:pluginId/disable', requirePermission('plugins:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const pluginId = req.params['pluginId']!
 
@@ -123,7 +124,7 @@ router.post('/projects/:pid/plugins/:pluginId/disable', async (req, res) => {
   res.json({ plugin: row })
 })
 
-router.patch('/projects/:pid/plugins/:pluginId/config', async (req, res) => {
+router.patch('/projects/:pid/plugins/:pluginId/config', requirePermission('plugins:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const pluginId = req.params['pluginId']!
   const config = req.body as Record<string, unknown>

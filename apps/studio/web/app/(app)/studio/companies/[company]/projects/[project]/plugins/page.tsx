@@ -11,7 +11,7 @@ interface PageProps {
   params: Promise<{ company: string; project: string }>
 }
 
-export default function PluginsPage({ params }: PageProps) {
+function PluginsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
 
   const { data: companyData } = useQuery({
@@ -58,3 +58,5 @@ export default function PluginsPage({ params }: PageProps) {
     </div>
   )
 }
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(PluginsPage, 'plugins:read')

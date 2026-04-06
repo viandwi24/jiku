@@ -141,9 +141,35 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 - `apps/studio/web/components/chat/context-bar.tsx` — model + token display
 - `apps/studio/web/components/chat/context-preview-sheet.tsx` — full context sheet
 
+## Tool Parts Persistence
+
+Runner (`packages/core/src/runner.ts`) saves ALL parts per assistant message — tool invocations (call + result) and text. Uses `result.steps` from AI SDK to collect each step's `toolCalls` + `toolResults` and builds `tool-invocation` parts with `state: 'result'`.
+
+**DB storage format**: `{ type: 'tool-invocation', toolInvocationId, toolName, args, state: 'result', result }`  
+**UI format (AI SDK v6)**: `{ type: 'dynamic-tool', toolCallId, state: 'output-available', input, output }`
+
+Conversion via `dbPartsToUIParts()` in `apps/studio/web/lib/messages.ts`. History loading reconstructs full `assistant` + `tool` model messages so multi-step tool context survives page refresh.
+
+## Live Conversation (Connector / Run Detail)
+
+For connector conversations and the run detail page, `useLiveConversation` hook polls `/live-parts` at 400ms during active run. `autoDetect` mode polls `/status` every 2s to begin polling when a run starts (handles tabs opened before the run begins).
+
+`streamRegistry` keeps a `buffer: StreamChunk[]` per active run. `GET /conversations/:id/live-parts` returns a snapshot. `ConversationViewer mode="readonly"` uses this hook, shows "streaming" badge during live run, merges DB messages + live partial message.
+
+## Image Attachments
+
+Users can attach images to messages. Upload via `POST /api/attachments`, served via `GET /api/attachments/:id`. Images render inline in chat; click opens `ImageGallery` fullscreen overlay. See `docs/feats/attachments.md`.
+
+## ConversationViewer Component
+
+`components/chat/conversation-viewer.tsx` — shared component used by both chat page (mode=edit) and run detail page (mode=readonly).
+
+- `mode='edit'`: full PromptInput, context bar, memory preview sheet
+- `mode='readonly'`: no PromptInput, uses `useLiveConversation` for live updates, same context/tools/memory preview
+
 ## Known Limitations
 
 - No WebSocket support (removed in Plan 4) — all chat is HTTP streaming
-- `PluginLoader` in `wakeUp()` is empty — built-in plugins not yet registered
 - Agent selector disappears once conversation is started (intentional — cleaner UX)
 - StreamRegistry is in-memory — a server restart clears all active run state
+- Live-parts buffer is in-memory — lost on server restart (polling client will fall back to DB messages on next poll)

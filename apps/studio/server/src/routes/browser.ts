@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import { getProjectBrowserConfig, setProjectBrowserEnabled, setProjectBrowserConfig } from '@jiku-studio/db'
 import { runtimeManager } from '../runtime/manager.ts'
 import { getBrowserServerHandle } from '../browser/index.js'
@@ -20,7 +21,7 @@ const BrowserConfigSchema = z.object({
 })
 
 // GET /projects/:pid/browser — config + status
-router.get('/projects/:pid/browser', async (req, res) => {
+router.get('/projects/:pid/browser', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const cfg = await getProjectBrowserConfig(projectId)
@@ -36,7 +37,7 @@ router.get('/projects/:pid/browser', async (req, res) => {
 })
 
 // PATCH /projects/:pid/browser/enabled — toggle on/off
-router.patch('/projects/:pid/browser/enabled', async (req, res) => {
+router.patch('/projects/:pid/browser/enabled', requirePermission('settings:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const body = z.object({ enabled: z.boolean() }).safeParse(req.body)
@@ -53,7 +54,7 @@ router.patch('/projects/:pid/browser/enabled', async (req, res) => {
 })
 
 // PATCH /projects/:pid/browser/config — update config
-router.patch('/projects/:pid/browser/config', async (req, res) => {
+router.patch('/projects/:pid/browser/config', requirePermission('settings:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const parsed = BrowserConfigSchema.safeParse(req.body)
@@ -71,7 +72,7 @@ router.patch('/projects/:pid/browser/config', async (req, res) => {
 })
 
 // POST /projects/:pid/browser/ping — test connection to the browser server
-router.post('/projects/:pid/browser/ping', async (req, res) => {
+router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const cfg = await getProjectBrowserConfig(projectId)

@@ -1,12 +1,13 @@
 import { Router } from 'express'
-import { listRunsByProject, updateConversation, getConversationById } from '@jiku-studio/db'
+import { listRunsByProject, updateConversation, getConversationById, getAgentById } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission, loadPerms } from '../middleware/permission.ts'
 
 const router = Router()
 router.use(authMiddleware)
 
 // GET /projects/:pid/runs — list all conversations for a project (paginated)
-router.get('/projects/:pid/runs', async (req, res) => {
+router.get('/projects/:pid/runs', requirePermission('runs:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const q = req.query as Record<string, string>
 
@@ -28,6 +29,16 @@ router.get('/projects/:pid/runs', async (req, res) => {
 router.get('/conversations/:id', async (req, res) => {
   const conv = await getConversationById(req.params['id']!)
   if (!conv) { res.status(404).json({ error: 'Conversation not found' }); return }
+  const agent = await getAgentById(conv.agent_id)
+  if (agent) {
+    res.locals['project_id'] = agent.project_id
+    const result = await loadPerms(req, res)
+    if (!result) { res.status(400).json({ error: 'Project context required' }); return }
+    if (!result.resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (!result.resolved.isSuperadmin && !result.resolved.permissions.includes('runs:read')) {
+      res.status(403).json({ error: 'Missing permission: runs:read' }); return
+    }
+  }
   res.json({ conversation: conv })
 })
 
@@ -35,6 +46,16 @@ router.get('/conversations/:id', async (req, res) => {
 router.post('/conversations/:id/cancel', async (req, res) => {
   const conv = await getConversationById(req.params['id']!)
   if (!conv) { res.status(404).json({ error: 'Conversation not found' }); return }
+  const agent = await getAgentById(conv.agent_id)
+  if (agent) {
+    res.locals['project_id'] = agent.project_id
+    const result = await loadPerms(req, res)
+    if (!result) { res.status(400).json({ error: 'Project context required' }); return }
+    if (!result.resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (!result.resolved.isSuperadmin && !result.resolved.permissions.includes('runs:read')) {
+      res.status(403).json({ error: 'Missing permission: runs:read' }); return
+    }
+  }
 
   if (conv.run_status !== 'running' && conv.run_status !== 'idle') {
     res.status(400).json({ error: `Cannot cancel conversation in status "${conv.run_status}"` })

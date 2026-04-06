@@ -18,6 +18,9 @@ import { heartbeatRouter } from './routes/heartbeat.ts'
 import { browserRouter } from './routes/browser.ts'
 import { filesystemRouter } from './routes/filesystem.ts'
 import { attachmentsRouter } from './routes/attachments.ts'
+import { aclRolesRouter } from './routes/acl-roles.ts'
+import { aclMembersRouter } from './routes/acl-members.ts'
+import { aclInvitationsRouter } from './routes/acl-invitations.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
@@ -57,6 +60,9 @@ app.use('/api', runsRouter)
 app.use('/api', heartbeatRouter)
 app.use('/api', browserRouter)
 app.use('/api', filesystemRouter)
+app.use('/api', aclRolesRouter)
+app.use('/api', aclMembersRouter)
+app.use('/api', aclInvitationsRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 

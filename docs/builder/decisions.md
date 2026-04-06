@@ -1,5 +1,45 @@
 # Decisions
 
+## ADR-025 — Chat attachments are ephemeral, separate from project_files
+
+**Context:** Chat messages can include image uploads. Two options: store in the virtual filesystem (project_files) or a separate ephemeral table. Virtual disk files are persistent and addressable by agents via fs_* tools — not appropriate for transient chat images.
+
+**Decision:** Separate `project_attachments` table. S3 key layout `jiku/attachments/{projectId}/{conversationId}/{uuid}.{ext}` allows bulk-delete by conversation. Schema includes `scope: 'per_user' | 'shared'` for future multi-user access control.
+
+**Consequences:** Agents cannot see chat attachments via `fs_read` — only via image content in the AI message. Chat images don't pollute the virtual disk. Deletion can be done per-conversation (e.g. on conversation delete). Binary files (images) are explicitly allowed here, unlike virtual disk which is text-only.
+
+---
+
+## ADR-024 — Filesystem route is /disk, not /files
+
+**Context:** Plan 14 originally named the UI route `/files`. Conflict: agent has an `/agents/[agent]/files` page (for future agent-scoped files). Also `/files` is ambiguous — does it mean project files or all files?
+
+**Decision:** Route the virtual disk file manager at `/disk`. Settings at `/settings/filesystem`. Sidebar label "Disk". This makes it clearly refer to the project-level virtual storage, not a generic file concept.
+
+**Consequences:** URL is `/projects/[project]/disk` — memorable and distinct. Settings lives at `/settings/filesystem` to match the DB config table name `project_filesystem_config`.
+
+---
+
+## ADR-023 — Browser engine as ported OpenClaw code, not plugin
+
+**Context:** Browser automation requires deep Playwright integration (~80 files). Plugin system is designed for lightweight, composable capabilities. Porting as a plugin would require wrapping the entire browser server lifecycle in plugin hooks — forcing the plugin system to manage process lifecycle, which it was not designed for.
+
+**Decision:** Browser engine lives in `apps/studio/server/src/browser/` as a server-layer feature, identical to how memory and filesystem are structured. Browser tools are injected as `built_in_tools` at `wakeUp()`. OpenClaw browser engine files are ported verbatim (only import paths changed).
+
+**Consequences:** ~91% is ported code; only ~9% is new glue code. Browser feature cannot be enabled/disabled via plugin toggle — only via project settings. Per-project browser server isolation via unique port per project.
+
+---
+
+## ADR-022 — Filesystem content cache: files ≤ 50 KB stored in DB
+
+**Context:** Reading a file requires an S3 round-trip on every `fs_read` call. For small text files (code, configs, markdown) this adds 50–200ms latency and unnecessary S3 API calls.
+
+**Decision:** Files ≤ 50 KB have their content stored in `content_cache text` column on `project_files`. On `write()`, if `sizeBytes <= 50_000`, the content is cached. On `read()`, `content_cache` is returned directly if present; falls back to S3 download otherwise.
+
+**Consequences:** Small files (the common case for code/text) are served from DB with zero S3 latency. Content_cache is always kept in sync with storage — updated on every write. Large files (>50 KB) never cache and always hit S3.
+
+---
+
 ## ADR-021 — Tool group metadata lives in ToolMeta, not derived from ID
 
 **Context:** The `context-preview-sheet.tsx` previously grouped tools by ID prefix (`__builtin__:` → "built-in", `pluginId:` → plugin name). This was fragile and leaky — UI logic was parsing internal ID conventions. Alternatives: dedicate a grouping layer in the runner, or carry it in the tool definition itself.

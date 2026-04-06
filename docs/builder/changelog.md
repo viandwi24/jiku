@@ -1,5 +1,100 @@
 # Changelog
 
+## 2026-04-07 — Plan 12: Route Security Audit Completion + Agent Visibility Feature
+
+- **`loadPerms` exported** (`apps/studio/server/src/middleware/permission.ts`): Changed from private to `export async function loadPerms(...)`. Enables route handlers to call it inline after manually injecting `res.locals['project_id']` — needed for routes where the entity param is not `:pid`/`:aid`.
+- **Memory route guarded** (`apps/studio/server/src/routes/memory.ts`): `DELETE /memories/:id` — looks up memory, sets `res.locals['project_id'] = memory.project_id`, calls inline `loadPerms`, checks `memory:delete`.
+- **Connector routes guarded** (`apps/studio/server/src/routes/connectors.ts`): Added `requireConnectorPermission(permission)` factory middleware — resolves connector → `project_id`, then calls `loadPerms`. Applied to all 16 `/connectors/:id*` routes (read/write/activate/bindings/identities/events/messages/stream).
+- **Credential routes guarded** (`apps/studio/server/src/routes/credentials.ts`): Added `checkCredentialPermission` async helper. Only enforces ACL for `scope === 'project'` credentials; company-scoped credentials are accessible to any authenticated user. Applied to PATCH/DELETE/test routes.
+- **Preview routes guarded** (`apps/studio/server/src/routes/preview.ts`): `POST /agents/:aid/preview` → `requirePermission('agents:read')`. `POST /conversations/:id/preview` → inline `loadPerms` after resolving agent, requires `chats:read`.
+- **Conversation routes guarded** (`apps/studio/server/src/routes/conversations.ts`): `GET /conversations/:id` and `GET /conversations/:id/messages` → inline `loadPerms` after resolving agent, requires `chats:read`.
+- **Run routes guarded** (`apps/studio/server/src/routes/runs.ts`): `GET /conversations/:id` and `POST /conversations/:id/cancel` → inline `loadPerms` after resolving agent, requires `runs:read`.
+- **Attachment routes guarded** (`apps/studio/server/src/routes/attachments.ts`): All 4 attachment endpoints guarded with `requirePermission` (upload/list/delete → `chats:create`; token → `chats:read`).
+- **Project routes guarded** (`apps/studio/server/src/routes/projects.ts`): `PATCH /projects/:pid` → `requirePermission('settings:write')`. `GET /projects/:pid/usage` → `requirePermission('settings:read')`.
+- **Policy routes guarded** (`apps/studio/server/src/routes/policies.ts`): Added `requireCompanyMember` (caller is member of `:cid` company) and `requirePolicyCompanyMember` (looks up policy → company, checks membership). Applied to all 8 company policy routes.
+- **Agent visibility filtering** (`apps/studio/server/src/routes/agents.ts`): `GET /projects/:pid/agents` now filters agents by `agentRestrictions` for non-superadmin, non-`agents:write` users. Superadmins and users with `agents:write` see all agents. Agent-to-agent calls via runtime engine are unaffected.
+- **`AgentVisibilityConfig` component** (`apps/studio/web/components/permissions/agent-visibility-config.tsx`): New reusable component. Props: `{ agentId, projectId }`. Shows per-member Switch toggles. Superadmin and `agents:write` role members shown as "Always visible" (read-only). `canManage` gate: only renders interactive Switch if caller has `members:write` or is superadmin. Uses `api.acl.setAgentRestrictions` mutation.
+- **Agent Access tab in project settings** (`apps/studio/web/app/.../settings/permissions/page.tsx`): Added third "Agent Access" tab. View by member — shows which agents each member can see, with per-agent Switch toggles and "Hide all" / "Show all" buttons.
+- **Agent permissions tab** (`apps/studio/web/app/.../agents/[agent]/permissions/page.tsx`): Added `AgentVisibilityConfig` at top (Member Visibility section) above `AgentPolicyConfig`. View by agent — shows which members can see this specific agent.
+- Files: `middleware/permission.ts`, `routes/memory.ts`, `routes/connectors.ts`, `routes/credentials.ts`, `routes/preview.ts`, `routes/conversations.ts`, `routes/runs.ts`, `routes/attachments.ts`, `routes/projects.ts`, `routes/policies.ts`, `routes/agents.ts`, `components/permissions/agent-visibility-config.tsx` *(new)*, `settings/permissions/page.tsx`, `agents/[agent]/permissions/page.tsx`
+
+## 2026-04-07 — Task System Enhancements
+
+- **`task_allowed_agents` column** (`apps/studio/db/src/schema/agents.ts`): New `text[]|null` column on `agents` table. `null` = allow all, `[]` = deny all, `[id…]` = specific agents. Migration generated.
+- **`list_agents` tool** (`apps/studio/server/src/task/tools.ts`): New built-in tool exposed in `chat` and `task` modes. Returns all agents in the project (id, name, slug, description) — lets agents discover delegation targets.
+- **`run_task` delegation guard** (`apps/studio/server/src/task/tools.ts`): When `agent_id` differs from the caller agent, `checkTaskDelegationPermission()` enforces `task_allowed_agents`. Returns `{ status: 'error', message }` if denied.
+- **Heartbeat task-mode guard** (`apps/studio/server/src/task/heartbeat.ts`): `scheduleAgent()` skips scheduling if `task` not in `allowed_modes`. `triggerHeartbeat()` throws if task mode not enabled. Reschedule after run also checks task mode.
+- **`serializeToolSchema()`** (`packages/core/src/runner.ts`): Converts Zod schema to plain JSON Schema via `zodToJsonSchema` before sending in preview API response. Fixes "No parameters" in context preview Tools tab.
+- **Agent nav: "task" tab** (`apps/studio/web/app/.../agents/[agent]/layout.tsx` + `task/page.tsx`): New dedicated page for task delegation config (allow all / deny all / specific agents with toggle switches per agent).
+- **Tools page** (`apps/studio/web/app/.../agents/[agent]/tools/page.tsx`): Now shows available tools list only (delegation section removed — moved to task tab).
+- **Memory config desync fix** (`apps/studio/web/app/.../agents/[agent]/memory/page.tsx`): Replaced `initialized` flag + if-in-render pattern with `useEffect` synced to `resolvedData`. Selector buttons now correctly reflect saved values after save.
+- Files: `schema/agents.ts`, `task/tools.ts`, `task/heartbeat.ts`, `runtime/manager.ts`, `packages/core/src/runner.ts`, `web/lib/api.ts`, `agents/[agent]/layout.tsx`, `agents/[agent]/task/page.tsx`, `agents/[agent]/tools/page.tsx`, `agents/[agent]/memory/page.tsx`
+
+
+## 2026-04-07 — Plan 12: Permission Guard System + Policy Config Component
+
+- **`useProjectPermission` hook** (`apps/studio/web/lib/permissions.ts`): Core hook wrapping `api.acl.getMyPermissions`. Returns `{ can(permission), isSuperadmin, isMember, isLoading }`. `can()` is optimistic (true while loading). Slug variant `useProjectPermissionBySlugs` resolves projectId from slugs.
+- **Guard components** (`apps/studio/web/components/permissions/permission-guard.tsx`): `PermissionGuard` (inline, hide/show), `ProjectPageGuard` (page-level 403 UI), `withPermissionGuard` HOC (wraps page components automatically).
+- **All project pages guarded** via `withPermissionGuard`: chats, runs, memory, agents, plugins, channels, usage, disk, browser.
+- **Backend routes guarded**: agents, conversations, runs, memory, plugins, connectors, credentials — all with `requirePermission()`.
+- **`requirePermission` refactored** (`apps/studio/server/src/middleware/permission.ts`): Added `resolveProjectId()` helper (handles `:pid`, `:aid`→agent lookup, `res.locals`). Unified `loadPerms()` with caching.
+- **`AgentPolicyConfig` component** (`apps/studio/web/components/permissions/agent-policy-config.tsx`): Reusable policy editor for a single agent. Used in agent settings page (full) and project settings policies page (compact/accordion).
+- **Project settings Policies tab** (`apps/studio/web/app/.../settings/policies/page.tsx`): Shows all agents with accordion to edit their policies without navigating to each agent.
+- **Docs updated**: `docs/plans/12-acl.md` — added Section 13 (guard system notes). `docs/feats/permission-policy.md` — rewritten to cover both layers (roles+permissions and policies+rules).
+- Files: `lib/permissions.ts`, `components/permissions/permission-guard.tsx`, `components/permissions/agent-policy-config.tsx`, `settings/policies/page.tsx`, `middleware/permission.ts`, 9 project page files
+
+## 2026-04-07 — Plan 12: ACL Frontend (permissions settings page)
+
+- **API client** (`apps/studio/web/lib/api.ts`): Added `api.acl.*` — listRoles, createRole, updateRole, deleteRole, listMembers, getMyPermissions, assignRole, setSuperadmin, removeMember, listMyInvitations, acceptInvitation, declineInvitation, listCompanyInvitations, sendInvitation, cancelInvitation.
+- **ACL types** (`apps/studio/web/lib/api.ts`): Added `ProjectRole`, `ProjectMembership`, `ProjectMember`, `ResolvedProjectPermissions`, `InvitationItem`.
+- **Permissions page** (`apps/studio/web/app/.../settings/permissions/page.tsx`): Replaced "Coming Soon" stub with full Members + Roles management UI. Members tab: list with role dropdown, superadmin star, remove button. Roles tab: list with permission counts, role editor dialog with permission checkboxes grouped by resource, preset import buttons.
+- **`@jiku/types` dependency**: Added to `apps/studio/web/package.json` — needed for `PERMISSIONS` const and `ROLE_PRESETS`.
+- Files: `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../settings/permissions/page.tsx`, `apps/studio/web/package.json`
+
+## 2026-04-07 — Plan 12: ACL System (project roles, memberships, invitations)
+
+- **DB schema** (`apps/studio/db/src/schema/acl.ts`): 4 new tables — `project_roles` (custom roles per project with `permissions text[]`), `project_memberships` (user in project with `is_superadmin`, `agent_restrictions` jsonb, `tool_restrictions` jsonb), `invitations` (email invite with `project_grants` jsonb, status, 7-day expiry), `superadmin_transfers` (audit log).
+- **Relations** (`apps/studio/db/src/schema/relations.ts`): Added relations for all 4 new tables. Updated `projectsRelations`, `usersRelations`, `companiesRelations`.
+- **DB queries** (`apps/studio/db/src/queries/acl.ts`): Full CRUD for project roles, memberships, invitations. `resolveProjectPermissions()` resolves isSuperadmin + permissions + restrictions for a user in a project.
+- **`@jiku/types` permissions** (`packages/types/src/index.ts`): Added `PERMISSIONS` const (18 action strings), `Permission` type, `ROLE_PRESETS` (admin/manager/member/viewer), `ResolvedPermissions` interface, `ProjectGrant` interface.
+- **Permission middleware** (`apps/studio/server/src/middleware/permission.ts`): `requirePermission(permission)` and `requireSuperadmin()` middleware. Resolves permissions from DB, caches in `res.locals`. Superadmin bypasses all permission checks.
+- **Project roles routes** (`apps/studio/server/src/routes/acl-roles.ts`): CRUD for `/api/projects/:pid/roles` + `/roles/presets` endpoint.
+- **Project members routes** (`apps/studio/server/src/routes/acl-members.ts`): List members, `me/permissions`, assign role, grant/revoke superadmin, agent/tool restrictions, remove member. Prevents removal of last superadmin.
+- **Invitation routes** (`apps/studio/server/src/routes/acl-invitations.ts`): User-side: list pending invites, accept (creates memberships from project_grants), decline. Admin-side: send invite, cancel invite, list company invitations.
+- **Auto-create superadmin** (`apps/studio/server/src/routes/projects.ts`): When creating a project, creator gets `is_superadmin: true` membership automatically.
+- Files: `apps/studio/db/src/schema/acl.ts` *(new)*, `apps/studio/db/src/schema/index.ts`, `apps/studio/db/src/schema/relations.ts`, `apps/studio/db/src/queries/acl.ts` *(new)*, `apps/studio/db/src/index.ts`, `packages/types/src/index.ts`, `apps/studio/server/src/middleware/permission.ts` *(new)*, `apps/studio/server/src/routes/acl-roles.ts` *(new)*, `apps/studio/server/src/routes/acl-members.ts` *(new)*, `apps/studio/server/src/routes/acl-invitations.ts` *(new)*, `apps/studio/server/src/index.ts`, `apps/studio/server/src/routes/projects.ts`
+
+## 2026-04-06 — Chat Image Attachments + ImageGallery preview component
+
+- **`project_attachments` table** (`apps/studio/db/src/schema/attachments.ts`): New DB table for ephemeral chat attachments. Separate from `project_files` (virtual disk). Stores S3 key, filename, mime_type, size_bytes, scope (per_user/shared). S3 key layout: `jiku/attachments/{projectId}/{conversationId}/{uuid}.{ext}`.
+- **Attachment upload/serve routes** (`apps/studio/server/src/routes/chat.ts`): `POST /api/attachments` — multipart upload, validates mime + size, stores in S3. `GET /api/attachments/:id` — proxy serve from S3 with auth check.
+- **Image rendering in conversation** (`apps/studio/web/components/chat/conversation-viewer.tsx`): Attachment images rendered inline in chat messages. Each image is clickable to open fullscreen gallery.
+- **`ImageGallery` component** (`apps/studio/web/components/ui/image-gallery.tsx`): Fullscreen overlay gallery. Features: fit-to-screen image display, prev/next navigation (arrow keys + buttons), minimap thumbnail strip at bottom for multi-image navigation, click outside / backdrop click to close. Supports multiple images in one message.
+- **Duplicate image fix**: `conversation-viewer.tsx` had optimistic-update double-render bug — images appeared doubled until refresh. Fixed by deduplicating message parts before rendering.
+- Files: `apps/studio/db/src/schema/attachments.ts` *(new)*, `apps/studio/db/src/schema/index.ts`, `apps/studio/db/src/schema/relations.ts`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/web/components/ui/image-gallery.tsx` *(new)*, `apps/studio/web/components/chat/conversation-viewer.tsx`, `apps/studio/web/components/agent/chat/chat-interface.tsx`
+
+## 2026-04-06 — Plan 14: Filesystem (S3/RustFS virtual disk)
+
+- **DB schema** (`apps/studio/db/src/schema/filesystem.ts`): `project_filesystem_config` (one row per project: adapter_id, credential_id, enabled, total_files, total_size_bytes) + `project_files` (virtual path entries: path, name, folder_path, extension, storage_key, size_bytes, mime_type, content_cache). Content cache for files ≤ 50 KB avoids S3 round-trips.
+- **S3 adapter** (`apps/studio/server/src/filesystem/adapter.ts`): `S3FilesystemAdapter` using `@aws-sdk/client-s3`. `forcePathStyle: true` for RustFS/MinIO compatibility. `buildS3Adapter()` factory resolves from decrypted credential fields.
+- **FilesystemService** (`apps/studio/server/src/filesystem/service.ts`): Full CRUD — `list()`, `read()`, `write()`, `move()`, `delete()`, `deleteFolder()`, `search()`. Validates extension + size via `isAllowedFile()`. `normalizePath()` prevents path traversal. Virtual subfolder extraction via `extractImmediateSubfolders()`.
+- **Filesystem tools** (`apps/studio/server/src/filesystem/tools.ts`): 6 built-in tools: `fs_list`, `fs_read`, `fs_write`, `fs_move`, `fs_delete`, `fs_search`. Tagged `group: 'filesystem'`. Injected at `wakeUp()` when filesystem enabled.
+- **API routes** (`apps/studio/server/src/routes/filesystem.ts`): GET/PATCH config, POST test-connection, GET list, GET content, POST write, PATCH move, DELETE file, DELETE folder, GET search, POST upload (multipart).
+- **File manager UI** (`apps/studio/web/app/.../disk/page.tsx`): File tree with breadcrumb navigation. Folder list + file list. CodeMirror editor panel (split view). `apps/studio/web/app/.../disk/code-editor.tsx` — syntax-highlighted editor.
+- **Settings page** (`apps/studio/web/app/.../settings/filesystem/page.tsx`): Enable toggle, adapter selector (S3/RustFS), credential picker, storage stats, test connection button.
+- **Sidebar**: "Disk" nav item added to project sidebar.
+- Files: `apps/studio/db/src/schema/filesystem.ts`, `apps/studio/db/src/queries/filesystem.ts`, `apps/studio/server/src/filesystem/adapter.ts`, `apps/studio/server/src/filesystem/service.ts`, `apps/studio/server/src/filesystem/tools.ts`, `apps/studio/server/src/filesystem/utils.ts`, `apps/studio/server/src/routes/filesystem.ts`, `apps/studio/web/app/.../disk/page.tsx`, `apps/studio/web/app/.../disk/code-editor.tsx`, `apps/studio/web/app/.../settings/filesystem/page.tsx`, `apps/studio/web/components/sidebar/project-sidebar.tsx`
+
+## 2026-04-06 — Plan 13: Browser Automation
+
+- **OpenClaw browser engine ported** (`apps/studio/server/src/browser/`): ~80 files ported from OpenClaw. Entry: `browser/browser/server.ts` (`startBrowserControlServer(resolved)`). Config via `browser/config/config.ts`. All external OpenClaw config dependencies replaced with parameter-based config.
+- **Browser server lifecycle** (`apps/studio/server/src/browser/index.ts` / `node-server-entry.ts`): `startBrowserServer(projectId, config)` / `stopBrowserServer()` / `stopAllBrowserServers()`. Each project gets its own browser server on a unique port.
+- **Browser tool** (`apps/studio/server/src/browser/tool-schema.ts`): Single `browser` tool with `action` enum (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/console/pdf/upload/dialog/act). Zod schema. Tagged `group: 'browser'`, `permission: '*'`.
+- **Manager integration** (`apps/studio/server/src/runtime/manager.ts`): `wakeUp()` checks `browser_enabled` on project, starts browser server, injects `browserTools` into all agent `built_in_tools`. `sleep()` stops browser server. `stopAll()` stops all browser servers.
+- **API routes** (`apps/studio/server/src/routes/browser.ts`): GET config+status, PATCH enabled (triggers runtime restart), PATCH config.
+- **Browser settings UI** (`apps/studio/web/app/.../browser/page.tsx`): Enable toggle + server status badge + config form (headless, port, timeout, sandbox, evaluate).
+- Files: `apps/studio/server/src/browser/**` *(~80 new files)*, `apps/studio/server/src/routes/browser.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/db/src/schema/projects.ts` (browser_enabled + browser_config columns), `apps/studio/web/app/.../browser/page.tsx`
+
 ## 2026-04-06 — Tool parts rendering bug fix (DB → UI format conversion)
 
 - **`dbMessageToUIMessage` helper** (`apps/studio/web/lib/messages.ts` *(new)*): Converts DB-stored tool parts to AI SDK v6 UI format on load. DB stores `{ type: 'tool-invocation', toolInvocationId, args, state: 'result', result }` but AI SDK v6 expects `{ type: 'dynamic-tool', toolCallId, state: 'output-available', input, output }`. Without this conversion tools rendered as empty card with name "invocation".

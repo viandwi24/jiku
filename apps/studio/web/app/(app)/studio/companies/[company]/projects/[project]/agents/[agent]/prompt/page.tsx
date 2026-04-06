@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState } from 'react'
+import { use, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button, Label, Textarea } from '@jiku/ui'
@@ -35,9 +35,9 @@ export default function AgentPromptPage({ params }: PageProps) {
   const agent = agentsData?.agents.find(a => a.slug === agentSlug)
 
   const [basePrompt, setBasePrompt] = useState('')
-  if (agent && basePrompt === '') {
-    setBasePrompt(agent.base_prompt ?? '')
-  }
+  useEffect(() => {
+    if (agent) setBasePrompt(agent.base_prompt ?? '')
+  }, [agent?.id])
 
   const mutation = useMutation({
     mutationFn: () => api.agents.update(agent!.id, { base_prompt: basePrompt }),

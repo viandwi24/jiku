@@ -55,6 +55,22 @@ export async function deleteCompany(id: string) {
   await db.delete(companies).where(eq(companies.id, id))
 }
 
+export async function listMembers(companyId: string) {
+  return db.query.company_members.findMany({
+    where: eq(company_members.company_id, companyId),
+    with: { user: true, role: true },
+  })
+}
+
+export async function removeMember(companyId: string, userId: string) {
+  await db.delete(company_members).where(
+    and(
+      eq(company_members.company_id, companyId),
+      eq(company_members.user_id, userId),
+    )
+  )
+}
+
 export async function addMember(companyId: string, userId: string, roleId: string) {
   const [member] = await db
     .insert(company_members)

@@ -1,5 +1,9 @@
 import { Router } from 'express'
-import { getCompaniesByUserId, createCompany, getCompanyBySlug, updateCompany, deleteCompany, seedCompanySystemRoles, addMember } from '@jiku-studio/db'
+import {
+  getCompaniesByUserId, createCompany, getCompanyBySlug, updateCompany, deleteCompany,
+  seedCompanySystemRoles, addMember, listMembers, removeMember,
+  listUserProjectMembershipsInCompany, createProjectMembership, removeProjectMembership,
+} from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { uniqueSlug } from '../utils/slug.ts'
 
@@ -24,6 +28,45 @@ router.post('/', async (req, res) => {
   await addMember(company.id, userId, ownerRole.id)
 
   res.status(201).json({ company })
+})
+
+router.get('/:cid/members', async (req, res) => {
+  const members = await listMembers(req.params['cid'] as string)
+  res.json({ members })
+})
+
+router.delete('/:cid/members/:uid', async (req, res) => {
+  await removeMember(req.params['cid'] as string, req.params['uid'] as string)
+  res.json({ ok: true })
+})
+
+/** GET /api/companies/:cid/members/:uid/projects — project memberships for a user in this company */
+router.get('/:cid/members/:uid/projects', async (req, res) => {
+  const { cid, uid } = req.params as { cid: string; uid: string }
+  const memberships = await listUserProjectMembershipsInCompany(cid, uid)
+  res.json({ memberships })
+})
+
+/** POST /api/companies/:cid/members/:uid/projects — grant project access */
+router.post('/:cid/members/:uid/projects', async (req, res) => {
+  const { uid } = req.params as { cid: string; uid: string }
+  const { project_id, role_id } = req.body as { project_id: string; role_id?: string }
+  const membership = await createProjectMembership({
+    project_id,
+    user_id: uid,
+    role_id: role_id || null,
+    is_superadmin: false,
+    agent_restrictions: {},
+    tool_restrictions: {},
+  })
+  res.status(201).json({ membership })
+})
+
+/** DELETE /api/companies/:cid/members/:uid/projects/:pid — revoke project access */
+router.delete('/:cid/members/:uid/projects/:pid', async (req, res) => {
+  const { uid, pid } = req.params as { uid: string; pid: string }
+  await removeProjectMembership(pid, uid)
+  res.json({ ok: true })
 })
 
 router.patch('/:slug', async (req, res) => {

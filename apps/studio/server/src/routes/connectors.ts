@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authMiddleware } from '../middleware/auth.ts'
+import { requirePermission } from '../middleware/permission.ts'
 import {
   getConnectors,
   getConnectorById,
@@ -24,14 +25,33 @@ import {
 import { connectorRegistry } from '../connectors/registry.ts'
 import { routeConnectorEvent } from '../connectors/event-router.ts'
 import { activateConnector, deactivateConnector } from '../connectors/activation.ts'
+import { loadPerms } from '../middleware/permission.ts'
 import type { ConnectorEvent } from '@jiku/types'
+import type { Request, Response, NextFunction } from 'express'
 
 const router = Router()
+
+/** Middleware: resolve connector → project_id, then check permission */
+function requireConnectorPermission(permission: 'channels:read' | 'channels:write') {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const connector = await getConnectorById(req.params['id']!)
+    if (!connector) { res.status(404).json({ error: 'Not found' }); return }
+    res.locals['project_id'] = connector.project_id
+    const result = await loadPerms(req, res)
+    if (!result) { res.status(400).json({ error: 'Project context required' }); return }
+    const { resolved } = result
+    if (!resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (!resolved.isSuperadmin && !resolved.permissions.includes(permission)) {
+      res.status(403).json({ error: `Missing permission: ${permission}` }); return
+    }
+    next()
+  }
+}
 
 // ─── Connectors CRUD ─────────────────────────────────────────────────────────
 
 /** GET /projects/:pid/connectors */
-router.get('/projects/:pid/connectors', authMiddleware, async (req, res) => {
+router.get('/projects/:pid/connectors', authMiddleware, requirePermission('channels:read'), async (req, res) => {
   try {
     const rows = await getConnectors(req.params['pid']!)
     res.json({ connectors: rows })
@@ -41,7 +61,7 @@ router.get('/projects/:pid/connectors', authMiddleware, async (req, res) => {
 })
 
 /** POST /projects/:pid/connectors */
-router.post('/projects/:pid/connectors', authMiddleware, async (req, res) => {
+router.post('/projects/:pid/connectors', authMiddleware, requirePermission('channels:write'), async (req, res) => {
   const { plugin_id, display_name, credential_id, config } = req.body as {
     plugin_id: string
     display_name: string
@@ -82,7 +102,7 @@ router.post('/projects/:pid/connectors', authMiddleware, async (req, res) => {
 })
 
 /** GET /connectors/:id */
-router.get('/connectors/:id', authMiddleware, async (req, res) => {
+router.get('/connectors/:id', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const connector = await getConnectorById(req.params['id']!)
     if (!connector) { res.status(404).json({ error: 'Not found' }); return }
@@ -93,7 +113,7 @@ router.get('/connectors/:id', authMiddleware, async (req, res) => {
 })
 
 /** PATCH /connectors/:id */
-router.patch('/connectors/:id', authMiddleware, async (req, res) => {
+router.patch('/connectors/:id', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     const connector = await updateConnector(req.params['id']!, req.body)
     if (!connector) { res.status(404).json({ error: 'Not found' }); return }
@@ -104,7 +124,7 @@ router.patch('/connectors/:id', authMiddleware, async (req, res) => {
 })
 
 /** DELETE /connectors/:id */
-router.delete('/connectors/:id', authMiddleware, async (req, res) => {
+router.delete('/connectors/:id', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     await deleteConnector(req.params['id']!)
     res.json({ ok: true })
@@ -114,7 +134,7 @@ router.delete('/connectors/:id', authMiddleware, async (req, res) => {
 })
 
 /** POST /connectors/:id/activate */
-router.post('/connectors/:id/activate', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/activate', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     await activateConnector(req.params['id']!)
     const connector = await getConnectorById(req.params['id']!)
@@ -126,7 +146,7 @@ router.post('/connectors/:id/activate', authMiddleware, async (req, res) => {
 })
 
 /** POST /connectors/:id/deactivate */
-router.post('/connectors/:id/deactivate', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/deactivate', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     await deactivateConnector(req.params['id']!)
     const connector = await getConnectorById(req.params['id']!)
@@ -139,7 +159,7 @@ router.post('/connectors/:id/deactivate', authMiddleware, async (req, res) => {
 // ─── Bindings CRUD ───────────────────────────────────────────────────────────
 
 /** GET /connectors/:id/bindings */
-router.get('/connectors/:id/bindings', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/bindings', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const bindings = await getBindings(req.params['id']!)
     res.json({ bindings })
@@ -149,7 +169,7 @@ router.get('/connectors/:id/bindings', authMiddleware, async (req, res) => {
 })
 
 /** POST /connectors/:id/bindings */
-router.post('/connectors/:id/bindings', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/bindings', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     const binding = await createBinding({ connector_id: req.params['id']!, ...req.body })
     res.status(201).json({ binding })
@@ -159,7 +179,7 @@ router.post('/connectors/:id/bindings', authMiddleware, async (req, res) => {
 })
 
 /** PATCH /connectors/:id/bindings/:bid */
-router.patch('/connectors/:id/bindings/:bid', authMiddleware, async (req, res) => {
+router.patch('/connectors/:id/bindings/:bid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     const binding = await updateBinding(req.params['bid']!, req.body)
     if (!binding) { res.status(404).json({ error: 'Not found' }); return }
@@ -170,7 +190,7 @@ router.patch('/connectors/:id/bindings/:bid', authMiddleware, async (req, res) =
 })
 
 /** DELETE /connectors/:id/bindings/:bid */
-router.delete('/connectors/:id/bindings/:bid', authMiddleware, async (req, res) => {
+router.delete('/connectors/:id/bindings/:bid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     await deleteBinding(req.params['bid']!)
     res.json({ ok: true })
@@ -182,7 +202,7 @@ router.delete('/connectors/:id/bindings/:bid', authMiddleware, async (req, res) 
 // ─── Identities ───────────────────────────────────────────────────────────────
 
 /** GET /connectors/:id/bindings/:bid/identities */
-router.get('/connectors/:id/bindings/:bid/identities', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/bindings/:bid/identities', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const identities = await getIdentitiesForBinding(req.params['bid']!)
     res.json({ identities })
@@ -192,7 +212,7 @@ router.get('/connectors/:id/bindings/:bid/identities', authMiddleware, async (re
 })
 
 /** PATCH /connectors/:id/bindings/:bid/identities/:iid */
-router.patch('/connectors/:id/bindings/:bid/identities/:iid', authMiddleware, async (req, res) => {
+router.patch('/connectors/:id/bindings/:bid/identities/:iid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   const { status, mapped_user_id } = req.body as { status?: string; mapped_user_id?: string }
   try {
     const updates: Record<string, unknown> = {}
@@ -210,7 +230,7 @@ router.patch('/connectors/:id/bindings/:bid/identities/:iid', authMiddleware, as
 // ─── Pairing Requests ────────────────────────────────────────────────────────
 
 /** GET /connectors/:id/pairing-requests — list pending identities with no binding */
-router.get('/connectors/:id/pairing-requests', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/pairing-requests', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const requests = await getPairingRequestsForConnector(req.params['id']!)
     res.json({ pairing_requests: requests })
@@ -220,7 +240,7 @@ router.get('/connectors/:id/pairing-requests', authMiddleware, async (req, res) 
 })
 
 /** POST /connectors/:id/pairing-requests/:iid/approve — approve + auto-create binding */
-router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   const { output_adapter, output_config, display_name } = req.body as {
     output_adapter?: string
     output_config?: Record<string, unknown>
@@ -247,7 +267,7 @@ router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, asy
 })
 
 /** POST /connectors/:id/pairing-requests/:iid/reject */
-router.post('/connectors/:id/pairing-requests/:iid/reject', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/pairing-requests/:iid/reject', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     const identity = await updateIdentity(req.params['iid']!, { status: 'blocked' })
     if (!identity) { res.status(404).json({ error: 'Identity not found' }); return }
@@ -260,7 +280,7 @@ router.post('/connectors/:id/pairing-requests/:iid/reject', authMiddleware, asyn
 // ─── Invite Codes (connector-level) ─────────────────────────────────────────
 
 /** GET /connectors/:id/invite-codes */
-router.get('/connectors/:id/invite-codes', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/invite-codes', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const codes = await getInviteCodesForConnector(req.params['id']!)
     res.json({ invite_codes: codes })
@@ -270,7 +290,7 @@ router.get('/connectors/:id/invite-codes', authMiddleware, async (req, res) => {
 })
 
 /** POST /connectors/:id/invite-codes */
-router.post('/connectors/:id/invite-codes', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/invite-codes', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   const userId = res.locals['user_id'] as string
   const { label, max_uses, expires_at } = req.body as { label?: string; max_uses?: number; expires_at?: string }
   try {
@@ -291,7 +311,7 @@ router.post('/connectors/:id/invite-codes', authMiddleware, async (req, res) => 
 })
 
 /** POST /connectors/:id/invite-codes/:cid/revoke */
-router.post('/connectors/:id/invite-codes/:cid/revoke', authMiddleware, async (req, res) => {
+router.post('/connectors/:id/invite-codes/:cid/revoke', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     const invite = await revokeInviteCode(req.params['cid']!)
     if (!invite) { res.status(404).json({ error: 'Not found' }); return }
@@ -302,7 +322,7 @@ router.post('/connectors/:id/invite-codes/:cid/revoke', authMiddleware, async (r
 })
 
 /** DELETE /connectors/:id/invite-codes/:cid */
-router.delete('/connectors/:id/invite-codes/:cid', authMiddleware, async (req, res) => {
+router.delete('/connectors/:id/invite-codes/:cid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
     await deleteInviteCode(req.params['cid']!)
     res.json({ ok: true })
@@ -314,7 +334,7 @@ router.delete('/connectors/:id/invite-codes/:cid', authMiddleware, async (req, r
 // ─── Events & Messages (read-only) ───────────────────────────────────────────
 
 /** GET /connectors/:id/events */
-router.get('/connectors/:id/events', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/events', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const limit = parseInt(String(req.query['limit'] ?? '50'))
     const events = await getConnectorEvents(req.params['id']!, limit)
@@ -325,7 +345,7 @@ router.get('/connectors/:id/events', authMiddleware, async (req, res) => {
 })
 
 /** GET /connectors/:id/messages */
-router.get('/connectors/:id/messages', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/messages', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   try {
     const limit = parseInt(String(req.query['limit'] ?? '50'))
     const messages = await getConnectorMessages(req.params['id']!, limit)
@@ -336,7 +356,7 @@ router.get('/connectors/:id/messages', authMiddleware, async (req, res) => {
 })
 
 /** GET /connectors/:id/events/stream — SSE live event stream */
-router.get('/connectors/:id/events/stream', authMiddleware, async (req, res) => {
+router.get('/connectors/:id/events/stream', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')

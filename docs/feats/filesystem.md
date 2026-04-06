@@ -1,0 +1,101 @@
+# Feature: Filesystem / Virtual Disk (Plan 14)
+
+## What it does
+
+Per-project virtual filesystem backed by S3-compatible storage (RustFS/MinIO/AWS S3). Agents can read, write, list, move, delete, and search files via `fs_*` built-in tools. Users manage files via the `/disk` UI page. Virtual path system — folders are implicit (no folder entities in DB).
+
+## Architecture
+
+```
+project_filesystem_config  ← per-project: adapter_id, credential_id, enabled, stats
+project_files              ← virtual entries: path, name, folder_path, extension,
+                             storage_key, size_bytes, mime_type, content_cache
+
+FilesystemService          ← CRUD operations (list, read, write, move, delete)
+  └→ FilesystemAdapter     ← interface: upload/download/delete/exists/buildKey
+       └→ S3FilesystemAdapter ← @aws-sdk/client-s3, forcePathStyle=true
+
+RuntimeManager.wakeUp()    ← if filesystem enabled: inject fs_* tools as built_in_tools
+```
+
+## Storage
+
+Files stored in S3 at key: `projects/{projectId}{virtualPath}`
+Example: `projects/abc123/src/index.ts`
+
+Credentials are managed via the Credentials system (Plan 4). S3 credential type includes: `endpoint`, `access_key_id`, `secret_access_key`, `bucket`, `region`.
+
+**Content cache**: Files ≤ 50 KB have `content_cache` stored in DB. `fs_read` returns cache directly (no S3 round-trip). Updated on every write.
+
+## Allowed File Types
+
+Text-only: `.txt .md .mdx .rst .html .css .js .jsx .ts .tsx .py .rs .go .java .c .cpp .h .rb .php .swift .kt .cs .sh .json .yaml .yml .toml .env .ini .xml .csv .sql`
+Max size: 5 MB
+
+## Agent Tools
+
+| Tool | Description |
+|------|-------------|
+| `fs_list` | List files and virtual folders at path |
+| `fs_read` | Read file content |
+| `fs_write` | Write/create file |
+| `fs_move` | Move/rename file |
+| `fs_delete` | Delete file |
+| `fs_search` | Search files by name/path pattern |
+
+All tagged `group: 'filesystem'`, `permission: '*'`. Active in `chat` and `task` modes.
+
+## API Routes
+
+```
+GET    /api/projects/:pid/filesystem/config        → get config
+PATCH  /api/projects/:pid/filesystem/config        → update (adapter, credential, enabled)
+POST   /api/projects/:pid/filesystem/test          → test S3 connection
+GET    /api/projects/:pid/files?path=/src          → list entries
+GET    /api/projects/:pid/files/content?path=/x    → read content
+POST   /api/projects/:pid/files                    → write { path, content }
+PATCH  /api/projects/:pid/files/move               → move { from, to }
+DELETE /api/projects/:pid/files?path=/x            → delete file
+DELETE /api/projects/:pid/files/folder?path=/src   → delete folder (recursive)
+GET    /api/projects/:pid/files/search?q=&ext=     → search
+POST   /api/projects/:pid/files/upload             → multipart upload
+```
+
+## Web UI
+
+- `apps/studio/web/app/.../disk/page.tsx` — file manager: breadcrumb nav, folder/file list, CodeMirror split editor, context menu (rename/move/delete)
+- `apps/studio/web/app/.../disk/code-editor.tsx` — syntax-highlighted CodeMirror editor
+- `apps/studio/web/app/.../settings/filesystem/page.tsx` — enable toggle, adapter selector, credential picker, stats, test connection
+- Sidebar: "Disk" nav item in project sidebar
+
+## Development Setup (RustFS)
+
+```yaml
+# docker-compose.yml
+rustfs:
+  image: rustfs/rustfs:latest
+  ports: ["9000:9000", "9001:9001"]
+  environment:
+    RUSTFS_ACCESS_KEY: minioadmin
+    RUSTFS_SECRET_KEY: minioadmin
+```
+
+Default dev credential: endpoint `http://localhost:9000`, key `minioadmin`, secret `minioadmin`, bucket `jiku-local`.
+
+## Known Limitations
+
+- Binary files (images, audio, video) not supported — text-only
+- No file versioning/history
+- No per-agent private filesystem (all agents in project share same disk)
+- No file permissions per user (defer to Plan 12 ACL)
+- Streaming upload/download not supported (5 MB limit)
+
+## Related Files
+
+- `apps/studio/db/src/schema/filesystem.ts`
+- `apps/studio/db/src/queries/filesystem.ts`
+- `apps/studio/server/src/filesystem/adapter.ts`
+- `apps/studio/server/src/filesystem/service.ts`
+- `apps/studio/server/src/filesystem/tools.ts`
+- `apps/studio/server/src/filesystem/utils.ts`
+- `apps/studio/server/src/routes/filesystem.ts`

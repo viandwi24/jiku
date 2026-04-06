@@ -18,6 +18,8 @@ export default function CompanySettingsLayout({ children, params }: LayoutProps)
   const tabs = [
     { value: 'general', label: 'General', href: `${base}/general` },
     { value: 'credentials', label: 'Credentials', href: `${base}/credentials` },
+    { value: 'members', label: 'Members', href: `${base}/members` },
+    { value: 'invitations', label: 'Invitations', href: `${base}/invitations` },
   ]
 
   const activeTab = tabs.find(t => pathname.startsWith(t.href))?.value ?? 'general'

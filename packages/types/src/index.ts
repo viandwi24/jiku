@@ -979,3 +979,96 @@ export const FILESYSTEM_ALLOWED_EXTENSIONS = [
 
 export const FILESYSTEM_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 
+// ============================================================
+// ACL — Auth & Permissions (Plan 12)
+// ============================================================
+
+export const PERMISSIONS = {
+  // Chat
+  CHATS_READ:    'chats:read',
+  CHATS_CREATE:  'chats:create',
+
+  // Memory
+  MEMORY_READ:   'memory:read',
+  MEMORY_WRITE:  'memory:write',
+  MEMORY_DELETE: 'memory:delete',
+
+  // Runs
+  RUNS_READ:     'runs:read',
+
+  // Agents
+  AGENTS_READ:   'agents:read',
+  AGENTS_WRITE:  'agents:write',
+  AGENTS_CREATE: 'agents:create',
+  AGENTS_DELETE: 'agents:delete',
+
+  // Channels
+  CHANNELS_READ:  'channels:read',
+  CHANNELS_WRITE: 'channels:write',
+
+  // Plugins
+  PLUGINS_READ:  'plugins:read',
+  PLUGINS_WRITE: 'plugins:write',
+
+  // Project Settings
+  SETTINGS_READ:  'settings:read',
+  SETTINGS_WRITE: 'settings:write',
+
+  // Members & Roles
+  MEMBERS_READ:  'members:read',
+  MEMBERS_WRITE: 'members:write',
+  ROLES_WRITE:   'roles:write',
+} as const
+
+export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
+
+export const ROLE_PRESETS = {
+  admin: {
+    name: 'Admin',
+    permissions: Object.values(PERMISSIONS) as Permission[],
+  },
+  manager: {
+    name: 'Manager',
+    permissions: [
+      'chats:read', 'chats:create',
+      'memory:read', 'memory:write',
+      'runs:read',
+      'agents:read',
+      'channels:read',
+      'plugins:read',
+      'settings:read',
+      'members:read',
+    ] as Permission[],
+  },
+  member: {
+    name: 'Member',
+    permissions: [
+      'chats:read', 'chats:create',
+      'memory:read',
+      'runs:read',
+      'agents:read',
+    ] as Permission[],
+  },
+  viewer: {
+    name: 'Viewer',
+    permissions: [
+      'chats:read',
+      'runs:read',
+      'agents:read',
+    ] as Permission[],
+  },
+} satisfies Record<string, { name: string; permissions: Permission[] }>
+
+export interface ResolvedPermissions {
+  granted: boolean
+  isSuperadmin: boolean
+  permissions: Permission[]
+  agentRestrictions: Record<string, boolean>
+  toolRestrictions: Record<string, Record<string, boolean>>
+}
+
+export interface ProjectGrant {
+  project_id: string
+  role_id: string
+}
+

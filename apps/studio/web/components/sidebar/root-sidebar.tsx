@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
-import { Building2, ChevronsUpDown, LayoutDashboard, LogOut } from 'lucide-react'
+import { Building2, ChevronsUpDown, LayoutDashboard, LogOut, Mail } from 'lucide-react'
 import { useAuthStore } from '@/lib/store/auth.store'
 import {
   Avatar,
@@ -61,6 +61,14 @@ export function RootSidebar() {
                   <Link href="/studio/companies">
                     <Building2 className="h-4 w-4" />
                     Companies
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={pathname.startsWith('/studio/invitations')}>
+                  <Link href="/studio/invitations">
+                    <Mail className="h-4 w-4" />
+                    Invitations
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

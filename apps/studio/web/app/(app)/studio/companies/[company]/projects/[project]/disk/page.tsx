@@ -1,17 +1,18 @@
 'use client'
 
-import { use, useState, useCallback, useRef, useEffect } from 'react'
+import React, { use, useState, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { FilesystemEntry, FilesystemFileEntry } from '@/lib/api'
-import { Button } from '@jiku/ui'
+import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@jiku/ui'
 import { toast } from 'sonner'
 import {
   Folder, FileText, ChevronRight, Upload, Plus, Trash2, Download,
   RefreshCw, Loader2, Search, Copy, X, Save, Eye, AlertCircle,
   HardDrive, Settings2, Plug, TestTube2, TriangleAlert,
-  MoreHorizontal, Pencil, FolderOpen,
+  MoreHorizontal, Pencil, FolderOpen, Paperclip, User,
 } from 'lucide-react'
+import type { ProjectAttachment } from '@/lib/api'
 import dynamic from 'next/dynamic'
 
 // Lazy-load CodeMirror to avoid SSR issues
@@ -395,50 +396,38 @@ interface EntryDropdownProps {
 }
 
 function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen }: EntryDropdownProps) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
-
-  const items = [
-    ...(onOpen ? [{ label: entry.type === 'folder' ? 'Open folder' : 'Open file', icon: entry.type === 'folder' ? FolderOpen : Eye, action: onOpen }] : []),
-    { label: 'Rename', icon: Pencil, action: onRename },
-    { label: 'Copy path', icon: Copy, action: onCopyPath },
-    { label: 'Delete', icon: Trash2, action: onDelete, danger: true },
-  ]
-
   return (
-    <div ref={ref} className="relative" onClick={e => e.stopPropagation()}>
-      <button
-        className={`flex items-center justify-center w-5 h-5 rounded text-muted-foreground transition-colors hover:text-foreground hover:bg-muted ${open ? 'text-foreground bg-muted' : ''}`}
-        onClick={() => setOpen(v => !v)}
-        title="More actions"
-      >
-        <MoreHorizontal className="w-3.5 h-3.5" />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-0.5 z-50 min-w-[140px] rounded-md border bg-popover shadow-md py-1">
-          {items.map((item) => (
-            <button
-              key={item.label}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-muted text-left ${item.danger ? 'text-red-500 hover:text-red-600' : 'text-foreground'}`}
-              onClick={() => { item.action(); setOpen(false) }}
-            >
-              <item.icon className="w-3.5 h-3.5 shrink-0" />
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild onClick={e => e.stopPropagation()}>
+        <button
+          className="flex items-center justify-center w-5 h-5 rounded text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
+          title="More actions"
+        >
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[140px]" onClick={e => e.stopPropagation()}>
+        {onOpen && (
+          <DropdownMenuItem onClick={onOpen} className="text-xs gap-2">
+            {entry.type === 'folder' ? <FolderOpen className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            {entry.type === 'folder' ? 'Open folder' : 'Open file'}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onClick={onRename} className="text-xs gap-2">
+          <Pencil className="w-3.5 h-3.5" />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onCopyPath} className="text-xs gap-2">
+          <Copy className="w-3.5 h-3.5" />
+          Copy path
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-red-500 focus:text-red-500">
+          <Trash2 className="w-3.5 h-3.5" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -808,9 +797,122 @@ function FileExplorerTab({ projectId }: { projectId: string }) {
   )
 }
 
+// ─── Attachments Tab ──────────────────────────────────────────────────────────
+
+function AttachmentsTab({ projectId }: { projectId: string }) {
+  const qc = useQueryClient()
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['attachments', projectId],
+    queryFn: () => api.attachments.list(projectId, { limit: 100 }),
+    enabled: !!projectId,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.attachments.delete(projectId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['attachments', projectId] })
+      toast.success('Deleted')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Delete failed'),
+  })
+
+  const attachments = data?.attachments ?? []
+
+  function groupByConversation(list: ProjectAttachment[]) {
+    const map = new Map<string, ProjectAttachment[]>()
+    for (const a of list) {
+      const key = a.conversation_id ?? '_none'
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(a)
+    }
+    return map
+  }
+
+  const grouped = groupByConversation(attachments)
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold">Chat Attachments</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Files uploaded via chat. {attachments.length} total.
+          </p>
+        </div>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => refetch()}>
+          <RefreshCw className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+      ) : attachments.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
+          <Paperclip className="w-8 h-8 opacity-30" />
+          <p className="text-sm">No attachments yet</p>
+          <p className="text-xs">Files attached to chat messages will appear here.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {Array.from(grouped.entries()).map(([convId, items]) => (
+            <div key={convId} className="space-y-1">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-1 mb-1">
+                <User className="w-3 h-3" />
+                <span className="font-mono truncate max-w-[200px]">
+                  {convId === '_none' ? 'No conversation' : `conv: ${convId.slice(0, 8)}…`}
+                </span>
+                <span className="text-muted-foreground/50">·</span>
+                <span>{items.length} file{items.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div className="border rounded-md overflow-hidden">
+                {items.map((att, i) => (
+                  <div
+                    key={att.id}
+                    className={`flex items-center gap-3 px-3 py-2 text-sm ${i !== 0 ? 'border-t' : ''} hover:bg-muted/40 group`}
+                  >
+                    {att.mime_type.startsWith('image/') ? (
+                      <div className="w-8 h-8 rounded overflow-hidden shrink-0 bg-muted flex items-center justify-center">
+                        <Paperclip className="w-3.5 h-3.5 text-muted-foreground" />
+                      </div>
+                    ) : (
+                      <div className="w-8 h-8 rounded bg-muted flex items-center justify-center shrink-0">
+                        <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="truncate text-xs font-medium">{att.filename}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatSize(att.size_bytes)} · {att.mime_type} · {att.scope}
+                      </p>
+                    </div>
+                    <div className="text-xs text-muted-foreground shrink-0">
+                      {new Date(att.created_at).toLocaleDateString()}
+                    </div>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:text-red-500 text-muted-foreground transition-all"
+                      title="Delete"
+                      onClick={() => {
+                        if (!confirm(`Delete "${att.filename}"?`)) return
+                        deleteMutation.mutate(att.id)
+                      }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'explorer' | 'config'
+type Tab = 'explorer' | 'attachments' | 'config'
 
 export default function FilesPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
@@ -825,35 +927,33 @@ export default function FilesPage({ params }: PageProps) {
 
   const isConfigured = configData?.config?.enabled
 
+  const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
+    { id: 'explorer', label: 'Virtual Disk', icon: HardDrive },
+    { id: 'attachments', label: 'Attachments', icon: Paperclip },
+    { id: 'config', label: 'Storage Config', icon: Settings2 },
+  ]
+
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
       {/* Tab bar */}
       <div className="flex items-center gap-0.5 px-3 border-b bg-background shrink-0">
-        <button
-          className={`flex items-center gap-1.5 px-3 py-2.5 text-sm transition-colors border-b-2 -mb-px ${
-            tab === 'explorer'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => setTab('explorer')}
-        >
-          <FileText className="w-3.5 h-3.5" />
-          File Explorer
-        </button>
-        <button
-          className={`flex items-center gap-1.5 px-3 py-2.5 text-sm transition-colors border-b-2 -mb-px ${
-            tab === 'config'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => setTab('config')}
-        >
-          <Settings2 className="w-3.5 h-3.5" />
-          Storage Config
-          {!isConfigured && configData !== undefined && (
-            <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500" />
-          )}
-        </button>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            className={`flex items-center gap-1.5 px-3 py-2.5 text-sm transition-colors border-b-2 -mb-px ${
+              tab === t.id
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setTab(t.id)}
+          >
+            <t.icon className="w-3.5 h-3.5" />
+            {t.label}
+            {t.id === 'config' && !isConfigured && configData !== undefined && (
+              <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500" />
+            )}
+          </button>
+        ))}
       </div>
 
       {/* Tab content */}
@@ -864,9 +964,9 @@ export default function FilesPage({ params }: PageProps) {
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-sm text-center space-y-3">
               <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto" />
-              <h2 className="font-semibold">Filesystem not configured</h2>
+              <h2 className="font-semibold">Virtual Disk not configured</h2>
               <p className="text-sm text-muted-foreground">
-                Switch to the <strong>Storage Config</strong> tab to connect an S3-compatible storage adapter.
+                Switch to <strong>Storage Config</strong> to connect an S3-compatible storage adapter.
               </p>
               <Button variant="outline" size="sm" onClick={() => setTab('config')}>
                 <Settings2 className="w-3.5 h-3.5 mr-1.5" />
@@ -875,6 +975,8 @@ export default function FilesPage({ params }: PageProps) {
             </div>
           </div>
         )
+      ) : tab === 'attachments' ? (
+        <AttachmentsTab projectId={projectId} />
       ) : (
         <StorageConfigTab projectId={projectId} />
       )}

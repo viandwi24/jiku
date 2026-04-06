@@ -3,10 +3,14 @@ import { authMiddleware } from '../middleware/auth.ts'
 import { resolveCaller } from '../runtime/caller.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
-import { getConversationById, getAgentById, getProjectById, createUsageLog } from '@jiku-studio/db'
+import { getConversationById, getAgentById, getProjectById, createUsageLog, getAttachmentById } from '@jiku-studio/db'
 import { resolveAgentModel } from '../credentials/service.ts'
+import { getFilesystemService } from '../filesystem/service.ts'
+import { signProxyToken } from './attachments.ts'
 import { pipeUIMessageStreamToResponse } from 'ai'
 import type { UIMessage } from 'ai'
+import type { ChatAttachment, ChatFilePart } from '@jiku/types'
+import { env } from '../env.ts'
 
 const router = Router()
 
@@ -44,6 +48,60 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
   const input = lastPart?.type === 'text' ? lastPart.text : ''
   if (!input) { res.status(400).json({ error: 'No input message found' }); return }
 
+  // Resolve file/image attachments from the last user message.
+  // FileUIPart.url can be:
+  //   "attachment://{id}"  → stored attachment, resolve via DB + S3
+  //   "data:..."           → legacy client-side base64 (fallback, dev only)
+  const fileDelivery = (agent.file_delivery ?? 'base64') as 'base64' | 'proxy_url'
+  const attachments: ChatAttachment[] = []
+  const inputFileParts: ChatFilePart[] = []
+
+  if (lastUser) {
+    for (const part of lastUser.parts) {
+      if (part.type !== 'file') continue
+      const filePart = part as { type: 'file'; mediaType?: string; filename?: string; url?: string }
+      const url = filePart.url ?? ''
+
+      // Always collect original file parts for DB persistence
+      if (url.startsWith('attachment://') || url.startsWith('data:')) {
+        inputFileParts.push({
+          mediaType: filePart.mediaType ?? 'application/octet-stream',
+          filename: filePart.filename,
+          url,
+        })
+      }
+
+      if (url.startsWith('attachment://')) {
+        // Resolve from DB
+        const attachmentId = url.slice('attachment://'.length)
+        const record = await getAttachmentById(attachmentId).catch(() => null)
+        if (!record) continue
+
+        if (fileDelivery === 'proxy_url') {
+          // Generate short-lived signed proxy URL
+          const token = signProxyToken(record.storage_key)
+          const baseUrl = env.PUBLIC_URL ?? `http://localhost:${env.PORT}`
+          const proxyUrl = `${baseUrl}/files/view?key=${encodeURIComponent(record.storage_key)}&token=${token}`
+          attachments.push({ mime_type: record.mime_type, name: record.filename, data: proxyUrl })
+        } else {
+          // base64: download from S3 and inline
+          const fs = await getFilesystemService(record.project_id)
+          if (!fs) continue
+          const buffer = await fs.getAdapter().download(record.storage_key)
+          const dataUri = `data:${record.mime_type};base64,${buffer.toString('base64')}`
+          attachments.push({ mime_type: record.mime_type, name: record.filename, data: dataUri })
+        }
+      } else if (url.startsWith('data:')) {
+        // Legacy inline base64 — pass through as-is
+        attachments.push({
+          mime_type: filePart.mediaType ?? 'application/octet-stream',
+          name: filePart.filename ?? 'attachment',
+          data: url,
+        })
+      }
+    }
+  }
+
   // Resolve model snapshot for usage log (non-blocking, best-effort)
   const modelInfo = await resolveAgentModel(agent.id).catch(() => null)
   const snapshotProviderId = modelInfo?.adapter_id ?? null
@@ -56,6 +114,8 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
       caller,
       mode: 'chat',
       input,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      input_file_parts: inputFileParts.length > 0 ? inputFileParts : undefined,
       conversation_id: conversationId,
     })
   } catch (err) {

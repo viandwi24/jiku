@@ -10,6 +10,7 @@ import { conversations, messages } from './conversations.ts'
 import { credentials, agent_credentials } from './credentials.ts'
 import { usage_logs } from './usage_logs.ts'
 import { project_filesystem_config, project_files } from './filesystem.ts'
+import { project_attachments } from './attachments.ts'
 
 export const usersRelations = relations(users, ({ many }) => ({
   companies: many(companies),
@@ -72,6 +73,14 @@ export const agentsRelations = relations(agents, ({ one, many }) => ({
   conversations: many(conversations),
   agent_credential: many(agent_credentials),
   usage_logs: many(usage_logs),
+  attachments: many(project_attachments),
+}))
+
+export const projectAttachmentsRelations = relations(project_attachments, ({ one }) => ({
+  project: one(projects, { fields: [project_attachments.project_id], references: [projects.id] }),
+  agent: one(agents, { fields: [project_attachments.agent_id], references: [agents.id] }),
+  conversation: one(conversations, { fields: [project_attachments.conversation_id], references: [conversations.id] }),
+  user: one(users, { fields: [project_attachments.user_id], references: [users.id] }),
 }))
 
 export const usageLogsRelations = relations(usage_logs, ({ one }) => ({

@@ -5,4 +5,6 @@ export const env = {
   PORT: Number(process.env.PORT ?? 3001),
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '',
   CREDENTIALS_ENCRYPTION_KEY: process.env.CREDENTIALS_ENCRYPTION_KEY ?? '',
+  /** Public base URL for generating proxy URLs (e.g. https://api.jiku.io). Defaults to localhost. */
+  PUBLIC_URL: process.env.PUBLIC_URL ?? '',
 }

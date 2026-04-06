@@ -4,6 +4,7 @@ import { use, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import type { FileUIPart } from 'ai'
 import {
   Avatar,
   AvatarFallback,
@@ -24,17 +25,54 @@ import {
 } from '@jiku/ui'
 import {
   PromptInput,
+  PromptInputButton,
   PromptInputFooter,
+  PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
+  usePromptInputAttachments,
 } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
-import { Bot, Check, ChevronsUpDown, MessageSquare } from 'lucide-react'
+import {
+  Attachments,
+  Attachment,
+  AttachmentPreview,
+  AttachmentInfo,
+  AttachmentRemove,
+} from '@jiku/ui/components/ai-elements/attachments.tsx'
+import { Bot, Check, ChevronsUpDown, MessageSquare, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
   searchParams: Promise<{ agent?: string }>
+}
+
+function AttachFileButton() {
+  const attachments = usePromptInputAttachments()
+  return (
+    <PromptInputButton onClick={() => attachments.openFileDialog()} title="Attach file">
+      <Paperclip className="size-4" />
+    </PromptInputButton>
+  )
+}
+
+function AttachmentPreviews() {
+  const attachments = usePromptInputAttachments()
+  if (attachments.files.length === 0) return null
+  return (
+    <PromptInputHeader>
+      <Attachments variant="inline">
+        {attachments.files.map(f => (
+          <Attachment key={f.id} data={f} onRemove={() => attachments.remove(f.id)}>
+            <AttachmentPreview />
+            <AttachmentInfo />
+            <AttachmentRemove />
+          </Attachment>
+        ))}
+      </Attachments>
+    </PromptInputHeader>
+  )
 }
 
 export default function ChatsPage({ params, searchParams }: PageProps) {
@@ -82,7 +120,7 @@ export default function ChatsPage({ params, searchParams }: PageProps) {
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to create conversation'),
   })
 
-  function handleSend({ text }: { text: string; files: unknown[] }) {
+  async function handleSend({ text, files }: { text: string; files: FileUIPart[] }) {
     if (!selectedAgent) {
       toast.error('Select an agent first')
       return
@@ -90,6 +128,24 @@ export default function ChatsPage({ params, searchParams }: PageProps) {
     // Store pending message in sessionStorage so the conversation page can send it
     if (text.trim()) {
       sessionStorage.setItem('pending_message', text.trim())
+    }
+    // Upload files now (before conversation exists — we use a temp conversation_id = 'pending')
+    // They'll be picked up by the conv page via sessionStorage
+    if (files.length > 0 && project?.id) {
+      try {
+        const uploaded: string[] = []
+        await Promise.all(files.map(async (filePart) => {
+          const res = await fetch(filePart.url)
+          const blob = await res.blob()
+          const file = new File([blob], filePart.filename ?? 'file', { type: filePart.mediaType })
+          const result = await api.attachments.upload(project.id, [file], { agent_id: selectedAgent.id })
+          const att = result.attachments[0]
+          if (att) uploaded.push(JSON.stringify({ attachment_id: att.attachment_id, mediaType: filePart.mediaType, filename: filePart.filename }))
+        }))
+        if (uploaded.length > 0) sessionStorage.setItem('pending_files', JSON.stringify(uploaded))
+      } catch {
+        // Non-fatal: proceed without files
+      }
     }
     createMutation.mutate(selectedAgent.id)
   }
@@ -141,10 +197,11 @@ export default function ChatsPage({ params, searchParams }: PageProps) {
           </Popover>
 
           {/* Input */}
-          <PromptInput onSubmit={handleSend}>
-            <PromptInputTextarea placeholder="Type a message..." />
+          <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
+            <AttachmentPreviews />
+            <PromptInputTextarea placeholder="Type a message… (Enter to send, paste image)" />
             <PromptInputFooter>
-              <div />
+              <AttachFileButton />
               <PromptInputSubmit disabled={!selectedAgent || createMutation.isPending} />
             </PromptInputFooter>
           </PromptInput>

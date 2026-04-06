@@ -112,7 +112,7 @@ export class AgentRunner {
   }
 
   async run(params: JikuRunParams & { rules: PolicyRule[]; subject_matcher?: SubjectMatcher }): Promise<JikuRunResult> {
-    const { caller, mode, input, rules, subject_matcher } = params
+    const { caller, mode, input, attachments, rules, subject_matcher } = params
 
     // 1. Resolve scope
     const scope = resolveScope({
@@ -305,12 +305,44 @@ export class AgentRunner {
         }
       }
     }
-    messages.push({ role: 'user', content: input })
+    // Build user message content — text + optional image/file attachments
+    if (attachments && attachments.length > 0) {
+      type UserContentPart =
+        | { type: 'text'; text: string }
+        | { type: 'image'; image: string; mimeType?: string }
+        | { type: 'file'; data: string; mimeType: string; filename?: string }
+
+      const parts: UserContentPart[] = [{ type: 'text', text: input }]
+      for (const att of attachments) {
+        if (att.mime_type.startsWith('image/')) {
+          parts.push({ type: 'image', image: att.data, mimeType: att.mime_type })
+        } else {
+          // Non-image: pass as file part (text-based models will see extracted content)
+          parts.push({ type: 'file', data: att.data, mimeType: att.mime_type, filename: att.name })
+        }
+      }
+      messages.push({ role: 'user', content: parts })
+    } else {
+      messages.push({ role: 'user', content: input })
+    }
+
+    // Build user message parts: text + original file parts (attachment:// URLs for persistence)
+    type UserMessagePart =
+      | { type: 'text'; text: string }
+      | { type: 'file'; mediaType: string; filename?: string; url: string }
+    // File parts first, then text — matches AI SDK's live message part order
+    const userParts: UserMessagePart[] = []
+    if (params.input_file_parts && params.input_file_parts.length > 0) {
+      for (const fp of params.input_file_parts) {
+        userParts.push({ type: 'file', mediaType: fp.mediaType, filename: fp.filename, url: fp.url })
+      }
+    }
+    userParts.push({ type: 'text', text: input })
 
     await this.storage.addMessage(conversation_id, {
       conversation_id,
       role: 'user',
-      parts: [{ type: 'text', text: input }],
+      parts: userParts,
     })
 
     // 7. Build runtime context (shared across the run)

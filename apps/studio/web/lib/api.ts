@@ -503,6 +503,29 @@ export const api = {
         method: 'POST',
       }),
   },
+
+  attachments: {
+    list: (projectId: string, opts?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (opts?.limit) qs.set('limit', String(opts.limit))
+      if (opts?.offset) qs.set('offset', String(opts.offset))
+      return request<{ attachments: ProjectAttachment[] }>(`/api/projects/${projectId}/attachments?${qs}`)
+    },
+    upload: (projectId: string, files: File[], opts?: { agent_id?: string; conversation_id?: string }) => {
+      const qs = new URLSearchParams()
+      if (opts?.agent_id) qs.set('agent_id', opts.agent_id)
+      if (opts?.conversation_id) qs.set('conversation_id', opts.conversation_id)
+      const form = new FormData()
+      files.forEach(f => form.append('file', f))
+      return fetch(`${BASE_URL}/api/projects/${projectId}/attachments/upload?${qs}`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() },
+        body: form,
+      }).then(r => r.json() as Promise<{ attachments: Array<{ attachment_id: string; storage_key: string; filename: string; mime_type: string; size_bytes: number }> }>)
+    },
+    delete: (projectId: string, id: string) =>
+      request<{ success: boolean }>(`/api/projects/${projectId}/attachments/${id}`, { method: 'DELETE' }),
+  },
 }
 
 // Types
@@ -608,7 +631,23 @@ export interface Agent {
   base_prompt: string
   allowed_modes: string[]
   compaction_threshold?: number | null
+  file_delivery?: 'base64' | 'proxy_url' | null
+  attachment_scope?: 'per_user' | 'shared' | null
   created_at: string | null
+}
+
+export interface ProjectAttachment {
+  id: string
+  project_id: string
+  agent_id: string | null
+  conversation_id: string | null
+  user_id: string | null
+  storage_key: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+  scope: string
+  created_at: string
 }
 
 export interface ContextSegment {

@@ -12,7 +12,20 @@ interface PageProps {
 }
 
 export default function ConversationPage({ params }: PageProps) {
-  const { conv: convId } = use(params)
+  const { company: companySlug, project: projectSlug, conv: convId } = use(params)
+
+  const { data: companyData } = useQuery({
+    queryKey: ['companies'],
+    queryFn: () => api.companies.list(),
+    select: d => d.companies.find(c => c.slug === companySlug) ?? null,
+  })
+
+  const { data: projectsData } = useQuery({
+    queryKey: ['projects', companyData?.id],
+    queryFn: () => api.projects.list(companyData!.id),
+    enabled: !!companyData?.id,
+  })
+  const project = projectsData?.projects.find(p => p.slug === projectSlug)
 
   const { data: convData, isLoading: convLoading } = useQuery({
     queryKey: ['conversation', convId],
@@ -41,6 +54,7 @@ export default function ConversationPage({ params }: PageProps) {
       mode="edit"
       conversation={convData?.conversation ?? null}
       initialMessages={initialMessages}
+      projectId={project?.id}
     />
   )
 }

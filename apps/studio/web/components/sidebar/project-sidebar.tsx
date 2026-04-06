@@ -101,7 +101,7 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     { href: '/memory', label: 'Memory', icon: Brain },
     { href: '/channels', label: 'Channels', icon: Webhook },
     { href: '/browser', label: 'Browser', icon: Globe },
-    { href: '/files', label: 'Files', icon: FolderOpen },
+    { href: '/disk', label: 'Disk', icon: FolderOpen },
     { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },
     { href: '/usage', label: 'Usage', icon: BarChart2 },
   ]

@@ -449,11 +449,35 @@ export interface JikuRuntimeOptions {
 // RUN PARAMS
 // ============================================================
 
+export interface ChatAttachment {
+  /** MIME type, e.g. "image/png", "text/csv" */
+  mime_type: string
+  /** Original filename */
+  name: string
+  /**
+   * For images: base64-encoded data URI ("data:image/png;base64,...")
+   * For text files: plain text content
+   */
+  data: string
+}
+
+export interface ChatFilePart {
+  /** MIME type, e.g. "image/png" */
+  mediaType: string
+  /** Original filename */
+  filename?: string
+  /** URL — typically "attachment://{id}" */
+  url: string
+}
+
 export interface JikuRunParams {
   agent_id: string
   caller: CallerContext
   mode: AgentMode
   input: string
+  attachments?: ChatAttachment[]
+  /** Original file parts from the UI message — stored verbatim in DB (attachment:// URLs) */
+  input_file_parts?: ChatFilePart[]
   conversation_id?: string
   provider_id?: string
   model_id?: string

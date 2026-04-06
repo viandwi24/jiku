@@ -13,15 +13,19 @@ import { useLiveConversation } from '@/hooks/use-live-conversation'
 import { Avatar, AvatarFallback, Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@jiku/ui/components/ai-elements/conversation.tsx'
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
-import { PromptInput, PromptInputFooter, PromptInputSubmit, PromptInputTextarea } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
+import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
+import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from '@jiku/ui/components/ai-elements/attachments.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
-import { ArrowDown, ArrowUp, Bot } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, Paperclip } from 'lucide-react'
+import { ImageGallery, ImageGalleryTrigger } from '@/components/ui/image-gallery'
+import type { GalleryImage } from '@/components/ui/image-gallery'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
 import { ContextBar } from './context-bar'
 import { CompactionIndicator } from './compaction-indicator'
 import { MemoryPreviewSheet } from './memory-preview-sheet'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+const API_BASE = API_URL
 
 interface CompactionEvent {
   summary: string
@@ -42,57 +46,140 @@ export interface ConversationViewerProps {
     status: string
   } | null
   initialMessages: UIMessage[]
+  /** Required in edit mode for file attachment uploads */
+  projectId?: string
+}
+
+function AttachFileButton() {
+  const attachments = usePromptInputAttachments()
+  return (
+    <PromptInputButton onClick={() => attachments.openFileDialog()} title="Attach file">
+      <Paperclip className="size-4" />
+    </PromptInputButton>
+  )
+}
+
+function AttachmentPreviews() {
+  const attachments = usePromptInputAttachments()
+  if (attachments.files.length === 0) return null
+  return (
+    <PromptInputHeader>
+      <Attachments variant="inline">
+        {attachments.files.map(f => (
+          <Attachment key={f.id} data={f} onRemove={() => attachments.remove(f.id)}>
+            <AttachmentPreview />
+            <AttachmentInfo />
+            <AttachmentRemove />
+          </Attachment>
+        ))}
+      </Attachments>
+    </PromptInputHeader>
+  )
+}
+
+function resolveAttachmentUrl(url: string): string {
+  if (url.startsWith('attachment://')) {
+    const id = url.slice('attachment://'.length)
+    const token = getToken() ?? ''
+    return `${API_BASE}/api/attachments/${id}/inline?token=${encodeURIComponent(token)}`
+  }
+  return url
+}
+
+function FileAttachment({ url, filename }: { url: string; mediaType?: string; filename?: string }) {
+  const resolved = resolveAttachmentUrl(url)
+  return (
+    <a
+      href={resolved}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-1.5 text-xs underline underline-offset-2 opacity-80 hover:opacity-100"
+    >
+      📎 {filename ?? 'attachment'}
+    </a>
+  )
 }
 
 function MessageParts({ msg }: { msg: UIMessage }) {
+  if (
+    msg.role === 'assistant' &&
+    msg.parts.some(p => p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]'))
+  ) {
+    const part = msg.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
+    return (
+      <CompactionIndicator
+        summary={part?.text.replace('[Context Summary]\n', '') ?? ''}
+        removedCount={0}
+        tokenSaved={0}
+      />
+    )
+  }
+
+  // Collect images for gallery
+  const imageParts = msg.parts
+    .filter(p => p.type === 'file' && (p as { type: 'file'; mediaType?: string }).mediaType?.startsWith('image/'))
+    .map(p => {
+      const fp = p as { type: 'file'; url: string; mediaType?: string; filename?: string }
+      return { src: resolveAttachmentUrl(fp.url), alt: fp.filename, filename: fp.filename } satisfies GalleryImage
+    })
+
   return (
     <>
-      {msg.role === 'assistant' && msg.parts.some(p =>
-        p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]')
-      ) ? (
-        <CompactionIndicator
-          summary={(() => {
-            const part = msg.parts.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined
-            return part?.text.replace('[Context Summary]\n', '') ?? ''
-          })()}
-          removedCount={0}
-          tokenSaved={0}
-        />
-      ) : (
-        msg.parts.map((part, i) => {
-          if (isTextUIPart(part)) {
-            return msg.role === 'assistant'
-              ? <MessageResponse key={i}>{part.text}</MessageResponse>
-              : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
-          }
-          if (isToolUIPart(part)) {
-            const toolName = getToolName(part)
-            return (
-              <Tool key={i}>
-                {isStaticToolUIPart(part) ? (
-                  <ToolHeader type={part.type} state={part.state} />
-                ) : (
-                  <ToolHeader type={part.type} state={part.state} toolName={toolName} />
-                )}
-                <ToolContent>
-                  {'input' in part && part.input !== undefined && (
-                    <ToolInput input={part.input} />
-                  )}
-                  {'output' in part && (
-                    <ToolOutput output={part.output} errorText={part.errorText} />
-                  )}
-                </ToolContent>
-              </Tool>
-            )
-          }
-          return null
-        })
+      {/* Image gallery strip — shown above text for user messages */}
+      {imageParts.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {imageParts.map((img, idx) => (
+            <ImageGalleryTrigger key={idx} images={imageParts} index={idx}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={img.src}
+                alt={img.alt ?? ''}
+                className="max-w-[200px] max-h-[160px] rounded-lg object-cover border border-white/10"
+              />
+            </ImageGalleryTrigger>
+          ))}
+        </div>
       )}
+
+      {msg.parts.map((part, i) => {
+        if (part.type === 'file') {
+          const p = part as { type: 'file'; url: string; mediaType?: string; filename?: string }
+          // Images are already shown in the gallery strip above
+          if (p.mediaType?.startsWith('image/')) return null
+          return <FileAttachment key={i} url={p.url} mediaType={p.mediaType} filename={p.filename} />
+        }
+        if (isTextUIPart(part)) {
+          return msg.role === 'assistant'
+            ? <MessageResponse key={i}>{part.text}</MessageResponse>
+            : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
+        }
+        if (isToolUIPart(part)) {
+          const toolName = getToolName(part)
+          return (
+            <Tool key={i}>
+              {isStaticToolUIPart(part) ? (
+                <ToolHeader type={part.type} state={part.state} />
+              ) : (
+                <ToolHeader type={part.type} state={part.state} toolName={toolName} />
+              )}
+              <ToolContent>
+                {'input' in part && part.input !== undefined && (
+                  <ToolInput input={part.input} />
+                )}
+                {'output' in part && (
+                  <ToolOutput output={part.output} errorText={part.errorText} />
+                )}
+              </ToolContent>
+            </Tool>
+          )
+        }
+        return null
+      })}
     </>
   )
 }
 
-export function ConversationViewer({ convId, mode, conversation, initialMessages }: ConversationViewerProps) {
+export function ConversationViewer({ convId, mode, conversation, initialMessages, projectId }: ConversationViewerProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [memorySheetOpen, setMemorySheetOpen] = useState(false)
   const [showUsageTip, setShowUsageTip] = useState(false)
@@ -195,14 +282,31 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId])
 
-  // In edit mode: check for pending message from session storage
+  // In edit mode: check for pending message + files from session storage
   useEffect(() => {
     if (mode !== 'edit') return
-    const pending = sessionStorage.getItem('pending_message')
-    if (pending) {
-      sessionStorage.removeItem('pending_message')
-      sendMessage({ text: pending })
+    const pendingText = sessionStorage.getItem('pending_message')
+    const pendingFilesRaw = sessionStorage.getItem('pending_files')
+    sessionStorage.removeItem('pending_message')
+    sessionStorage.removeItem('pending_files')
+
+    if (!pendingText && !pendingFilesRaw) return
+
+    let fileParts: { type: 'file'; mediaType: string; url: string; filename?: string }[] = []
+    if (pendingFilesRaw) {
+      try {
+        const parsed = JSON.parse(pendingFilesRaw) as string[]
+        fileParts = parsed.map(s => {
+          const { attachment_id, mediaType, filename } = JSON.parse(s) as { attachment_id: string; mediaType: string; filename?: string }
+          return { type: 'file' as const, mediaType, url: `attachment://${attachment_id}`, filename }
+        })
+      } catch { /* ignore parse errors */ }
     }
+
+    sendMessage({
+      text: pendingText || '(see attached file)',
+      files: fileParts.length > 0 ? fileParts : undefined,
+    })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, mode])
 
@@ -217,9 +321,43 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
 
   // Start live polling when edit-mode streaming ends (so readonly tabs catch up)
   // readonly: start polling when we detect a run is active
-  const handleSend = ({ text }: { text: string; files: unknown[] }) => {
-    if (!text.trim() || isStreaming || mode !== 'edit') return
-    sendMessage({ text })
+  const handleSend = async ({ text, files }: { text: string; files: { url: string; mediaType: string; filename?: string }[] }) => {
+    if ((!text.trim() && files.length === 0) || isStreaming || mode !== 'edit') return
+
+    if (files.length === 0) {
+      sendMessage({ text })
+      return
+    }
+
+    // Upload files to server, then send with attachment:// scheme
+    const uploadedParts: { type: 'file'; mediaType: string; url: string; filename?: string }[] = []
+    await Promise.all(files.map(async (filePart) => {
+      try {
+        const res = await fetch(filePart.url)
+        const blob = await res.blob()
+        const file = new File([blob], filePart.filename ?? 'file', { type: filePart.mediaType })
+        if (!projectId) throw new Error('No projectId')
+        const result = await api.attachments.upload(projectId, [file], {
+          agent_id: agentId,
+          conversation_id: convId,
+        })
+        const uploaded = result.attachments[0]
+        if (!uploaded) throw new Error('No result')
+        uploadedParts.push({
+          type: 'file',
+          mediaType: filePart.mediaType,
+          url: `attachment://${uploaded.attachment_id}`,
+          filename: filePart.filename,
+        })
+      } catch {
+        // skip failed upload — message still sends without this file
+      }
+    }))
+
+    sendMessage({
+      text: text || '(see attached file)',
+      files: uploadedParts.length > 0 ? uploadedParts : undefined,
+    })
   }
 
   // Build display messages — append live message for readonly observers
@@ -279,6 +417,9 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
 
           {displayMessages.map(msg => (
             <Message key={msg.id} from={msg.role}>
+              {/* <div>
+                {JSON.stringify(msg)}
+              </div> */}
               <MessageContent>
                 <MessageParts msg={msg} />
               </MessageContent>
@@ -298,10 +439,11 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       <div className="border-t px-4 py-3 shrink-0">
         <div className="max-w-3xl mx-auto">
           {mode === 'edit' && (
-            <PromptInput onSubmit={handleSend}>
-              <PromptInputTextarea placeholder="Type a message..." />
+            <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
+              <AttachmentPreviews />
+              <PromptInputTextarea placeholder="Type a message… (Enter to send, paste image)" />
               <PromptInputFooter>
-                <div />
+                <AttachFileButton />
                 <PromptInputSubmit status={status} onStop={() => {}} />
               </PromptInputFooter>
             </PromptInput>

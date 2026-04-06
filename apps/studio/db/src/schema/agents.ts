@@ -25,6 +25,10 @@ export const agents = pgTable('agents', {
   heartbeat_prompt:     text('heartbeat_prompt'),
   heartbeat_last_run_at: timestamp('heartbeat_last_run_at'),
   heartbeat_next_run_at: timestamp('heartbeat_next_run_at'),
+  /** How to deliver chat attachments to the model. 'base64' = inline data URI. 'proxy_url' = server proxy URL. Default base64 (dev-friendly). */
+  file_delivery:        varchar('file_delivery', { length: 20 }).notNull().default('base64'),
+  /** Scope for chat attachments uploaded by users. 'per_user' or 'shared'. */
+  attachment_scope:     varchar('attachment_scope', { length: 20 }).notNull().default('per_user'),
   created_at:           timestamp('created_at').defaultNow(),
 }, t => [unique().on(t.project_id, t.slug)])
 

@@ -17,6 +17,7 @@ import { runsRouter } from './routes/runs.ts'
 import { heartbeatRouter } from './routes/heartbeat.ts'
 import { browserRouter } from './routes/browser.ts'
 import { filesystemRouter } from './routes/filesystem.ts'
+import { attachmentsRouter } from './routes/attachments.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
@@ -31,6 +32,12 @@ const app = express()
 
 app.use(cors())
 app.use(express.json())
+
+// Attachments router must be registered FIRST — the inline endpoint (/api/attachments/:id/inline)
+// uses a query-string token instead of Authorization header, so it must not be intercepted by
+// any router that calls router.use(authMiddleware) without a matching route.
+app.use('/api', attachmentsRouter)
+app.use('/', attachmentsRouter)  // /files/view proxy is at root level
 
 app.use('/api/auth', authRouter)
 app.use('/api/companies', companiesRouter)

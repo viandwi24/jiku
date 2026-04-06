@@ -582,6 +582,30 @@ export const api = {
     cancelInvitation: (companyId: string, invitationId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/invitations/${invitationId}`, { method: 'DELETE' }),
   },
+
+  skills: {
+    // Project skills (files are stored on the filesystem under /skills/{slug}/)
+    list: (projectId: string) =>
+      request<{ skills: SkillItem[] }>(`/api/projects/${projectId}/skills`),
+    create: (projectId: string, body: { name: string; slug?: string; description?: string; tags?: string[]; entrypoint?: string }) =>
+      request<{ skill: SkillItem }>(`/api/projects/${projectId}/skills`, { method: 'POST', body: JSON.stringify(body) }),
+    get: (skillId: string) =>
+      request<{ skill: SkillItem }>(`/api/skills/${skillId}`),
+    update: (skillId: string, body: Partial<{ name: string; description: string; tags: string[]; entrypoint: string; enabled: boolean }>) =>
+      request<{ skill: SkillItem }>(`/api/skills/${skillId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (skillId: string) =>
+      request<{ ok: boolean }>(`/api/skills/${skillId}`, { method: 'DELETE' }),
+
+    // Agent skill assignments
+    listAgentSkills: (agentId: string) =>
+      request<{ assignments: AgentSkillAssignment[] }>(`/api/agents/${agentId}/skills`),
+    assignSkill: (agentId: string, body: { skill_id: string; mode?: 'always' | 'on_demand' }) =>
+      request<{ assignment: AgentSkillAssignment }>(`/api/agents/${agentId}/skills`, { method: 'POST', body: JSON.stringify(body) }),
+    updateAssignment: (agentId: string, skillId: string, mode: 'always' | 'on_demand') =>
+      request<{ assignment: AgentSkillAssignment }>(`/api/agents/${agentId}/skills/${skillId}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
+    removeSkill: (agentId: string, skillId: string) =>
+      request<{ ok: boolean }>(`/api/agents/${agentId}/skills/${skillId}`, { method: 'DELETE' }),
+  },
 }
 
 // Types
@@ -829,6 +853,12 @@ export interface ConversationItem {
   mode: string
   title: string | null
   status: string
+  type: string
+  run_status: string
+  metadata: Record<string, unknown>
+  started_at: string | null
+  finished_at: string | null
+  error_message: string | null
   created_at: string | null
 }
 
@@ -1169,5 +1199,27 @@ export interface InvitationItem {
   created_at: string
   company?: { id: string; name: string; slug: string }
   invited_by_user?: { id: string; name: string; email: string }
+}
+
+export interface SkillItem {
+  id: string
+  project_id: string
+  name: string
+  slug: string
+  description: string | null
+  tags: string[]
+  entrypoint: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentSkillAssignment {
+  id: string
+  agent_id: string
+  skill_id: string
+  mode: 'always' | 'on_demand'
+  created_at: string
+  skill: SkillItem
 }
 

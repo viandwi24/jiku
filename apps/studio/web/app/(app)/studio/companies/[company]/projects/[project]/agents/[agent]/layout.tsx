@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   BarChart2,
+  BookOpen,
   Bot,
   Brain,
   Cpu,
@@ -39,6 +40,7 @@ export default function AgentLayout({ children, params }: LayoutProps) {
     { value: 'persona', label: 'persona', icon: Sparkles, href: `${base}/persona` },
     { value: 'tools', label: 'tools', icon: Wrench, href: `${base}/tools` },
     { value: 'task', label: 'task', icon: ListTodo, href: `${base}/task` },
+    { value: 'skills', label: 'skills', icon: BookOpen, href: `${base}/skills` },
     { value: 'memory', label: 'memory', icon: Brain, href: `${base}/memory` },
     { value: 'files', label: 'files', icon: Paperclip, href: `${base}/files` },
     { value: 'heartbeat', label: 'heartbeat', icon: Activity, href: `${base}/heartbeat` },

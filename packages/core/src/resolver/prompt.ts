@@ -41,15 +41,19 @@ export function buildSystemPrompt(params: {
   plugin_segments: string[]
   memory_section?: string
   persona_section?: string
+  skill_section?: string
+  skill_hint?: string
 }): string {
-  const { base, mode, active_tools, caller, plugin_segments, memory_section, persona_section } = params
+  const { base, mode, active_tools, caller, plugin_segments, memory_section, persona_section, skill_section, skill_hint } = params
 
   const segments = [
     base,
     persona_section,
+    skill_section,
     memory_section,
     buildModeInstruction(mode),
     buildUserContext(caller),
+    skill_hint,
     buildToolHints(active_tools),
     plugin_segments.join('\n'),
   ]

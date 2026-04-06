@@ -16,6 +16,8 @@ import { buildBrowserTools } from '../browser/tool.js'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
+import { buildSkillTools } from '../skills/tools.ts'
+import { SkillService } from '../skills/service.ts'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -173,6 +175,11 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const skillTools = buildSkillTools(a.id, projectId)
+      const [skillSection, skillHint] = await Promise.all([
+        SkillService.buildAlwaysSkillSection(a.id),
+        SkillService.buildOnDemandSkillHint(a.id),
+      ])
 
       runtime.addAgent(
         defineAgent({
@@ -188,6 +195,7 @@ export class JikuRuntimeManager {
             ...shared.connectorTools,
             ...shared.browserTools,
             ...shared.filesystemTools,
+            ...skillTools,
             runTaskTool,
             listAgentsTool,
           ],
@@ -195,6 +203,8 @@ export class JikuRuntimeManager {
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
         (a as Record<string, unknown>).persona_prompt as string | null ?? null,
+        skillSection ?? null,
+        skillHint ?? null,
       )
 
       if (a.heartbeat_enabled && a.heartbeat_cron) {
@@ -267,6 +277,11 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const skillTools = buildSkillTools(a.id, projectId)
+      const [skillSection, skillHint] = await Promise.all([
+        SkillService.buildAlwaysSkillSection(a.id),
+        SkillService.buildOnDemandSkillHint(a.id),
+      ])
 
       runtime.addAgent(
         defineAgent({
@@ -282,6 +297,7 @@ export class JikuRuntimeManager {
             ...shared.connectorTools,
             ...shared.browserTools,
             ...shared.filesystemTools,
+            ...skillTools,
             runTaskTool,
             listAgentsTool,
           ],
@@ -289,6 +305,8 @@ export class JikuRuntimeManager {
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
         (a as Record<string, unknown>).persona_prompt as string | null ?? null,
+        skillSection ?? null,
+        skillHint ?? null,
       )
     }
 
@@ -323,6 +341,11 @@ export class JikuRuntimeManager {
       user_id: 'system', roles: [], permissions: [], user_data: {},
     }), () => undefined)
     const listAgentsTool = buildListAgentsTool(projectId)
+    const skillTools = buildSkillTools(agent.id, projectId)
+    const [skillSection, skillHint] = await Promise.all([
+      SkillService.buildAlwaysSkillSection(agent.id),
+      SkillService.buildOnDemandSkillHint(agent.id),
+    ])
 
     // Include current shared tools so syncAgent doesn't strip them
     const shared = this.getSharedTools(projectId)
@@ -341,6 +364,7 @@ export class JikuRuntimeManager {
           ...shared.connectorTools,
           ...shared.browserTools,
           ...shared.filesystemTools,
+          ...skillTools,
           runTaskTool,
           listAgentsTool,
         ],
@@ -348,6 +372,8 @@ export class JikuRuntimeManager {
       agentMemoryConfig,
       (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
       (agent as Record<string, unknown>).persona_prompt as string | null ?? null,
+      skillSection ?? null,
+      skillHint ?? null,
     )
 
     await heartbeatScheduler.rescheduleAgent(agent.id, projectId)

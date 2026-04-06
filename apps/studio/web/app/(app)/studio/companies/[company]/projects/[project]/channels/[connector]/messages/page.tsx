@@ -42,11 +42,11 @@ function MessageRow({ message }: { message: ConnectorMessageItem }) {
           {message.direction}
         </Badge>
         <span className="flex-1 text-xs text-muted-foreground font-mono truncate">
-          {message.text ?? JSON.stringify(message.ref_keys)}
+          {message.content_snapshot ?? JSON.stringify(message.ref_keys)}
         </span>
-        {message.agent_id && (
+        {message.ref_keys?.agent_id && (
           <span className="text-[10px] text-muted-foreground/50 shrink-0 font-mono">
-            {message.agent_id.slice(0, 8)}
+            {message.ref_keys.agent_id.slice(0, 8)}
           </span>
         )}
       </button>
@@ -59,18 +59,18 @@ function MessageRow({ message }: { message: ConnectorMessageItem }) {
                 {JSON.stringify(message.ref_keys, null, 2)}
               </pre>
             </div>
-            {message.agent_id && (
+            {message.ref_keys?.agent_id && (
               <div>
                 <p className="text-muted-foreground/60 mb-0.5">Agent</p>
-                <p className="font-mono text-muted-foreground bg-muted/20 rounded p-2">{message.agent_id}</p>
+                <p className="font-mono text-muted-foreground bg-muted/20 rounded p-2">{message.ref_keys.agent_id}</p>
               </div>
             )}
           </div>
-          {message.text && (
+          {message.content_snapshot && (
             <div>
               <p className="text-[11px] text-muted-foreground/60 mb-0.5">Content</p>
               <pre className="text-[11px] font-mono text-muted-foreground bg-muted/20 rounded p-3 overflow-auto max-h-48 whitespace-pre-wrap">
-                {message.text}
+                {message.content_snapshot}
               </pre>
             </div>
           )}

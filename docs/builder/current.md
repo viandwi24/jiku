@@ -1,8 +1,8 @@
 ## Phase
-Plans 1–14 all implemented. Route security audit complete. Agent visibility feature complete.
+Plans 1–14 + Skills (Plan 15) all implemented.
 
 ## Currently Working On
-- Idle / no active task.
+- Skills on-demand feature (Plan 15) — just completed.
 
 ## Relevant Files (Most Recently Worked On)
 
@@ -66,7 +66,27 @@ Plans 1–14 all implemented. Route security audit complete. Agent visibility fe
 - ConnectorPlugin uses module-level `_registerFn` ref — contributes() runs before setup().
 - Zod v3.25.76 standardized across all workspace packages (hoisted via root package.json).
 
+### Skills (Plan 15 + filesystem migration)
+- `apps/studio/db/src/schema/skills.ts` — `project_skills` + `agent_skills` only (no `project_skill_files`)
+- `apps/studio/db/src/queries/skills.ts` — CRUD + assignment queries (file queries removed)
+- `apps/studio/db/src/migrations/0001_unique_wong.sql` — updated (no `project_skill_files` table)
+- `apps/studio/server/src/skills/service.ts` — SkillService using FilesystemService; `skillFsPath()` helper
+- `apps/studio/server/src/skills/tools.ts` — `buildSkillTools(agentId, projectId)` using filesystem
+- `apps/studio/server/src/routes/skills.ts` — CRUD + assignments; creates/deletes skill folder on filesystem
+- `apps/studio/server/src/runtime/manager.ts` — `buildSkillTools(a.id, projectId)` in all 3 paths
+- `apps/studio/web/components/filesystem/file-explorer.tsx` — NEW reusable component with `rootPath` prop
+- `apps/studio/web/app/.../disk/page.tsx` — uses FileExplorer component (extracted)
+- `apps/studio/web/app/.../skills/page.tsx` — FileExplorer scoped to `/skills/{slug}/`
+- `apps/studio/web/lib/api.ts` — removed SkillFileItem + file methods from api.skills
+
+## Important Context / Temporary Decisions
+- Skills files stored at `/skills/{slug}/` in the project filesystem (not in DB)
+- `project_skill_files` table eliminated — filesystem is the source of truth
+- `FileExplorer` component at `components/filesystem/file-explorer.tsx` — accepts `rootPath` to restrict navigation
+- Creating a skill auto-seeds `/skills/{slug}/index.md` if filesystem is configured
+- Deleting a skill calls `fs.deleteFolder('/skills/{slug}')` to clean up files
+
 ## Next Up
-- DB migration: `cd apps/studio/db && bun run db:push` — applies Plan 12 schema (project_roles, project_memberships, invitations, superadmin_transfers)
-- Plan 12 nice-to-have: `usePermissions()` hook for sidebar permission-gating
-- Verify Telegram bot end-to-end: send message → typing indicator → get_datetime tool call
+- DB migration: `cd apps/studio/db && bun run db:push` — applies skills schema (without project_skill_files)
+- Test: create skill → filesystem must be configured → files appear in disk page under /skills/
+- Test git import endpoint (not yet implemented)

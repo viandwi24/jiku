@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   BarChart2,
+  BookOpen,
   Bot,
   Brain,
   ChevronLeft,
@@ -62,6 +63,7 @@ const NAV_ITEMS: Array<{
   { href: '/runs',     label: 'Runs',      icon: Activity,        permission: 'runs:read' },
   { href: '/memory',   label: 'Memory',    icon: Brain,           permission: 'memory:read' },
   { href: '/channels', label: 'Channels',  icon: Webhook,         permission: 'channels:read' },
+  { href: '/skills',   label: 'Skills',    icon: BookOpen,        permission: 'agents:read' },
   { href: '/browser',  label: 'Browser',   icon: Globe,           permission: 'agents:read' },
   { href: '/disk',     label: 'Disk',      icon: FolderOpen,      permission: 'agents:read' },
   { href: '/plugins',  label: 'Plugins',   icon: Puzzle,          permission: 'plugins:read', badgeKey: 'plugins' },

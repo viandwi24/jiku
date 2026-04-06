@@ -105,6 +105,8 @@ export class AgentRunner {
     private runtimeId?: string,
     private personaSeed?: PersonaSeed | null,
     private personaPrompt?: string | null,
+    private skillSection?: string | null,
+    private skillHint?: string | null,
   ) {}
 
   /**
@@ -280,6 +282,8 @@ export class AgentRunner {
       plugin_segments: pluginSegments,
       memory_section: memorySection,
       persona_section: personaSection,
+      skill_section: this.skillSection ?? undefined,
+      skill_hint: this.skillHint ?? undefined,
     })
 
     const history = await this.storage.getMessages(conversation_id)
@@ -649,6 +653,14 @@ export class AgentRunner {
             token_estimate: estimateTokens(personaSection),
           }]
         : []),
+      ...(this.skillSection
+        ? [{
+            source: 'skill' as const,
+            label: 'Skills (always)',
+            content: this.skillSection,
+            token_estimate: estimateTokens(this.skillSection),
+          }]
+        : []),
       {
         source: 'mode',
         label: `Mode: ${mode}`,
@@ -720,6 +732,8 @@ export class AgentRunner {
       plugin_segments: pluginSegments,
       memory_section: memorySection,
       persona_section: personaSection,
+      skill_section: this.skillSection ?? undefined,
+      skill_hint: this.skillHint ?? undefined,
     })
 
     return {

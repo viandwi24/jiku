@@ -543,7 +543,7 @@ export interface ResolvedScope {
 // ============================================================
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona' | 'skill'
   label: string
   content: string
   token_estimate: number

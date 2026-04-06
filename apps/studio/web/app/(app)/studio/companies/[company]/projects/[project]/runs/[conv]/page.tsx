@@ -67,14 +67,14 @@ export default function RunDetailPage({ params }: PageProps) {
     )
   }
 
-  const meta = (conv?.metadata ?? {}) as Record<string, unknown>
+  const meta = conv.metadata ?? {}
   const goal = meta.goal as string | undefined
   const output = meta.output as string | undefined
-  const type = (conv as Record<string, unknown>).type as string ?? 'chat'
-  const runStatus = (conv as Record<string, unknown>).run_status as string ?? conv.status
+  const type = conv.type ?? 'chat'
+  const runStatus = conv.run_status ?? conv.status
 
-  const startedAt = conv.started_at ? new Date(conv.started_at as string) : null
-  const finishedAt = conv.finished_at ? new Date(conv.finished_at as string) : null
+  const startedAt = conv.started_at ? new Date(conv.started_at) : null
+  const finishedAt = conv.finished_at ? new Date(conv.finished_at) : null
   const durationMs = startedAt && finishedAt ? finishedAt.getTime() - startedAt.getTime() : null
 
   const initialMessages: UIMessage[] = historyData.messages.map(dbMessageToUIMessage)
@@ -105,7 +105,7 @@ export default function RunDetailPage({ params }: PageProps) {
             {conv.error_message && (
               <p className="text-destructive flex items-center gap-1">
                 <AlertCircle className="h-3 w-3 shrink-0" />
-                {conv.error_message as string}
+                {conv.error_message}
               </p>
             )}
             {output && (

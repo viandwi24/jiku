@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-07 — Plan 15: On-Demand Skills System
+
+- **DB schema** (`apps/studio/db/src/schema/skills.ts`): New `project_skills`, `project_skill_files`, `agent_skills` tables. Skills are folder-like structures (multiple markdown files with an entrypoint) assigned to agents per-project.
+- **CRUD queries** (`apps/studio/db/src/queries/skills.ts`): Full CRUD for skills, files, and agent assignments. `getAgentAlwaysSkills` / `getAgentOnDemandSkills` for runtime injection.
+- **Skill service** (`apps/studio/server/src/skills/service.ts`): `SkillService` — loads entrypoints, nested files, builds "always" system prompt section + on-demand hint. Enforces 50 KB/file, 200 KB/skill limits.
+- **Skill tools** (`apps/studio/server/src/skills/tools.ts`): `buildSkillTools(agentId)` → 3 built-in tools: `skill_list`, `skill_activate`, `skill_read_file`. Agent calls these to discover and load knowledge on-demand.
+- **API routes** (`apps/studio/server/src/routes/skills.ts`): Full REST API: project skills CRUD, file tree CRUD, agent skill assignment CRUD. Calls `syncAgent()` after every mutation.
+- **Core integration**: `buildSystemPrompt` now accepts `skill_section` + `skill_hint`. `AgentRunner` + `JikuRuntime.addAgent` forward skill context. `previewRun` includes `skill` segment. `ContextSegment.source` union extended with `'skill'`.
+- **Runtime manager**: All 3 agent registration paths (`wakeUp`, `syncProjectTools`, `syncAgent`) now load skill tools + sections per-agent.
+- **Web UI**: Project skills page (skill editor with file tree + markdown editor) + agent skills page (assign/remove skills, toggle always/on-demand mode). Skills nav added to project sidebar and agent layout.
+- **Migration**: `apps/studio/db/src/migrations/0001_unique_wong.sql` generated.
+
 ## 2026-04-07 — Plan 12: Route Security Audit Completion + Agent Visibility Feature
 
 - **`loadPerms` exported** (`apps/studio/server/src/middleware/permission.ts`): Changed from private to `export async function loadPerms(...)`. Enables route handlers to call it inline after manually injecting `res.locals['project_id']` — needed for routes where the entity param is not `:pid`/`:aid`.

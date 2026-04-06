@@ -8,7 +8,7 @@ export const agents = pgTable('agents', {
   slug:                 varchar('slug', { length: 255 }).notNull(),
   description:          text('description'),
   base_prompt:          text('base_prompt').notNull(),
-  allowed_modes:        text('allowed_modes').array().notNull().default(['chat']),
+  allowed_modes:        text('allowed_modes').array().notNull().default(['chat', 'task']),
   /** Context compaction threshold (0–100%). 0 = disabled. Default 80. */
   compaction_threshold: integer('compaction_threshold').default(80).notNull(),
   /** Partial memory config override (null = inherit all from project). */
@@ -20,8 +20,8 @@ export const agents = pgTable('agents', {
   /** Plain-text persona prompt — injected directly into system prompt. Replaces memory-based persona when set. */
   persona_prompt:       text('persona_prompt'),
   // Plan 11: heartbeat fields
-  heartbeat_enabled:    boolean('heartbeat_enabled').notNull().default(false),
-  heartbeat_cron:       varchar('heartbeat_cron', { length: 100 }),
+  heartbeat_enabled:    boolean('heartbeat_enabled').notNull().default(true),
+  heartbeat_cron:       varchar('heartbeat_cron', { length: 100 }).default('0 */30 * * *'),
   heartbeat_prompt:     text('heartbeat_prompt'),
   heartbeat_last_run_at: timestamp('heartbeat_last_run_at'),
   heartbeat_next_run_at: timestamp('heartbeat_next_run_at'),

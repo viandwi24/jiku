@@ -1,11 +1,15 @@
 'use client'
 
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
+import { useQuery } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { DefaultChatTransport } from 'ai'
-import { Bot, User } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getToken } from '@/lib/auth'
+import { api } from '@/lib/api'
+import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
@@ -18,7 +22,24 @@ interface ChatInterfaceProps {
 
 export function ChatInterface({ conversationId, agentId, projectId, companyId }: ChatInterfaceProps) {
   const [input, setInput] = useState('')
+  const [showUsageTooltip, setShowUsageTooltip] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const qc = useQueryClient()
+
+  const { data: usageData } = useQuery({
+    queryKey: ['usage', agentId, 'latest'],
+    queryFn: () => api.agents.usage(agentId, { limit: 1 }),
+    enabled: !!agentId,
+    staleTime: 0,
+  })
+  const lastUsage = usageData?.logs[0] ?? null
+
+  const { data: adaptersData } = useQuery({
+    queryKey: ['adapters', 'provider-model'],
+    queryFn: () => api.credentials.adapters('provider-model'),
+    staleTime: 60_000,
+  })
+  const pricingMap = useMemo(() => buildPricingMap(adaptersData?.adapters ?? []), [adaptersData])
 
   const { messages, sendMessage, status, error } = useChat({
     transport: new DefaultChatTransport({
@@ -36,6 +57,10 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
         },
       }),
     }),
+    onFinish: () => {
+      // Refresh usage after each response completes
+      qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })
+    },
   })
 
   const isLoading = status === 'streaming' || status === 'submitted'
@@ -113,7 +138,51 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
       </div>
 
       {/* Input */}
-      <div className="p-4 border-t">
+      <div className="p-4 border-t space-y-2">
+        {/* Usage badge */}
+        {lastUsage && (
+          <div className="flex justify-end">
+            <div className="relative">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded-md hover:bg-muted"
+                onMouseEnter={() => setShowUsageTooltip(true)}
+                onMouseLeave={() => setShowUsageTooltip(false)}
+              >
+                <ArrowDown className="h-3 w-3 text-emerald-500" />
+                <span className="font-mono">{formatTokens(lastUsage.output_tokens)}</span>
+                <span className="text-muted-foreground/40">·</span>
+                <ArrowUp className="h-3 w-3 text-sky-500" />
+                <span className="font-mono">{formatTokens(lastUsage.input_tokens)}</span>
+              </button>
+              {showUsageTooltip && (
+                <div className="absolute bottom-full right-0 mb-1.5 bg-popover border rounded-lg shadow-md p-3 text-xs whitespace-nowrap z-10">
+                  <p className="font-medium mb-2">Last run — {lastUsage.model_id ?? 'unknown model'}</p>
+                  <div className="space-y-1.5 text-muted-foreground">
+                    <div className="flex items-center justify-between gap-6">
+                      <span className="flex items-center gap-1.5">
+                        <ArrowDown className="h-3 w-3 text-emerald-500" />
+                        In (from model)
+                      </span>
+                      <span className="font-mono text-foreground">{lastUsage.output_tokens.toLocaleString()} tokens</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-6">
+                      <span className="flex items-center gap-1.5">
+                        <ArrowUp className="h-3 w-3 text-sky-500" />
+                        Out (to model)
+                      </span>
+                      <span className="font-mono text-foreground">{lastUsage.input_tokens.toLocaleString()} tokens</span>
+                    </div>
+                    <div className="flex justify-between gap-6 pt-1.5 border-t">
+                      <span>Est. cost</span>
+                      <span className="font-mono text-foreground">{estimateCost(lastUsage.input_tokens, lastUsage.output_tokens, lastUsage.model_id, pricingMap)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="flex gap-2">
           <textarea
             className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[42px] max-h-32"

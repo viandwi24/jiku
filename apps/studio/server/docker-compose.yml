@@ -19,5 +19,23 @@ services:
       timeout: 5s
       retries: 5
 
+  rustfs:
+    image: rustfs/rustfs:latest
+    ports:
+      - "${RUSTFS_API_PORT:-9000}:9000"   # S3-compatible API
+      - "${RUSTFS_CONSOLE_PORT:-9001}:9001" # Web console
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+    volumes:
+      - rustfs_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
+  rustfs_data:

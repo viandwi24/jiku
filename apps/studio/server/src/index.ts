@@ -15,6 +15,8 @@ import { personaRouter } from './routes/persona.ts'
 import connectorsRouter from './routes/connectors.ts'
 import { runsRouter } from './routes/runs.ts'
 import { heartbeatRouter } from './routes/heartbeat.ts'
+import { browserRouter } from './routes/browser.ts'
+import { filesystemRouter } from './routes/filesystem.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
@@ -46,6 +48,8 @@ app.use('/api', connectorsRouter)
 app.use('/', connectorsRouter)  // webhook routes are at /webhook/:project_id/...
 app.use('/api', runsRouter)
 app.use('/api', heartbeatRouter)
+app.use('/api', browserRouter)
+app.use('/api', filesystemRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 

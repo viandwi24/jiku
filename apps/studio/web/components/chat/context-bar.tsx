@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Layers, ExternalLink, Brain, Wrench } from 'lucide-react'
+import { Layers, ExternalLink, Brain } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { PreviewRunResult } from '@/lib/api'
 import { Popover, PopoverContent, PopoverTrigger, Progress, Button, cn } from '@jiku/ui'
@@ -40,11 +40,9 @@ const SOURCE_COLORS: Record<string, string> = {
 function UsagePopover({
   preview,
   onDetails,
-  onTools,
 }: {
   preview: PreviewRunResult
   onDetails: () => void
-  onTools: () => void
 }) {
   const { context } = preview
   const { segments, history_tokens, grand_total, model_context_window, usage_percent } = context
@@ -58,10 +56,6 @@ function UsagePopover({
     usage_percent > 90 ? '[&>div]:bg-destructive'
     : usage_percent > 70 ? '[&>div]:bg-amber-500'
     : '[&>div]:bg-primary'
-
-  const toolCount = preview.active_tools.length
-  const builtInCount = preview.active_tools.filter(t => t.id.startsWith('__builtin__:')).length
-  const pluginCount = toolCount - builtInCount
 
   return (
     <div className="w-64 space-y-3">
@@ -113,48 +107,12 @@ function UsagePopover({
         </div>
       )}
 
-      {/* Active tools summary */}
-      {toolCount > 0 && (
-        <div className="border-t border-border/40 pt-2 space-y-1.5">
-          <button
-            onClick={onTools}
-            className="flex items-center gap-2 text-xs w-full hover:text-foreground transition-colors group"
-          >
-            <Wrench className="h-3 w-3 text-muted-foreground shrink-0" />
-            <span className="flex-1 text-muted-foreground text-left">Active tools</span>
-            <span className="tabular-nums font-medium">{toolCount}</span>
-            <ExternalLink className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-          </button>
-          <div className="flex gap-1.5 flex-wrap">
-            {builtInCount > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400">
-                {builtInCount} built-in
-              </span>
-            )}
-            {pluginCount > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-600 dark:text-orange-400">
-                {pluginCount} plugin
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Action buttons */}
-      <div className="border-t border-border/40 pt-2 flex gap-1.5">
+      <div className="border-t border-border/40 pt-2">
         <Button
           variant="ghost"
           size="sm"
-          className="flex-1 h-7 text-xs gap-1.5 justify-center"
-          onClick={onTools}
-        >
-          <Wrench className="h-3 w-3" />
-          Tools
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="flex-1 h-7 text-xs gap-1.5 justify-center"
+          className="w-full h-7 text-xs gap-1.5 justify-center"
           onClick={onDetails}
         >
           <ExternalLink className="h-3 w-3" />
@@ -196,11 +154,6 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
     usagePercent > 90 ? 'bg-destructive'
     : usagePercent > 70 ? 'bg-amber-500'
     : 'bg-muted-foreground/40'
-
-  function openTools() {
-    setPopoverOpen(false)
-    setSheetOpen(true)
-  }
 
   function openDetails() {
     setPopoverOpen(false)
@@ -257,7 +210,6 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
               <UsagePopover
                 preview={preview}
                 onDetails={openDetails}
-                onTools={openTools}
               />
             ) : (
               <p className="text-xs text-muted-foreground">Loading...</p>

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getAgentsByProjectId, createAgent, updateAgent, deleteAgent, getProjectById, getAgentById, getAgentBySlug } from '@jiku-studio/db'
+import { getAgentsByProjectId, createAgent, updateAgent, deleteAgent, getProjectById, getAgentById, getAgentBySlug, getUsageLogsByAgent, getUsageSummaryByAgent, getUsageCountByAgent } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { generateSlug, uniqueSlug } from '../utils/slug.ts'
@@ -26,7 +26,7 @@ router.post('/projects/:pid/agents', async (req, res) => {
     slug,
     description: body.description ?? null,
     base_prompt: body.base_prompt,
-    allowed_modes: body.allowed_modes ?? ['chat'],
+    allowed_modes: body.allowed_modes ?? ['chat', 'task'],
   })
 
   await runtimeManager.syncAgent(projectId, agent.id)
@@ -40,6 +40,18 @@ router.patch('/agents/:aid', async (req, res) => {
   const agent = await updateAgent(agentId, body)
   await runtimeManager.syncAgent(agent.project_id, agentId)
   res.json({ agent })
+})
+
+router.get('/agents/:aid/usage', async (req, res) => {
+  const agentId = req.params['aid']!
+  const limit = Math.min(Number(req.query['limit'] ?? 100), 500)
+  const offset = Number(req.query['offset'] ?? 0)
+  const [logs, summary, total] = await Promise.all([
+    getUsageLogsByAgent(agentId, limit, offset),
+    getUsageSummaryByAgent(agentId),
+    getUsageCountByAgent(agentId),
+  ])
+  res.json({ logs, summary, total })
 })
 
 router.delete('/agents/:aid', async (req, res) => {

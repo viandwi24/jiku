@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getProjectsByCompanyId, getProjectById, createProject, updateProject, deleteProject, getProjectBySlug } from '@jiku-studio/db'
+import { getProjectsByCompanyId, getProjectById, createProject, updateProject, deleteProject, getProjectBySlug, getUsageLogsByProject, getUsageSummaryByProject, getUsageCountByProject } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { uniqueSlug } from '../utils/slug.ts'
@@ -38,6 +38,18 @@ router.patch('/projects/:pid', async (req, res) => {
     ...(slug !== undefined ? { slug } : {}),
   })
   res.json({ project: updated })
+})
+
+router.get('/projects/:pid/usage', async (req, res) => {
+  const projectId = req.params['pid']!
+  const limit = Math.min(Number(req.query['limit'] ?? 100), 500)
+  const offset = Number(req.query['offset'] ?? 0)
+  const [logs, summary, total] = await Promise.all([
+    getUsageLogsByProject(projectId, limit, offset),
+    getUsageSummaryByProject(projectId),
+    getUsageCountByProject(projectId),
+  ])
+  res.json({ logs, summary, total })
 })
 
 router.delete('/companies/:cid/projects/:pid', async (req, res) => {

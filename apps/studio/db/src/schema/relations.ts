@@ -8,6 +8,8 @@ import { agents } from './agents.ts'
 import { policies, policy_rules, agent_policies, agent_user_policies } from './policies.ts'
 import { conversations, messages } from './conversations.ts'
 import { credentials, agent_credentials } from './credentials.ts'
+import { usage_logs } from './usage_logs.ts'
+import { project_filesystem_config, project_files } from './filesystem.ts'
 
 export const usersRelations = relations(users, ({ many }) => ({
   companies: many(companies),
@@ -49,6 +51,18 @@ export const rolePermissionsRelations = relations(role_permissions, ({ one }) =>
 export const projectsRelations = relations(projects, ({ one, many }) => ({
   company: one(companies, { fields: [projects.company_id], references: [companies.id] }),
   agents: many(agents),
+  filesystem_config: many(project_filesystem_config),
+  files: many(project_files),
+}))
+
+export const projectFilesystemConfigRelations = relations(project_filesystem_config, ({ one }) => ({
+  project: one(projects, { fields: [project_filesystem_config.project_id], references: [projects.id] }),
+}))
+
+export const projectFilesRelations = relations(project_files, ({ one }) => ({
+  project: one(projects, { fields: [project_files.project_id], references: [projects.id] }),
+  created_by_user: one(users, { fields: [project_files.created_by], references: [users.id] }),
+  updated_by_user: one(users, { fields: [project_files.updated_by], references: [users.id] }),
 }))
 
 export const agentsRelations = relations(agents, ({ one, many }) => ({
@@ -57,6 +71,13 @@ export const agentsRelations = relations(agents, ({ one, many }) => ({
   agent_user_policies: many(agent_user_policies),
   conversations: many(conversations),
   agent_credential: many(agent_credentials),
+  usage_logs: many(usage_logs),
+}))
+
+export const usageLogsRelations = relations(usage_logs, ({ one }) => ({
+  agent: one(agents, { fields: [usage_logs.agent_id], references: [agents.id] }),
+  conversation: one(conversations, { fields: [usage_logs.conversation_id], references: [conversations.id] }),
+  user: one(users, { fields: [usage_logs.user_id], references: [users.id] }),
 }))
 
 export const credentialsRelations = relations(credentials, ({ one, many }) => ({

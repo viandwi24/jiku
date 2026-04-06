@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, unique, jsonb } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, timestamp, unique, jsonb, boolean } from 'drizzle-orm/pg-core'
 import { companies } from './companies.ts'
 
 export const projects = pgTable('projects', {
@@ -7,8 +7,12 @@ export const projects = pgTable('projects', {
   name:          varchar('name', { length: 255 }).notNull(),
   slug:          varchar('slug', { length: 255 }).notNull(),
   /** Project-level memory config defaults (null = use platform defaults). */
-  memory_config: jsonb('memory_config').default(null),
-  created_at:    timestamp('created_at').defaultNow(),
+  memory_config:   jsonb('memory_config').default(null),
+  /** Browser automation feature toggle. */
+  browser_enabled: boolean('browser_enabled').notNull().default(false),
+  /** Browser config (mode, cdpUrl, headless, etc.). */
+  browser_config:  jsonb('browser_config').default(null),
+  created_at:      timestamp('created_at').defaultNow(),
 }, t => [unique().on(t.company_id, t.slug)])
 
 export type Project = typeof projects.$inferSelect

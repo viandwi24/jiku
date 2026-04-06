@@ -3,8 +3,13 @@
 import { use, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Button, Input, Label, Textarea } from '@jiku/ui'
+import { Button, Checkbox, Input, Label, Textarea } from '@jiku/ui'
 import { toast } from 'sonner'
+
+const AVAILABLE_MODES = [
+  { value: 'chat', label: 'Chat', description: 'Standard conversational mode' },
+  { value: 'task', label: 'Task', description: 'Autonomous task execution (required for heartbeat)' },
+] as const
 
 interface PageProps {
   params: Promise<{ company: string; project: string; agent: string }>
@@ -36,16 +41,26 @@ export default function AgentInfoPage({ params }: PageProps) {
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [allowedModes, setAllowedModes] = useState<string[]>([])
+  const [initialized, setInitialized] = useState(false)
 
   // Sync form when agent loads
-  if (agent && name === '' && description === '') {
+  if (agent && !initialized) {
     setName(agent.name)
     setDescription(agent.description ?? '')
+    setAllowedModes(agent.allowed_modes ?? ['chat'])
+    setInitialized(true)
+  }
+
+  function toggleMode(mode: string) {
+    setAllowedModes(prev =>
+      prev.includes(mode) ? prev.filter(m => m !== mode) : [...prev, mode]
+    )
   }
 
   const mutation = useMutation({
     mutationFn: () =>
-      api.agents.update(agent!.id, { name, description: description || null }),
+      api.agents.update(agent!.id, { name, description: description || null, allowed_modes: allowedModes }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents', project?.id] })
       toast.success('Agent updated')
@@ -88,8 +103,29 @@ export default function AgentInfoPage({ params }: PageProps) {
           />
         </div>
 
+        <div className="space-y-2">
+          <Label>Allowed Modes</Label>
+          <div className="space-y-2 rounded-md border p-3">
+            {AVAILABLE_MODES.map(mode => (
+              <div key={mode.value} className="flex items-start gap-2.5">
+                <Checkbox
+                  id={`mode-${mode.value}`}
+                  checked={allowedModes.includes(mode.value)}
+                  onCheckedChange={() => toggleMode(mode.value)}
+                />
+                <div className="grid gap-0.5 leading-none">
+                  <label htmlFor={`mode-${mode.value}`} className="text-sm font-medium cursor-pointer">
+                    {mode.label}
+                  </label>
+                  <p className="text-xs text-muted-foreground">{mode.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="flex justify-end">
-          <Button type="submit" disabled={mutation.isPending}>
+          <Button type="submit" disabled={mutation.isPending || allowedModes.length === 0}>
             {mutation.isPending ? 'Saving...' : 'save'}
           </Button>
         </div>

@@ -98,32 +98,73 @@ export function buildConnectorTools(projectId: string) {
       },
     }),
 
-    // ── React to a message ───────────────────────────────────────────
+    // ── List adapter-specific actions ────────────────────────────────
 
     defineTool({
       meta: {
-        id: 'connector_react',
-        name: 'React to Message',
-        description: 'React to a message with an emoji via connector',
+        id: 'connector_list_actions',
+        name: 'List Connector Actions',
+        description: 'List the platform-specific actions available for a connector (e.g. send_file, send_reaction, pin_message). Call this before connector_run_action to know which actions and params are supported.',
         group: 'connector',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
-        connector_id: z.string(),
-        target_ref_keys: z.record(z.string()),
-        emoji: z.string(),
+        connector_id: z.string().describe('Connector ID'),
       }),
       execute: async (args) => {
-        const { connector_id, target_ref_keys, emoji } = args as {
+        const { connector_id } = args as { connector_id: string }
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id)
+        if (!adapter) return { error: 'Connector not active', actions: [] }
+        const actions = adapter.actions ?? []
+        return {
+          connector_id,
+          adapter: adapter.id,
+          actions: actions.map(a => ({
+            id: a.id,
+            name: a.name,
+            description: a.description,
+            params: a.params,
+          })),
+        }
+      },
+    }),
+
+    // ── Run an adapter-specific action ───────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_run_action',
+        name: 'Run Connector Action',
+        description: 'Execute a platform-specific action on a connector (e.g. send_file, send_reaction, pin_message, delete_message). Use connector_list_actions first to see available actions and their required params.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector ID'),
+        action_id: z.string().describe('Action ID from connector_list_actions, e.g. "send_file"'),
+        params: z.record(z.unknown()).describe('Action parameters as described in connector_list_actions'),
+      }),
+      execute: async (args) => {
+        const { connector_id, action_id, params } = args as {
           connector_id: string
-          target_ref_keys: Record<string, string>
-          emoji: string
+          action_id: string
+          params: Record<string, unknown>
         }
         const adapter = connectorRegistry.getAdapterForConnector(connector_id)
-        if (!adapter || !adapter.sendReaction) return { success: false, error: 'Reaction not supported' }
-        await adapter.sendReaction({ ref_keys: target_ref_keys }, emoji)
-        return { success: true }
+        if (!adapter) return { success: false, error: 'Connector not active' }
+        if (!adapter.runAction) return { success: false, error: `Connector "${adapter.id}" does not support custom actions` }
+
+        const action = adapter.actions?.find(a => a.id === action_id)
+        if (!action) return { success: false, error: `Unknown action "${action_id}". Call connector_list_actions to see available actions.` }
+
+        try {
+          const result = await adapter.runAction(action_id, params)
+          return { success: true, result }
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) }
+        }
       },
     }),
 

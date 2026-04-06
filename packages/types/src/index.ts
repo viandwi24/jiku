@@ -105,6 +105,10 @@ export interface JikuDataTypes {
     input_tokens: number
     output_tokens: number
   }
+  'jiku-run-snapshot': {
+    system_prompt: string
+    messages: unknown[]
+  }
   'jiku-step-usage': {
     step: number
     input_tokens: number
@@ -791,6 +795,27 @@ export interface ConnectorContext {
   onEvent(event: ConnectorEvent): Promise<void>
 }
 
+/**
+ * A platform-specific action that a connector adapter can perform.
+ * Exposed via connector_list_actions / connector_run_action tools so
+ * agents can discover and invoke adapter-specific capabilities (e.g.
+ * send_file, pin_message) without hardcoded tool-per-capability proliferation.
+ */
+export interface ConnectorAction {
+  /** Unique action id within this adapter, e.g. 'send_file' */
+  id: string
+  /** Human-readable name shown to the agent */
+  name: string
+  /** Description of what the action does */
+  description: string
+  /**
+   * JSON-serializable param schema describing the action's inputs.
+   * Used to inform the agent what params to pass.
+   * Shape: Record<paramName, { type, description, required? }>
+   */
+  params: Record<string, { type: string; description: string; required?: boolean }>
+}
+
 /** Output adapter config shapes */
 export interface ConversationOutputConfig {
   agent_id: string
@@ -874,4 +899,59 @@ export interface ConnectorCallerContext {
   event_type: ConnectorEventType
   platform: string
 }
+
+// ============================================================
+// FILESYSTEM (Plan 14)
+// ============================================================
+
+export type FilesystemEntryType = 'file' | 'folder'
+
+export interface FilesystemFolderEntry {
+  type: 'folder'
+  path: string
+  name: string
+}
+
+export interface FilesystemFileEntry {
+  type: 'file'
+  id: string
+  project_id: string
+  path: string
+  name: string
+  folder_path: string
+  extension: string
+  storage_key: string
+  size_bytes: number
+  mime_type: string
+  content_cache: string | null
+  created_by: string | null
+  updated_by: string | null
+  created_at: Date
+  updated_at: Date
+}
+
+export type FilesystemEntry = FilesystemFolderEntry | FilesystemFileEntry
+
+export interface ProjectFilesystemConfig {
+  id: string
+  project_id: string
+  adapter_id: string
+  credential_id: string | null
+  enabled: boolean
+  total_files: number
+  total_size_bytes: number
+  created_at: Date
+  updated_at: Date
+}
+
+export const FILESYSTEM_ALLOWED_EXTENSIONS = [
+  '.txt', '.md', '.mdx', '.rst',
+  '.html', '.css', '.js', '.jsx', '.ts', '.tsx',
+  '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h',
+  '.rb', '.php', '.swift', '.kt', '.cs', '.sh',
+  '.json', '.yaml', '.yml', '.toml', '.env', '.ini',
+  '.xml', '.csv', '.sql',
+] as const
+
+export const FILESYSTEM_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 

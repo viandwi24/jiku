@@ -1,0 +1,57 @@
+import { z } from 'zod'
+
+export const BrowserActSchema = z.object({
+  kind: z.enum(['click', 'type', 'press', 'hover', 'drag', 'select', 'fill', 'resize', 'wait', 'evaluate', 'close']),
+  targetId: z.string().optional(),
+  ref: z.string().optional(),
+  doubleClick: z.boolean().optional(),
+  button: z.string().optional(),
+  modifiers: z.array(z.string()).optional(),
+  text: z.string().optional(),
+  submit: z.boolean().optional(),
+  slowly: z.boolean().optional(),
+  key: z.string().optional(),
+  startRef: z.string().optional(),
+  endRef: z.string().optional(),
+  values: z.array(z.string()).optional(),
+  fields: z.array(z.record(z.string(), z.unknown())).optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  timeMs: z.number().optional(),
+  textGone: z.string().optional(),
+  fn: z.string().optional(),
+})
+
+export const BrowserToolInputSchema = z.object({
+  action: z.enum([
+    'status', 'start', 'stop', 'profiles', 'tabs', 'open', 'focus',
+    'close', 'snapshot', 'screenshot', 'navigate', 'console',
+    'pdf', 'upload', 'dialog', 'act',
+  ]),
+  profile: z.string().optional(),
+  targetUrl: z.string().optional(),
+  targetId: z.string().optional(),
+  limit: z.number().optional(),
+  maxChars: z.number().optional(),
+  snapshotFormat: z.enum(['aria', 'ai']).optional(),
+  refs: z.enum(['role', 'aria']).optional(),
+  interactive: z.boolean().optional(),
+  compact: z.boolean().optional(),
+  depth: z.number().optional(),
+  selector: z.string().optional(),
+  frame: z.string().optional(),
+  labels: z.boolean().optional(),
+  fullPage: z.boolean().optional(),
+  ref: z.string().optional(),
+  element: z.string().optional(),
+  type: z.enum(['png', 'jpeg']).optional(),
+  level: z.string().optional(),
+  paths: z.array(z.string()).optional(),
+  inputRef: z.string().optional(),
+  timeoutMs: z.number().optional(),
+  accept: z.boolean().optional(),
+  promptText: z.string().optional(),
+  request: BrowserActSchema.optional(),
+})
+
+export type BrowserToolInput = z.infer<typeof BrowserToolInputSchema>

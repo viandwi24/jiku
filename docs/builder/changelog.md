@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-06 — Tool parts rendering bug fix (DB → UI format conversion)
+
+- **`dbMessageToUIMessage` helper** (`apps/studio/web/lib/messages.ts` *(new)*): Converts DB-stored tool parts to AI SDK v6 UI format on load. DB stores `{ type: 'tool-invocation', toolInvocationId, args, state: 'result', result }` but AI SDK v6 expects `{ type: 'dynamic-tool', toolCallId, state: 'output-available', input, output }`. Without this conversion tools rendered as empty card with name "invocation".
+- Both message pages now use `dbMessageToUIMessage` instead of raw cast: `chats/[conv]/page.tsx` and `runs/[conv]/page.tsx`.
+- Files: `apps/studio/web/lib/messages.ts` *(new)*, `apps/studio/web/app/.../chats/[conv]/page.tsx`, `apps/studio/web/app/.../runs/[conv]/page.tsx`
+
 ## 2026-04-06 — Tool parts persistence, real-time streaming, get_datetime, Telegram context
 
 - **Tool parts persisted to DB** (`packages/core/src/runner.ts`): Runner now saves ALL parts per assistant message — tool invocations (call + result) and text — not just text. Uses `result.steps` from AI SDK to collect every step's `toolCalls`+`toolResults` and builds `tool-invocation` parts with `state: 'result'`. History loading updated to reconstruct full `assistant` + `tool` model messages from saved parts so multi-step tool context survives page refresh.

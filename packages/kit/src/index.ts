@@ -18,6 +18,7 @@ import type {
   ConnectorContent,
   ConnectorSendResult,
   ConnectorContext,
+  ConnectorAction,
 } from '@jiku/types'
 
 export type {
@@ -36,6 +37,7 @@ export type {
   ConnectorContent,
   ConnectorSendResult,
   ConnectorContext,
+  ConnectorAction,
 }
 
 // Minimal ZodObject shape — avoids importing zod as a dep in kit
@@ -180,4 +182,16 @@ export abstract class ConnectorAdapter {
   getHistory?(refKeys: Record<string, string>, limit: number): Promise<ConnectorEvent[]>
   /** Send a typing/processing indicator to the target chat */
   sendTyping?(target: ConnectorTarget): Promise<void>
+
+  /**
+   * List of platform-specific actions this adapter supports beyond the standard interface.
+   * Exposed to agents via connector_list_actions tool.
+   */
+  readonly actions?: ConnectorAction[]
+
+  /**
+   * Execute a platform-specific action by id.
+   * Called by the connector_run_action tool.
+   */
+  runAction?(actionId: string, params: Record<string, unknown>): Promise<unknown>
 }

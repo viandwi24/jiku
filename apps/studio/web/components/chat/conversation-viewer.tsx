@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
@@ -15,7 +15,8 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@ji
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
 import { PromptInput, PromptInputFooter, PromptInputSubmit, PromptInputTextarea } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
-import { Bot } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot } from 'lucide-react'
+import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
 import { ContextBar } from './context-bar'
 import { CompactionIndicator } from './compaction-indicator'
 import { MemoryPreviewSheet } from './memory-preview-sheet'
@@ -94,7 +95,25 @@ function MessageParts({ msg }: { msg: UIMessage }) {
 export function ConversationViewer({ convId, mode, conversation, initialMessages }: ConversationViewerProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [memorySheetOpen, setMemorySheetOpen] = useState(false)
+  const [showUsageTip, setShowUsageTip] = useState(false)
   const qc = useQueryClient()
+
+  const agentId = conversation?.agent.id ?? ''
+
+  const { data: usageData } = useQuery({
+    queryKey: ['usage', agentId, 'latest'],
+    queryFn: () => api.agents.usage(agentId, { limit: 1 }),
+    enabled: !!agentId,
+    staleTime: 0,
+  })
+  const lastUsage = usageData?.logs[0] ?? null
+
+  const { data: adaptersData } = useQuery({
+    queryKey: ['adapters', 'provider-model'],
+    queryFn: () => api.credentials.adapters('provider-model'),
+    staleTime: 60_000,
+  })
+  const pricingMap = useMemo(() => buildPricingMap(adaptersData?.adapters ?? []), [adaptersData])
 
   // ── edit mode: full useChat with send capability ──────────────────────────
   const { messages, sendMessage, status, error, setMessages } = useChat({
@@ -187,10 +206,11 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, mode])
 
-  // Refresh sidebar after each turn (edit mode only)
+  // Refresh sidebar + usage after each turn (edit mode only)
   useEffect(() => {
     if (mode === 'edit' && !isStreaming) {
       qc.invalidateQueries({ queryKey: ['conversations'] })
+      if (agentId) qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming])
@@ -295,6 +315,49 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
                 isStreaming={displayStreaming}
                 onMemoryClick={() => setMemorySheetOpen(true)}
               />
+
+              {/* Usage badge */}
+              {lastUsage && (
+                <div className="relative shrink-0 border-l border-gray-500/50 pl-3">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    onMouseEnter={() => setShowUsageTip(true)}
+                    onMouseLeave={() => setShowUsageTip(false)}
+                  >
+                    <ArrowDown className="h-3 w-3 text-emerald-500" />
+                    <span className="font-mono tabular-nums">{formatTokens(lastUsage.output_tokens)}</span>
+                    <span className="text-muted-foreground/40">·</span>
+                    <ArrowUp className="h-3 w-3 text-sky-500" />
+                    <span className="font-mono tabular-nums">{formatTokens(lastUsage.input_tokens)}</span>
+                  </button>
+                  {showUsageTip && (
+                    <div className="absolute bottom-full right-0 mb-2 bg-popover border rounded-lg shadow-md p-3 text-xs whitespace-nowrap z-20">
+                      <p className="font-medium mb-2">Last run{lastUsage.model_id ? ` — ${lastUsage.model_id}` : ''}</p>
+                      <div className="space-y-1.5 text-muted-foreground">
+                        <div className="flex items-center justify-between gap-6">
+                          <span className="flex items-center gap-1.5">
+                            <ArrowDown className="h-3 w-3 text-emerald-500" />
+                            In (from model)
+                          </span>
+                          <span className="font-mono text-foreground">{lastUsage.output_tokens.toLocaleString()} tokens</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-6">
+                          <span className="flex items-center gap-1.5">
+                            <ArrowUp className="h-3 w-3 text-sky-500" />
+                            Out (to model)
+                          </span>
+                          <span className="font-mono text-foreground">{lastUsage.input_tokens.toLocaleString()} tokens</span>
+                        </div>
+                        <div className="flex justify-between gap-6 pt-1.5 border-t">
+                          <span>Est. cost</span>
+                          <span className="font-mono text-foreground">{estimateCost(lastUsage.input_tokens, lastUsage.output_tokens, lastUsage.model_id, pricingMap)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

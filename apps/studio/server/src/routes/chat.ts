@@ -3,7 +3,8 @@ import { authMiddleware } from '../middleware/auth.ts'
 import { resolveCaller } from '../runtime/caller.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
-import { getConversationById, getAgentById, getProjectById } from '@jiku-studio/db'
+import { getConversationById, getAgentById, getProjectById, createUsageLog } from '@jiku-studio/db'
+import { resolveAgentModel } from '../credentials/service.ts'
 import { pipeUIMessageStreamToResponse } from 'ai'
 import type { UIMessage } from 'ai'
 
@@ -43,6 +44,11 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
   const input = lastPart?.type === 'text' ? lastPart.text : ''
   if (!input) { res.status(400).json({ error: 'No input message found' }); return }
 
+  // Resolve model snapshot for usage log (non-blocking, best-effort)
+  const modelInfo = await resolveAgentModel(agent.id).catch(() => null)
+  const snapshotProviderId = modelInfo?.adapter_id ?? null
+  const snapshotModelId = modelInfo?.model_id ?? null
+
   let result
   try {
     result = await runtimeManager.run(agent.project_id, {
@@ -67,6 +73,7 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
 
   // Drain broadcast branch in background — buffer chunks + forward to SSE observers
   ;(async () => {
+    let runSnapshot: { system_prompt: string; messages: unknown[] } | null = null
     try {
       const reader = broadcastStream.getReader()
       while (true) {
@@ -77,6 +84,30 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
         // Forward to SSE observers
         const line = `data: ${JSON.stringify(value)}\n\n`
         broadcast(line)
+
+        const chunk = value as Record<string, unknown>
+        // Buffer the raw snapshot so it's available when usage arrives
+        if (chunk?.type === 'data-jiku-run-snapshot') {
+          runSnapshot = chunk.data as { system_prompt: string; messages: unknown[] }
+        }
+        // Persist usage log when we see the final usage chunk
+        if (chunk?.type === 'data-jiku-usage') {
+          const data = (chunk.data as { input_tokens?: number; output_tokens?: number } | undefined)
+          if (data) {
+            createUsageLog({
+              agent_id: agent.id,
+              conversation_id: conversationId,
+              user_id: userId,
+              mode: 'chat',
+              provider_id: snapshotProviderId,
+              model_id: snapshotModelId,
+              input_tokens: data.input_tokens ?? 0,
+              output_tokens: data.output_tokens ?? 0,
+              raw_system_prompt: runSnapshot?.system_prompt ?? null,
+              raw_messages: runSnapshot?.messages ?? null,
+            }).catch(err => console.error('[chat] Failed to persist usage log:', err))
+          }
+        }
       }
     } finally {
       done()

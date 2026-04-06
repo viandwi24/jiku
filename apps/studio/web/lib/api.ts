@@ -55,6 +55,12 @@ export const api = {
       request<{ project: Project }>(`/api/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (companyId: string, projectId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/projects/${projectId}`, { method: 'DELETE' }),
+    usage: (projectId: string, params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.limit) qs.set('limit', String(params.limit))
+      if (params?.offset) qs.set('offset', String(params.offset))
+      return request<{ logs: ProjectUsageLog[]; summary: UsageSummary; total: number }>(`/api/projects/${projectId}/usage?${qs}`)
+    },
   },
 
   agents: {
@@ -71,6 +77,12 @@ export const api = {
       }),
     delete: (agentId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}`, { method: 'DELETE' }),
+    usage: (agentId: string, params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.limit) qs.set('limit', String(params.limit))
+      if (params?.offset) qs.set('offset', String(params.offset))
+      return request<{ logs: UsageLog[]; summary: UsageSummary; total: number }>(`/api/agents/${agentId}/usage?${qs}`)
+    },
     preview: (agentId: string, body: { mode?: 'chat' | 'task' }) =>
       request<PreviewRunResult>(`/api/agents/${agentId}/preview`, {
         method: 'POST',
@@ -403,9 +415,147 @@ export const api = {
         request<{ messages: ConnectorMessageItem[] }>(`/api/connectors/${connectorId}/messages${limit ? `?limit=${limit}` : ''}`),
     },
   },
+
+  filesystem: {
+    getConfig: (projectId: string) =>
+      request<{ config: FilesystemConfig | null }>(`/api/projects/${projectId}/filesystem/config`),
+    updateConfig: (projectId: string, body: { adapter_id?: string; credential_id?: string | null; enabled?: boolean }) =>
+      request<{
+        config: FilesystemConfig
+        migration_needed: boolean
+        file_count?: number
+        total_size_bytes?: number
+        pending_adapter_id?: string
+        pending_credential_id?: string
+      }>(`/api/projects/${projectId}/filesystem/config`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    migrate: (projectId: string, body: { credential_id: string; adapter_id: string; action: 'migrate' | 'reset' }) =>
+      request<{ ok: boolean; config: FilesystemConfig; migrated: number; failed: number; errors: string[]; deleted?: number }>(
+        `/api/projects/${projectId}/filesystem/migrate`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    testConnection: (projectId: string) =>
+      request<{ ok: boolean; message: string }>(`/api/projects/${projectId}/filesystem/test`, { method: 'POST' }),
+
+    list: (projectId: string, folderPath = '/') =>
+      request<{ entries: FilesystemEntry[]; count: number }>(
+        `/api/projects/${projectId}/files?path=${encodeURIComponent(folderPath)}`
+      ),
+    content: (projectId: string, filePath: string) =>
+      request<{ path: string; content: string }>(
+        `/api/projects/${projectId}/files/content?path=${encodeURIComponent(filePath)}`
+      ),
+    write: (projectId: string, body: { path: string; content: string }) =>
+      request<{ file: FilesystemFileEntry }>(`/api/projects/${projectId}/files`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    move: (projectId: string, body: { from: string; to: string }) =>
+      request<{ ok: boolean; from: string; to: string }>(`/api/projects/${projectId}/files/move`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (projectId: string, filePath: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/files?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' }),
+    deleteFolder: (projectId: string, folderPath: string) =>
+      request<{ ok: boolean; deleted: number }>(`/api/projects/${projectId}/files/folder?path=${encodeURIComponent(folderPath)}`, { method: 'DELETE' }),
+    search: (projectId: string, query: string, ext?: string) => {
+      const qs = new URLSearchParams({ q: query })
+      if (ext) qs.set('ext', ext)
+      return request<{ files: FilesystemFileEntry[]; count: number }>(`/api/projects/${projectId}/files/search?${qs}`)
+    },
+    /** Returns a proxied URL to stream/download/preview a file. No auth token needed from server side — but we pass it as query param here. */
+    proxyUrl: (projectId: string, filePath: string, mode: 'inline' | 'download' | 'preview' = 'inline') => {
+      const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+      const qs = new URLSearchParams({ path: filePath, mode })
+      return `${BASE_URL}/api/projects/${projectId}/files/proxy?${qs}`
+    },
+    upload: (projectId: string, folderPath: string, files: File[]) => {
+      const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+      const form = new FormData()
+      for (const f of files) form.append('file', f)
+      const qs = new URLSearchParams({ path: folderPath })
+      return fetch(`${BASE_URL}/api/projects/${projectId}/files/upload?${qs}`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() },
+        body: form,
+      }).then(r => r.json() as Promise<{ files: FilesystemFileEntry[] }>)
+    },
+  },
+
+  browser: {
+    get: (projectId: string) =>
+      request<{ enabled: boolean; config: BrowserProjectConfig; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser`),
+    setEnabled: (projectId: string, enabled: boolean) =>
+      request<{ ok: boolean; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser/enabled`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    updateConfig: (projectId: string, config: BrowserProjectConfig) =>
+      request<{ ok: boolean; config: BrowserProjectConfig; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser/config`, {
+        method: 'PATCH',
+        body: JSON.stringify(config),
+      }),
+    ping: (projectId: string) =>
+      request<{ ok: boolean; error?: string; latency_ms?: number; cdp_latency_ms?: number; browser?: string; cdp_url?: string; port?: number }>(`/api/projects/${projectId}/browser/ping`, {
+        method: 'POST',
+      }),
+  },
 }
 
 // Types
+
+export interface FilesystemConfig {
+  id: string
+  project_id: string
+  adapter_id: string
+  credential_id: string | null
+  enabled: boolean
+  total_files: number
+  total_size_bytes: number
+  created_at: string
+  updated_at: string
+}
+
+export interface FilesystemFolderEntry {
+  type: 'folder'
+  path: string
+  name: string
+}
+
+export interface FilesystemFileEntry {
+  type: 'file'
+  id: string
+  project_id: string
+  path: string
+  name: string
+  folder_path: string
+  extension: string
+  storage_key: string
+  size_bytes: number
+  mime_type: string
+  content_cache: string | null
+  created_by: string | null
+  updated_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type FilesystemEntry = FilesystemFolderEntry | FilesystemFileEntry
+
+export interface BrowserProjectConfig {
+  mode?: 'managed' | 'remote'
+  cdp_url?: string
+  headless?: boolean
+  executable_path?: string
+  control_port?: number
+  timeout_ms?: number
+  no_sandbox?: boolean
+  evaluate_enabled?: boolean
+}
+
 export interface PluginItem {
   id: string
   name: string
@@ -466,6 +616,33 @@ export interface ContextSegment {
   label: string
   content: string
   token_estimate: number
+}
+
+export interface ProjectUsageLog extends UsageLog {
+  agent?: { id: string; name: string; slug: string } | null
+}
+
+export interface UsageLog {
+  id: string
+  agent_id: string
+  conversation_id: string
+  user_id: string | null
+  mode: string
+  provider_id: string | null
+  model_id: string | null
+  input_tokens: number
+  output_tokens: number
+  raw_system_prompt: string | null
+  raw_messages: unknown | null
+  created_at: string
+  user?: { id: string; name: string | null; email: string } | null
+  conversation?: { id: string; mode: string; type: string } | null
+}
+
+export interface UsageSummary {
+  total_input: number
+  total_output: number
+  total_runs: number
 }
 
 export interface ConversationContext {
@@ -610,6 +787,8 @@ export interface AdapterModel {
   id: string
   name: string
   description?: string
+  cost_per_million_out?: number
+  cost_per_million_in?: number
 }
 
 export interface CredentialAdapter {

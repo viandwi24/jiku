@@ -5,10 +5,13 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
+  BarChart2,
   Bot,
   Brain,
   ChevronLeft,
   ChevronsUpDown,
+  FolderOpen,
+  Globe,
   LayoutDashboard,
   LogOut,
   MessageSquare,
@@ -97,7 +100,10 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     { href: '/runs', label: 'Runs', icon: Activity },
     { href: '/memory', label: 'Memory', icon: Brain },
     { href: '/channels', label: 'Channels', icon: Webhook },
+    { href: '/browser', label: 'Browser', icon: Globe },
+    { href: '/files', label: 'Files', icon: FolderOpen },
     { href: '/plugins', label: 'Plugins', icon: Puzzle, badge: activePluginCount || undefined },
+    { href: '/usage', label: 'Usage', icon: BarChart2 },
   ]
 
 

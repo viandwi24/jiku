@@ -15,6 +15,10 @@ export interface AdapterModel {
   id: string
   name: string
   description?: string
+  /** Cost in USD per 1M input tokens sent to model (outbound from our system) */
+  cost_per_million_out?: number
+  /** Cost in USD per 1M output tokens received from model (inbound to our system) */
+  cost_per_million_in?: number
 }
 
 export interface CredentialAdapter {
@@ -80,15 +84,15 @@ export const CREDENTIAL_ADAPTERS: CredentialAdapter[] = [
       { key: 'base_url', label: 'Base URL (override)', type: 'string', required: false },
     ],
     models: [
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-      { id: 'gpt-4-turbo', name: 'GPT-4 Turbo' },
-      { id: 'gpt-4.1', name: 'GPT-4.1' },
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
-      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
-      { id: 'gpt-5-nano', name: 'GPT-5 Nano' },
-      { id: 'o1', name: 'o1' },
-      { id: 'o1-mini', name: 'o1 Mini' },
+      { id: 'gpt-4o',       name: 'GPT-4o',       cost_per_million_out: 2.50,  cost_per_million_in: 10.00 },
+      { id: 'gpt-4o-mini',  name: 'GPT-4o Mini',  cost_per_million_out: 0.15,  cost_per_million_in: 0.60  },
+      { id: 'gpt-4-turbo',  name: 'GPT-4 Turbo',  cost_per_million_out: 10.00, cost_per_million_in: 30.00 },
+      { id: 'gpt-4.1',      name: 'GPT-4.1',      cost_per_million_out: 2.00,  cost_per_million_in: 8.00  },
+      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', cost_per_million_out: 0.40,  cost_per_million_in: 1.60  },
+      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano', cost_per_million_out: 0.10,  cost_per_million_in: 0.40  },
+      { id: 'gpt-5-nano',   name: 'GPT-5 Nano',   cost_per_million_out: 0.15,  cost_per_million_in: 0.60  },
+      { id: 'o1',           name: 'o1',            cost_per_million_out: 15.00, cost_per_million_in: 60.00 },
+      { id: 'o1-mini',      name: 'o1 Mini',       cost_per_million_out: 1.10,  cost_per_million_in: 4.40  },
     ],
   },
   {
@@ -103,9 +107,9 @@ export const CREDENTIAL_ADAPTERS: CredentialAdapter[] = [
       { key: 'base_url', label: 'Base URL (override)', type: 'string', required: false },
     ],
     models: [
-      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+      { id: 'claude-opus-4-6',           name: 'Claude Opus 4.6',   cost_per_million_out: 15.00, cost_per_million_in: 75.00 },
+      { id: 'claude-sonnet-4-6',         name: 'Claude Sonnet 4.6', cost_per_million_out: 3.00,  cost_per_million_in: 15.00 },
+      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5',  cost_per_million_out: 0.80,  cost_per_million_in: 4.00  },
     ],
   },
   {
@@ -132,6 +136,27 @@ export const CREDENTIAL_ADAPTERS: CredentialAdapter[] = [
       { key: 'base_url', label: 'Base URL', type: 'string', required: true, default: 'http://localhost:11434' },
     ],
     models: [], // dynamic from Ollama instance
+  },
+]
+
+// ─── Storage adapters ────────────────────────────────────────────────────────
+
+export const STORAGE_ADAPTERS: CredentialAdapter[] = [
+  {
+    group_id: 'storage',
+    adapter_id: 's3',
+    name: 'S3 / RustFS / MinIO',
+    icon: 's3',
+    fields: [
+      { key: 'access_key_id',     label: 'Access Key ID',     type: 'secret', required: true },
+      { key: 'secret_access_key', label: 'Secret Access Key', type: 'secret', required: true },
+    ],
+    metadata: [
+      { key: 'endpoint', label: 'Endpoint URL', type: 'string', required: true,  placeholder: 'http://localhost:9000' },
+      { key: 'bucket',   label: 'Bucket Name',  type: 'string', required: true,  placeholder: 'jiku-local' },
+      { key: 'region',   label: 'Region',        type: 'string', required: false, default: 'auto' },
+    ],
+    models: [],
   },
 ]
 
@@ -177,10 +202,11 @@ export function getConnectorDerivedAdapters(): CredentialAdapter[] {
  */
 export function getAllAdapters(group_id?: string): CredentialAdapter[] {
   const connectorDerived = getConnectorDerivedAdapters()
+  const all = [...CREDENTIAL_ADAPTERS, ...STORAGE_ADAPTERS]
   // Deduplicate by adapter_id (static list takes precedence if both define the same id)
-  const staticIds = new Set(CREDENTIAL_ADAPTERS.map(a => a.adapter_id))
+  const staticIds = new Set(all.map(a => a.adapter_id))
   const merged = [
-    ...CREDENTIAL_ADAPTERS,
+    ...all,
     ...connectorDerived.filter(a => !staticIds.has(a.adapter_id)),
   ]
   if (!group_id) return merged

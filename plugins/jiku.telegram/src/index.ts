@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
-import type { ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
+import type { ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
 import ConnectorPlugin from '@jiku/plugin-connector'
 
@@ -15,7 +15,6 @@ function splitMessage(text: string, maxLength = TELEGRAM_MAX_LENGTH): string[] {
       chunks.push(remaining)
       break
     }
-    // Try to split on newline near the boundary
     let splitAt = remaining.lastIndexOf('\n', maxLength)
     if (splitAt <= 0) splitAt = maxLength
     chunks.push(remaining.slice(0, splitAt))
@@ -38,12 +37,195 @@ class TelegramAdapter extends ConnectorAdapter {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private bot: any = null
+  private projectId: string | null = null
+
+  // ─── Actions registry ───────────────────────────────────────────────
+
+  override readonly actions: ConnectorAction[] = [
+    {
+      id: 'send_reaction',
+      name: 'Send Reaction',
+      description: 'React to a message with an emoji',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to react to', required: true },
+        emoji: { type: 'string', description: 'Emoji to react with, e.g. "👍"', required: true },
+      },
+    },
+    {
+      id: 'delete_message',
+      name: 'Delete Message',
+      description: 'Delete a message from the chat',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to delete', required: true },
+      },
+    },
+    {
+      id: 'edit_message',
+      name: 'Edit Message',
+      description: 'Edit the text of a previously sent message',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to edit', required: true },
+        text: { type: 'string', description: 'New message text', required: true },
+        markdown: { type: 'boolean', description: 'Whether to parse text as Markdown', required: false },
+      },
+    },
+    {
+      id: 'pin_message',
+      name: 'Pin Message',
+      description: 'Pin a message in the chat',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to pin', required: true },
+        disable_notification: { type: 'boolean', description: 'Pin silently without notification', required: false },
+      },
+    },
+    {
+      id: 'unpin_message',
+      name: 'Unpin Message',
+      description: 'Unpin a message in the chat',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to unpin (omit to unpin all)', required: false },
+      },
+    },
+    {
+      id: 'send_file',
+      name: 'Send File',
+      description: 'Send a file from the project filesystem to a Telegram chat. The agent should write the file to the filesystem first using fs_write, then pass the file path here.',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        file_path: { type: 'string', description: 'File path in the project filesystem, e.g. "/reports/output.pdf"', required: true },
+        caption: { type: 'string', description: 'Optional caption for the file', required: false },
+        reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
+      },
+    },
+    {
+      id: 'send_photo',
+      name: 'Send Photo',
+      description: 'Send an image file from the project filesystem to a Telegram chat',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        file_path: { type: 'string', description: 'Image file path in the project filesystem, e.g. "/images/chart.png"', required: true },
+        caption: { type: 'string', description: 'Optional caption', required: false },
+        reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
+      },
+    },
+    {
+      id: 'get_chat_info',
+      name: 'Get Chat Info',
+      description: 'Get information about a Telegram chat (title, type, member count, etc.)',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+      },
+    },
+  ]
+
+  // ─── runAction ──────────────────────────────────────────────────────
+
+  override async runAction(actionId: string, params: Record<string, unknown>): Promise<unknown> {
+    if (!this.bot) throw new Error('Bot not initialized')
+
+    switch (actionId) {
+      case 'send_reaction': {
+        const { chat_id, message_id, emoji } = params as { chat_id: string; message_id: string; emoji: string }
+        await this.bot.api.setMessageReaction(chat_id, Number(message_id), [{ type: 'emoji', emoji }])
+        return { success: true }
+      }
+
+      case 'delete_message': {
+        const { chat_id, message_id } = params as { chat_id: string; message_id: string }
+        await this.bot.api.deleteMessage(chat_id, Number(message_id))
+        return { success: true }
+      }
+
+      case 'edit_message': {
+        const { chat_id, message_id, text, markdown } = params as { chat_id: string; message_id: string; text: string; markdown?: boolean }
+        const finalText = markdown ? telegramifyMarkdown(text, 'escape') : text
+        await this.bot.api.editMessageText(chat_id, Number(message_id), finalText, {
+          parse_mode: markdown ? 'MarkdownV2' : undefined,
+        })
+        return { success: true }
+      }
+
+      case 'pin_message': {
+        const { chat_id, message_id, disable_notification } = params as { chat_id: string; message_id: string; disable_notification?: boolean }
+        await this.bot.api.pinChatMessage(chat_id, Number(message_id), {
+          disable_notification: disable_notification ?? false,
+        })
+        return { success: true }
+      }
+
+      case 'unpin_message': {
+        const { chat_id, message_id } = params as { chat_id: string; message_id?: string }
+        if (message_id) {
+          await this.bot.api.unpinChatMessage(chat_id, { message_id: Number(message_id) })
+        } else {
+          await this.bot.api.unpinAllChatMessages(chat_id)
+        }
+        return { success: true }
+      }
+
+      case 'send_file':
+      case 'send_photo': {
+        const { chat_id, file_path, caption, reply_to_message_id } = params as {
+          chat_id: string
+          file_path: string
+          caption?: string
+          reply_to_message_id?: string
+        }
+        if (!this.projectId) throw new Error('Project context not available')
+
+        // Dynamically import filesystem service from the server
+        // (telegram plugin runs inside the server process, so this is safe)
+        const { getFilesystemService } = await import('../../../apps/studio/server/src/filesystem/service.ts')
+        const fs = await getFilesystemService(this.projectId)
+        if (!fs) throw new Error('Filesystem is not configured for this project')
+
+        // Download file content from S3 adapter as buffer
+        const adapter = fs.getAdapter()
+        const { getFileByPath } = await import('@jiku-studio/db')
+        const fileRecord = await getFileByPath(this.projectId, file_path)
+        if (!fileRecord) throw new Error(`File not found in filesystem: ${file_path}`)
+
+        const buffer = await adapter.download(fileRecord.storage_key)
+        const { InputFile } = await import('grammy')
+        const inputFile = new InputFile(buffer, fileRecord.name)
+
+        const replyParams = reply_to_message_id
+          ? { reply_parameters: { message_id: Number(reply_to_message_id) } }
+          : {}
+
+        if (actionId === 'send_photo') {
+          const sent = await this.bot.api.sendPhoto(chat_id, inputFile, { caption, ...replyParams })
+          return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
+        } else {
+          const sent = await this.bot.api.sendDocument(chat_id, inputFile, { caption, ...replyParams })
+          return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
+        }
+      }
+
+      case 'get_chat_info': {
+        const { chat_id } = params as { chat_id: string }
+        const chat = await this.bot.api.getChat(chat_id)
+        return { success: true, chat }
+      }
+
+      default:
+        throw new Error(`Unknown action: ${actionId}`)
+    }
+  }
+
+  // ─── Standard ConnectorAdapter methods ─────────────────────────────
 
   async onActivate(ctx: ConnectorContext): Promise<void> {
     const { Bot } = await import('grammy')
     const token = ctx.fields['bot_token']
     if (!token) throw new Error('[telegram] bot_token missing in credentials')
 
+    this.projectId = ctx.projectId
     this.bot = new Bot(token)
 
     this.bot.on('message', async (gramCtx: any) => {
@@ -112,7 +294,6 @@ class TelegramAdapter extends ConnectorAdapter {
       await ctx.onEvent(event)
     })
 
-    // Start polling
     this.bot.start({ drop_pending_updates: false }).catch((err: unknown) => {
       console.error('[telegram] polling error:', err)
     })
@@ -124,12 +305,12 @@ class TelegramAdapter extends ConnectorAdapter {
     if (this.bot) {
       await this.bot.stop().catch(() => {})
       this.bot = null
+      this.projectId = null
       console.log('[telegram] bot stopped')
     }
   }
 
   parseEvent(raw: unknown): ConnectorEvent | null {
-    // Used for webhook mode — parse raw Telegram Update object
     const update = raw as any
     const msg = update?.message
     if (msg?.text !== undefined) {

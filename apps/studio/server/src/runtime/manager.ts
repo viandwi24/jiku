@@ -1,4 +1,4 @@
-import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById, getConnectors, deleteConnector } from '@jiku-studio/db'
+import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById, getConnectors, deleteConnector, getProjectBrowserConfig } from '@jiku-studio/db'
 import { JikuRuntime, PluginLoader, createProviderDef, DEFAULT_PROJECT_MEMORY_CONFIG, resolveMemoryConfig } from '@jiku/core'
 import type { JikuRunParams, JikuRunResult, AgentMemoryConfig } from '@jiku/types'
 import { defineAgent } from '@jiku/kit'
@@ -11,10 +11,23 @@ import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
 import { buildRunTaskTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
+import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
+import { buildBrowserTools } from '../browser/tool.js'
+import { buildFilesystemTools } from '../filesystem/tools.ts'
+import { getFilesystemConfig } from '@jiku-studio/db'
+import type { ToolDefinition } from '@jiku/types'
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
 const DYNAMIC_PROVIDER_ID = '__studio__'
+
+/** Project-level shared tools (connector + browser + filesystem).
+ *  Rebuilt whenever any of those configs change via syncProjectTools(). */
+interface ProjectSharedTools {
+  connectorTools: ToolDefinition[]
+  browserTools: ToolDefinition[]
+  filesystemTools: ToolDefinition[]
+}
 
 /**
  * JikuRuntimeManager
@@ -31,6 +44,9 @@ export class JikuRuntimeManager {
   private storages = new Map<string, StudioStorageAdapter>()
   private _pluginLoader: PluginLoader | null = null
 
+  // Per-project shared tools cache — rebuilt on syncProjectTools()
+  private sharedToolsCache = new Map<string, ProjectSharedTools>()
+
   // Per-agent resolved model cache for the current request (cleared after each run)
   private modelCache = new Map<string, ReturnType<typeof buildProvider>>()
 
@@ -43,6 +59,51 @@ export class JikuRuntimeManager {
   getPluginLoader(): PluginLoader | null {
     return this._pluginLoader
   }
+
+  // ─── Shared tools resolution ──────────────────────────────────────────────
+
+  /**
+   * Load project-level shared tools from DB (connector, browser, filesystem).
+   * Updates the cache and returns the result.
+   * Does NOT restart the browser server — caller is responsible.
+   */
+  private async resolveSharedTools(projectId: string): Promise<ProjectSharedTools> {
+    // Connector tools
+    const connectorRows = await getConnectors(projectId)
+    const connectorTools = connectorRows.length > 0 ? buildConnectorTools(projectId) : []
+
+    // Browser tools
+    let browserTools: ToolDefinition[] = []
+    const browserCfg = await getProjectBrowserConfig(projectId)
+    if (browserCfg.enabled) {
+      try {
+        const handle = await startBrowserServer(projectId, browserCfg.config)
+        browserTools = buildBrowserTools(handle.baseUrl, projectId)
+        console.log(`[browser] Project ${projectId} browser server started on port ${handle.port}`)
+      } catch (err) {
+        console.warn(`[browser] Failed to start browser server for project ${projectId}:`, err)
+      }
+    }
+
+    // Filesystem tools
+    let filesystemTools: ToolDefinition[] = []
+    const fsCfg = await getFilesystemConfig(projectId)
+    if (fsCfg?.enabled && fsCfg.credential_id) {
+      filesystemTools = buildFilesystemTools(projectId)
+      console.log(`[filesystem] Project ${projectId} filesystem tools enabled`)
+    }
+
+    const shared: ProjectSharedTools = { connectorTools, browserTools, filesystemTools }
+    this.sharedToolsCache.set(projectId, shared)
+    return shared
+  }
+
+  /** Get cached shared tools, or load them if not cached. */
+  private getSharedTools(projectId: string): ProjectSharedTools {
+    return this.sharedToolsCache.get(projectId) ?? { connectorTools: [], browserTools: [], filesystemTools: [] }
+  }
+
+  // ─── wakeUp / sleep ───────────────────────────────────────────────────────
 
   async wakeUp(projectId: string): Promise<void> {
     const [agentRows, rules, projectRow] = await Promise.all([
@@ -60,12 +121,11 @@ export class JikuRuntimeManager {
     const pluginLoader = this._pluginLoader ?? new PluginLoader()
 
     // Load enabled project plugins from DB and configure the loader.
-    // setProjectEnabledPlugins populates the enabled set — activatePlugin only triggers lifecycle hooks.
     const enabledRows = await getEnabledProjectPlugins(projectId)
     const enabledPluginIds = enabledRows.map(r => r.plugin_id)
     pluginLoader.setProjectEnabledPlugins(projectId, enabledPluginIds)
 
-    // Trigger onProjectPluginActivated lifecycle for each enabled plugin (no Set mutation — already done above)
+    // Trigger onProjectPluginActivated lifecycle for each enabled plugin
     for (const row of enabledRows) {
       const plugin = pluginLoader.getAllPlugins().find(p => p.meta.id === row.plugin_id)
       if (!plugin?.onProjectPluginActivated) continue
@@ -96,21 +156,19 @@ export class JikuRuntimeManager {
 
     await runtime.boot()
 
-    // Build connector tools if project has active connectors
-    const connectorRows = await getConnectors(projectId)
-    const connectorTools = connectorRows.length > 0 ? buildConnectorTools(projectId) : []
+    this.runtimes.set(projectId, runtime)
+    this.storages.set(projectId, storage)
 
+    // Resolve and cache shared tools (browser server is started here)
+    const shared = await this.resolveSharedTools(projectId)
+
+    // Register all agents with their tools
     for (const a of agentRows) {
-      // Resolve per-agent memory config (merge project defaults + agent override)
       const agentMemoryConfig = resolveMemoryConfig(
         projectMemoryConfig,
         (a.memory_config as AgentMemoryConfig | null) ?? null,
       )
-
-      // Build memory tools scoped to this agent's resolved config
       const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
-
-      // run_task built-in tool — always active
       const runTaskTool = buildRunTaskTool(projectId, a.id, () => ({
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
@@ -123,14 +181,20 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
-          built_in_tools: [...systemTools, ...memoryTools, ...connectorTools, runTaskTool],
+          built_in_tools: [
+            ...systemTools,
+            ...memoryTools,
+            ...shared.connectorTools,
+            ...shared.browserTools,
+            ...shared.filesystemTools,
+            runTaskTool,
+          ],
         }),
         agentMemoryConfig,
         (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
         (a as Record<string, unknown>).persona_prompt as string | null ?? null,
       )
 
-      // Schedule heartbeat if enabled
       if (a.heartbeat_enabled && a.heartbeat_cron) {
         heartbeatScheduler.scheduleAgent(a.id, projectId).catch(err =>
           console.warn(`[heartbeat] Failed to schedule agent ${a.id}:`, err)
@@ -138,13 +202,10 @@ export class JikuRuntimeManager {
       }
     }
 
-    this.runtimes.set(projectId, runtime)
-    this.storages.set(projectId, storage)
-
     // Cleanup + auto-activate connectors
+    const connectorRows = await getConnectors(projectId)
     const { activateConnector } = await import('../connectors/activation.ts')
     for (const connector of connectorRows) {
-      // Plugin not in registry at all → connector is orphaned, delete it
       if (!connectorRegistry.get(connector.plugin_id)) {
         console.warn(`[wakeUp] connector plugin "${connector.plugin_id}" not found — deleting orphaned connector ${connector.id}`)
         await deleteConnector(connector.id).catch(err =>
@@ -152,7 +213,6 @@ export class JikuRuntimeManager {
         )
         continue
       }
-      // Plugin exists but connector was active → re-activate (may error, that's ok)
       if (connector.status === 'active' && connector.credential_id) {
         activateConnector(connector.id).catch(err =>
           console.warn(`[wakeUp] connector auto-activate failed (${connector.id}):`, err)
@@ -162,10 +222,73 @@ export class JikuRuntimeManager {
   }
 
   async sleep(projectId: string): Promise<void> {
+    await stopBrowserServer(projectId)
     const runtime = this.runtimes.get(projectId)
     if (runtime) await runtime.stop()
     this.runtimes.delete(projectId)
     this.storages.delete(projectId)
+    this.sharedToolsCache.delete(projectId)
+  }
+
+  // ─── Smart sync methods ───────────────────────────────────────────────────
+
+  /**
+   * Sync project-level shared tools (browser, filesystem, connectors) without
+   * restarting the runtime. Re-registers all agents with the updated tool set.
+   *
+   * Call this whenever browser config, filesystem config, or connector config changes.
+   */
+  async syncProjectTools(projectId: string): Promise<void> {
+    const runtime = this.runtimes.get(projectId)
+    if (!runtime) return // not booted yet — tools will load on next wakeUp
+
+    const [agentRows, projectRow] = await Promise.all([
+      getAgentsByProjectId(projectId),
+      getProjectById(projectId),
+    ])
+
+    // Stop old browser server before resolving new tools (in case config changed)
+    await stopBrowserServer(projectId)
+
+    const shared = await this.resolveSharedTools(projectId)
+    const storage = this.storages.get(projectId) ?? new StudioStorageAdapter(projectId)
+    const projectMemoryConfig = (projectRow?.memory_config as import('@jiku/types').ProjectMemoryConfig | null)
+      ?? DEFAULT_PROJECT_MEMORY_CONFIG
+
+    for (const a of agentRows) {
+      const agentMemoryConfig = resolveMemoryConfig(
+        projectMemoryConfig,
+        (a.memory_config as AgentMemoryConfig | null) ?? null,
+      )
+      const memoryTools = buildMemoryTools(agentMemoryConfig, storage, projectId)
+      const runTaskTool = buildRunTaskTool(projectId, a.id, () => ({
+        user_id: 'system', roles: [], permissions: [], user_data: {},
+      }), () => undefined)
+
+      runtime.addAgent(
+        defineAgent({
+          meta: { id: a.id, name: a.name },
+          base_prompt: a.base_prompt,
+          allowed_modes: (a.allowed_modes ?? ['chat']) as ('chat' | 'task')[],
+          provider_id: DYNAMIC_PROVIDER_ID,
+          model_id: DYNAMIC_MODEL_ID,
+          compaction_threshold: a.compaction_threshold ?? 80,
+          built_in_tools: [
+            ...systemTools,
+            ...memoryTools,
+            ...shared.connectorTools,
+            ...shared.browserTools,
+            ...shared.filesystemTools,
+            runTaskTool,
+          ],
+        }),
+        agentMemoryConfig,
+        (a.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
+        (a as Record<string, unknown>).persona_prompt as string | null ?? null,
+      )
+    }
+
+    console.log(`[jiku] syncProjectTools: ${projectId} — connector=${shared.connectorTools.length} browser=${shared.browserTools.length} fs=${shared.filesystemTools.length}`)
   }
 
   async syncRules(projectId: string): Promise<void> {
@@ -196,6 +319,9 @@ export class JikuRuntimeManager {
       user_id: 'system', roles: [], permissions: [], user_data: {},
     }), () => undefined)
 
+    // Include current shared tools so syncAgent doesn't strip them
+    const shared = this.getSharedTools(projectId)
+
     runtime.addAgent(
       defineAgent({
         meta: { id: agent.id, name: agent.name },
@@ -204,14 +330,20 @@ export class JikuRuntimeManager {
         provider_id: DYNAMIC_PROVIDER_ID,
         model_id: DYNAMIC_MODEL_ID,
         compaction_threshold: agent.compaction_threshold ?? 80,
-        built_in_tools: [...systemTools, ...memoryTools, runTaskTool],
+        built_in_tools: [
+          ...systemTools,
+          ...memoryTools,
+          ...shared.connectorTools,
+          ...shared.browserTools,
+          ...shared.filesystemTools,
+          runTaskTool,
+        ],
       }),
       agentMemoryConfig,
       (agent.persona_seed ?? null) as import('@jiku/types').PersonaSeed | null,
       (agent as Record<string, unknown>).persona_prompt as string | null ?? null,
     )
 
-    // Reschedule heartbeat if config changed
     await heartbeatScheduler.rescheduleAgent(agent.id, projectId)
   }
 
@@ -226,47 +358,22 @@ export class JikuRuntimeManager {
     return this.runtimes.get(projectId)!
   }
 
-  /**
-   * Activate a plugin for a project.
-   * Updates the enabled set and triggers the lifecycle hook.
-   */
+  // ─── Plugin lifecycle ─────────────────────────────────────────────────────
+
   async activatePlugin(projectId: string, pluginId: string, config: Record<string, unknown>): Promise<void> {
     const loader = this._pluginLoader
     if (!loader) return
-
     await loader.activatePlugin(projectId, pluginId, config)
-    // Note: getResolvedTools(projectId) will now include the newly enabled plugin's tools
-    // No need to restart runtime — tools are resolved dynamically per request
   }
 
-  /**
-   * Deactivate a plugin for a project.
-   * Loads the current config from DB so the lifecycle hook receives it.
-   */
   async deactivatePlugin(projectId: string, pluginId: string): Promise<void> {
     const loader = this._pluginLoader
     if (!loader) return
-
     await loader.deactivatePlugin(projectId, pluginId)
   }
 
-  /**
-   * Rebuild the effective tool/prompt set for a project after plugin changes.
-   * Since tools are resolved dynamically via getResolvedTools(projectId),
-   * this is a no-op in the current architecture but kept as a sync point
-   * for future use (e.g. hot-reloading runtimes).
-   */
-  async syncProjectTools(projectId: string): Promise<void> {
-    const runtime = this.runtimes.get(projectId)
-    if (!runtime || !this._pluginLoader) return
-    // Tools are already resolved dynamically — no rebuild needed
-    console.log(`[jiku] syncProjectTools: ${projectId} tools synced`)
-  }
+  // ─── Run ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Run an agent within a project runtime.
-   * Resolves the credential per-request (decrypted keys never sit in long-lived memory).
-   */
   async run(projectId: string, params: JikuRunParams): Promise<JikuRunResult> {
     const runtime = await this.getRuntime(projectId)
 
@@ -284,8 +391,6 @@ export class JikuRuntimeManager {
       throw new Error('No model configured for this agent. Assign a credential in Agent Settings.')
     }
 
-    // Cache the resolved model under a unique key for this request.
-    // We use a unique key so concurrent requests don't collide.
     const cacheKey = `${params.agent_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     this.modelCache.set(cacheKey, buildProvider(modelInfo))
 
@@ -295,7 +400,6 @@ export class JikuRuntimeManager {
       model_id: cacheKey,
     })
 
-    // Wrap the stream to clean up the model cache after the stream is fully consumed
     const originalStream = result.stream
     const cacheRef = this.modelCache
     const wrappedStream = new ReadableStream({
@@ -337,14 +441,15 @@ export class JikuRuntimeManager {
 
   async stopAll(): Promise<void> {
     heartbeatScheduler.stopAll()
+    await stopAllBrowserServers()
 
     await Promise.all(
       Array.from(this.runtimes.entries()).map(([, rt]) => rt.stop()),
     )
     this.runtimes.clear()
     this.storages.clear()
+    this.sharedToolsCache.clear()
 
-    // Trigger onServerStop lifecycle for all registered plugins
     if (this._pluginLoader) {
       await this._pluginLoader.stopPlugins()
     }

@@ -396,6 +396,12 @@ export class AgentRunner {
         // Wait for completion then persist + emit final usage
         const [steps, usage] = await Promise.all([result.steps, result.usage])
 
+        // Emit raw snapshot for usage log debug
+        jikuWriter.write('jiku-run-snapshot', {
+          system_prompt: systemPrompt,
+          messages,
+        })
+
         jikuWriter.write('jiku-usage', {
           input_tokens: usage.inputTokens ?? 0,
           output_tokens: usage.outputTokens ?? 0,

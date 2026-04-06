@@ -1,9 +1,10 @@
 ## Phase
-Post Plan 10/11 — Connector system polish (parallel track) + core runtime improvements
+Post Plan 10/11 — parallel tracks: Connector system polish + Browser integration
 
 ## Currently Working On
-- All core runtime improvements completed (tool persistence, real-time, get_datetime, Telegram context).
-- Channels & Connector system polish continues as a parallel track.
+- Core runtime track: completed (tool persistence, real-time, get_datetime, Telegram context, tool rendering fix).
+- Connector/Channels track: parallel, ongoing.
+- Browser track: parallel, ongoing (see `apps/studio/server/docker-compose.browser.yml`).
 
 ## Relevant Files (Core track — recently completed)
 - `packages/core/src/runner.ts` — tool parts now saved to DB (all steps, tool-invocation parts with state:'result'); history loading reconstructs tool/assistant model messages
@@ -15,6 +16,7 @@ Post Plan 10/11 — Connector system polish (parallel track) + core runtime impr
 - `plugins/jiku.telegram/src/index.ts` — emits `metadata.language_code` + `metadata.client_timestamp` on message events
 - `apps/studio/web/hooks/use-live-conversation.ts` *(new)* — polling hook for readonly/run-detail pages
 - `apps/studio/web/components/chat/conversation-viewer.tsx` — uses `useLiveConversation` in readonly mode
+- `apps/studio/web/lib/messages.ts` *(new)* — `dbMessageToUIMessage` / `dbPartsToUIParts`: converts DB tool-invocation parts to AI SDK v6 dynamic-tool format
 
 ## Relevant Files (Connector track — parallel)
 - `plugins/jiku.connector/src/index.ts` *(new)* — `@jiku/plugin-connector` contributes `ctx.connector.register()`
@@ -27,6 +29,8 @@ Post Plan 10/11 — Connector system polish (parallel track) + core runtime impr
 
 ## Important Context / Temporary Decisions
 - Tool persistence: uses `result.steps` (not `result.text`) to collect all steps' toolCalls+toolResults. Each step emits tool-invocation parts then a text part. Single `addMessage` call with all parts at end of run.
+- DB tool part format: `{ type: 'tool-invocation', toolInvocationId, toolName, args, state: 'result', result }` — this is the DB storage format, NOT the AI SDK UI format.
+- UI tool part format (AI SDK v6): `{ type: 'dynamic-tool', toolCallId, toolName, state: 'output-available', input, output }` — must convert on load via `dbPartsToUIParts()`.
 - History reconstruction: assistant messages with tool parts → `{ role: 'assistant', content: [text-call, tool-call, ...] }` + `{ role: 'tool', content: [tool-result, ...] }` per AI SDK `ToolContent` type.
 - Live-parts buffer: in-memory only (no DB writes per chunk). Clients poll at 400ms. `autoDetect` polls `/status` every 2s to start polling when a run begins (handles pre-opened tabs).
 - Connector timezone: `LANG_TO_TIMEZONE` map in event-router covers 35+ locales. `buildConnectorContextString` adds server time + estimated user local time to system context.
@@ -40,3 +44,4 @@ Post Plan 10/11 — Connector system polish (parallel track) + core runtime impr
 ## Next Up
 - DB migration: `cd apps/studio/db && bun run db:push` (applies `persona_prompt` column)
 - Verify Telegram bot end-to-end: send message → typing indicator → get_datetime tool call → tool shown in chat history after refresh
+- Browser track: ongoing parallel work (docker-compose.browser.yml)

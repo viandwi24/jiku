@@ -86,7 +86,9 @@ process.on('uncaughtException', (err) => {
 
 async function bootstrap() {
   await checkDbConnection()
-  await runMigrations()
+  if (process.env.AUTO_MIGRATE === 'true') {
+    await runMigrations()
+  }
   await seedPermissions()
 
   const sharedLoader = new PluginLoader()

@@ -11,6 +11,7 @@ import {
   Brain,
   ChevronLeft,
   ChevronsUpDown,
+  Clock,
   FolderOpen,
   Globe,
   LayoutDashboard,
@@ -22,6 +23,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth.store'
+import { ThemeToggle } from '@/components/theme-toggle'
 import {
   Avatar,
   AvatarFallback,
@@ -63,8 +65,9 @@ const NAV_ITEMS: Array<{
   { href: '/runs',     label: 'Runs',      icon: Activity,        permission: 'runs:read' },
   { href: '/memory',   label: 'Memory',    icon: Brain,           permission: 'memory:read' },
   { href: '/channels', label: 'Channels',  icon: Webhook,         permission: 'channels:read' },
-  { href: '/skills',   label: 'Skills',    icon: BookOpen,        permission: 'agents:read' },
-  { href: '/browser',  label: 'Browser',   icon: Globe,           permission: 'agents:read' },
+  { href: '/skills',      label: 'Skills',      icon: BookOpen,  permission: 'agents:read' },
+  { href: '/cron-tasks',  label: 'Cron Tasks',  icon: Clock,     permission: 'cron_tasks:read' },
+  { href: '/browser',     label: 'Browser',     icon: Globe,     permission: 'agents:read' },
   { href: '/disk',     label: 'Disk',      icon: FolderOpen,      permission: 'agents:read' },
   { href: '/plugins',  label: 'Plugins',   icon: Puzzle,          permission: 'plugins:read', badgeKey: 'plugins' },
   { href: '/usage',    label: 'Usage',     icon: BarChart2,       permission: 'settings:read' },
@@ -205,30 +208,33 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton className="h-auto py-2">
-                  <Avatar className="h-6 w-6">
-                    <AvatarFallback className="text-xs">
-                      {user?.name?.[0]?.toUpperCase() ?? 'U'}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="flex-1 truncate text-left text-sm">{user?.name}</span>
-                  <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-52">
-                <div className="px-2 py-1.5">
-                  <p className="text-xs font-medium">{user?.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleSignOut}>
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <SidebarMenuButton className="h-auto py-2 flex-1">
+                    <Avatar className="h-6 w-6">
+                      <AvatarFallback className="text-xs">
+                        {user?.name?.[0]?.toUpperCase() ?? 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex-1 truncate text-left text-sm">{user?.name}</span>
+                    <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                  </SidebarMenuButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" className="w-52">
+                  <div className="px-2 py-1.5">
+                    <p className="text-xs font-medium">{user?.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleSignOut}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <ThemeToggle />
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

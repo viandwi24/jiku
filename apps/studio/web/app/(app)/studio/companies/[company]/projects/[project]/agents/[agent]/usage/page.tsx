@@ -7,7 +7,8 @@ import type { UsageLog } from '@/lib/api'
 import { Badge, Button, Dialog, DialogContent, DialogHeader, DialogTitle } from '@jiku/ui'
 import { BarChart2, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
+import { aggregateByDay, buildPricingMap, estimateCost, estimateTotalCost, formatTokens } from '@/lib/usage'
+import { TokenUsageAreaChart } from '@/components/usage/usage-charts'
 
 interface PageProps {
   params: Promise<{ company: string; project: string; agent: string }>
@@ -95,6 +96,10 @@ export default function UsagePage({ params }: PageProps) {
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / pageSize)
 
+  const totalTokens = (summary?.total_input ?? 0) + (summary?.total_output ?? 0)
+  const estimatedCost = useMemo(() => estimateTotalCost(logs, pricingMap), [logs, pricingMap])
+  const dailyData = useMemo(() => aggregateByDay(logs), [logs])
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -115,7 +120,7 @@ export default function UsagePage({ params }: PageProps) {
 
       {/* Summary cards */}
       {summary && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-5 gap-3">
           <div className="border rounded-lg p-4 space-y-0.5">
             <p className="text-xs text-muted-foreground">Total Runs</p>
             <p className="text-2xl font-semibold">{summary.total_runs.toLocaleString()}</p>
@@ -128,8 +133,19 @@ export default function UsagePage({ params }: PageProps) {
             <p className="text-xs text-muted-foreground">Token Out (to model)</p>
             <p className="text-2xl font-semibold">{formatTokens(summary.total_input)}</p>
           </div>
+          <div className="border rounded-lg p-4 space-y-0.5">
+            <p className="text-xs text-muted-foreground">Total Tokens</p>
+            <p className="text-2xl font-semibold">{formatTokens(totalTokens)}</p>
+          </div>
+          <div className="border rounded-lg p-4 space-y-0.5">
+            <p className="text-xs text-muted-foreground">Estimated Cost</p>
+            <p className="text-2xl font-semibold">{estimatedCost}</p>
+          </div>
         </div>
       )}
+
+      {/* Token usage chart */}
+      {logs.length > 0 && <TokenUsageAreaChart data={dailyData} />}
 
       {/* Table */}
       <div className="border rounded-lg overflow-hidden">

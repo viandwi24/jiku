@@ -590,6 +590,41 @@ export const api = {
       request<{ ok: boolean }>(`/api/companies/${companyId}/invitations/${invitationId}`, { method: 'DELETE' }),
   },
 
+  cronTasks: {
+    list: (projectId: string) =>
+      request<{ cron_tasks: CronTask[] }>(`/api/projects/${projectId}/cron-tasks`),
+    create: (projectId: string, body: {
+      agent_id: string
+      name: string
+      description?: string
+      cron_expression: string
+      prompt: string
+      enabled?: boolean
+    }) =>
+      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    get: (projectId: string, id: string) =>
+      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks/${id}`),
+    update: (projectId: string, id: string, body: Partial<{
+      name: string
+      description: string | null
+      cron_expression: string
+      prompt: string
+      enabled: boolean
+      agent_id: string
+    }>) =>
+      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (projectId: string, id: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/cron-tasks/${id}`, { method: 'DELETE' }),
+    trigger: (projectId: string, id: string) =>
+      request<{ ok: boolean; conversation_id: string }>(`/api/projects/${projectId}/cron-tasks/${id}/trigger`, { method: 'POST' }),
+  },
+
   skills: {
     // Project skills (files are stored on the filesystem under /skills/{slug}/)
     list: (projectId: string) =>
@@ -722,7 +757,30 @@ export interface Agent {
   attachment_scope?: 'per_user' | 'shared' | null
   /** null = allow all, [] = deny all, [id…] = allow specific agents */
   task_allowed_agents?: string[] | null
+  cron_task_enabled?: boolean | null
   created_at: string | null
+}
+
+export interface CronTask {
+  id: string
+  project_id: string
+  agent_id: string
+  name: string
+  description: string | null
+  cron_expression: string
+  prompt: string
+  enabled: boolean
+  caller_id: string | null
+  caller_role: string | null
+  caller_is_superadmin: boolean
+  last_run_at: string | null
+  next_run_at: string | null
+  run_count: number
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  agent?: { id: string; name: string; slug: string } | null
+  caller?: { id: string; name: string; email: string } | null
 }
 
 export interface ProjectAttachment {

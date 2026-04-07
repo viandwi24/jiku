@@ -1,5 +1,25 @@
 # Decisions
 
+## ADR-027 — Conversation title generation is fire-and-forget, non-blocking
+
+**Context:** Conversations need human-readable titles instead of generic labels. Options: generate title synchronously (blocks chat response), or asynchronously (responsive but title may appear with a delay).
+
+**Decision:** Title generation runs asynchronously after the first message is stored. The HTTP response is not blocked. The title is generated using the agent's own configured LLM via the same `buildProvider()` and `resolveAgentModel()` dynamic provider pattern used by chat runs. Max 50 characters.
+
+**Consequences:** Chat UX remains fast (first message response is not delayed). Titles appear after a brief moment (50–500ms depending on LLM response time). If generation fails (credential not assigned, LLM error), the title remains null — no error is exposed to the user. This is acceptable because the conversation is still usable even without a title.
+
+---
+
+## ADR-028 — Conversation soft delete via deleted_at column
+
+**Context:** Conversations can be deleted from the UI. Hard delete loses history permanently. Soft delete preserves data for audit/analytics while removing conversations from the user-facing list.
+
+**Decision:** Add `deleted_at timestamptz | null` column. `DELETE /conversations/:id` sets `deleted_at = now()`. All query operations (`getConversationsByProject`, etc.) filter `WHERE deleted_at IS NULL`. Frontend displays a delete confirmation (`AlertDialog`) before triggering the delete.
+
+**Consequences:** Deleted conversations remain in the DB but never appear in the conversation list or UI. Soft delete is permanent from the user's perspective (no undelete button in the current UI). If needed in the future, undelete is easy to implement (clear the `deleted_at` column).
+
+---
+
 ## ADR-026 — Browser automation (Plan 13) abandoned — to be removed at MVP
 
 **Context:** Plan 13 implemented browser automation using the ported OpenClaw engine. The goal was to let the AI control the visible Chromium browser running in the LinuxServer/noVNC container (visible at localhost:4000) so users can watch the AI browse in real time.

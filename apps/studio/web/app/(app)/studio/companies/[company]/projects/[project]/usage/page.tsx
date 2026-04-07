@@ -20,7 +20,8 @@ import {
 } from '@jiku/ui'
 import { BarChart2, RefreshCw, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
+import { aggregateByAgent, aggregateByDay, buildPricingMap, estimateCost, estimateTotalCost, formatTokens } from '@/lib/usage'
+import { AgentUsageBarChart, TokenUsageAreaChart } from '@/components/usage/usage-charts'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -159,6 +160,12 @@ function ProjectUsagePage({ params }: PageProps) {
   const isFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterUser !== 'all' || search !== ''
   const displaySummary = isFiltered ? filteredSummary : summary
 
+  const activeLogs = isFiltered ? filteredLogs : allLogs
+  const totalTokens = (displaySummary?.total_input ?? 0) + (displaySummary?.total_output ?? 0)
+  const estimatedCost = useMemo(() => estimateTotalCost(activeLogs, pricingMap), [activeLogs, pricingMap])
+  const dailyData = useMemo(() => aggregateByDay(activeLogs), [activeLogs])
+  const agentData = useMemo(() => aggregateByAgent(activeLogs), [activeLogs])
+
   function resetFilters() {
     setFilterAgent('all')
     setFilterMode('all')
@@ -188,7 +195,7 @@ function ProjectUsagePage({ params }: PageProps) {
 
       {/* Summary cards */}
       {displaySummary && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-5 gap-3">
           <div className="border rounded-lg p-4 space-y-0.5">
             <p className="text-xs text-muted-foreground">Total Runs {isFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{displaySummary.total_runs.toLocaleString()}</p>
@@ -201,6 +208,22 @@ function ProjectUsagePage({ params }: PageProps) {
             <p className="text-xs text-muted-foreground">Token Out →model {isFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{formatTokens(displaySummary.total_input)}</p>
           </div>
+          <div className="border rounded-lg p-4 space-y-0.5">
+            <p className="text-xs text-muted-foreground">Total Tokens {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-2xl font-semibold">{formatTokens(totalTokens)}</p>
+          </div>
+          <div className="border rounded-lg p-4 space-y-0.5">
+            <p className="text-xs text-muted-foreground">Estimated Cost {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-2xl font-semibold">{estimatedCost}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Charts */}
+      {activeLogs.length > 0 && (
+        <div className="grid grid-cols-2 gap-4">
+          <TokenUsageAreaChart data={dailyData} />
+          <AgentUsageBarChart data={agentData} />
         </div>
       )}
 

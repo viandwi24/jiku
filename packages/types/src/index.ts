@@ -1018,6 +1018,10 @@ export const PERMISSIONS = {
   MEMBERS_READ:  'members:read',
   MEMBERS_WRITE: 'members:write',
   ROLES_WRITE:   'roles:write',
+
+  // Cron Tasks
+  CRON_TASKS_READ:  'cron_tasks:read',
+  CRON_TASKS_WRITE: 'cron_tasks:write',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
@@ -1027,6 +1031,7 @@ export const ROLE_PRESETS = {
     name: 'Admin',
     permissions: Object.values(PERMISSIONS) as Permission[],
   },
+
   manager: {
     name: 'Manager',
     permissions: [
@@ -1038,6 +1043,7 @@ export const ROLE_PRESETS = {
       'plugins:read',
       'settings:read',
       'members:read',
+      'cron_tasks:read', 'cron_tasks:write',
     ] as Permission[],
   },
   member: {

@@ -1,10 +1,33 @@
 ## Phase
-Plans 1–15 all implemented. Session cleanup complete.
+Usage monitor enhancement — charts, total tokens, estimated cost.
 
 ## Currently Working On
-- Idle — last session completed browser failure documentation + UI rendering fixes.
+- Completed: usage monitor enhancement across agent usage page, project usage page, and project dashboard.
 
 ## Relevant Files (Most Recently Worked On)
+
+### Usage Monitor Enhancement (this session)
+- `apps/studio/web/lib/usage.ts` — Added `aggregateByDay()`, `aggregateByAgent()`, `estimateTotalCost()` helpers
+- `apps/studio/web/components/usage/usage-charts.tsx` — New: `TokenUsageAreaChart` (stacked area) and `AgentUsageBarChart` (horizontal bar)
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/usage/page.tsx` — Stats 3→5 cards, area chart added
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/usage/page.tsx` — Stats 3→5 cards, 2-column chart grid (filter-aware)
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/page.tsx` — Activity card now shows real total token count
+
+## Relevant Files (Most Recently Worked On)
+
+### Conversation Management (this session)
+- `apps/studio/server/src/title/generate.ts` — Auto-generates conversation title using agent's LLM (max 50 chars, fire-and-forget)
+- `apps/studio/server/src/routes/chat.ts` — Hook to trigger title generation after first message
+- `apps/studio/server/src/routes/conversations.ts` — Added `PATCH /conversations/:id/title` for manual title updates, `DELETE /conversations/:id` for soft delete
+- `apps/studio/db/src/schema/conversations.ts` — Added `deleted_at timestamp` column for soft delete
+- `apps/studio/db/src/queries/conversation.ts` — Added `softDeleteConversation()` function, updated `getConversationsByProject` to filter deleted conversations
+- `apps/studio/db/src/migrations/0003_add_conversation_deleted_at.sql` — Migration for deleted_at column
+- `apps/studio/web/lib/api.ts` — Added `api.conversations.rename(convId, title)` and `api.conversations.delete(convId)`
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — Added inline title edit (click pencil icon, Enter/blur to save, Escape to cancel), removed Avatar component
+- `apps/studio/web/components/chat/conversation-list-panel.tsx` — Updated to show title as primary text + agent name as secondary, added delete trash icon with AlertDialog confirm
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/general/page.tsx` — Replaced native `confirm()` with `AlertDialog` for delete project
+
+## Previous Sessions
 
 ### Plan 12: Route Security Audit + Agent Visibility (completed this session)
 - `apps/studio/server/src/middleware/permission.ts` — `loadPerms` now exported
@@ -90,6 +113,8 @@ Plans 1–15 all implemented. Session cleanup complete.
 - Deleting a skill calls `fs.deleteFolder('/skills/{slug}')` to clean up files
 
 ## Next Up
-- DB migration: `cd apps/studio/db && bun run db:push` — applies skills schema (without project_skill_files)
-- Test: create skill → filesystem must be configured → files appear in disk page under /skills/
-- Test git import endpoint (not yet implemented)
+- Run `bun run db:push` to apply `0003_add_conversation_deleted_at.sql` migration
+- Test: create conversation → first message should trigger title generation and appear in sidebar
+- Test: click conversation title in header to edit inline
+- Test: click trash icon in sidebar to soft-delete conversation with AlertDialog confirm
+- Resume previous backlog tasks

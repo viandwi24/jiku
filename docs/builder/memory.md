@@ -1,5 +1,21 @@
 # Memory
 
+## Conversation title generation is fire-and-forget
+
+`generateTitle()` in `apps/studio/server/src/title/generate.ts` is called asynchronously after the first message in a conversation is stored. It does NOT block the HTTP response. The title may not appear immediately in the UI — a brief poll/refresh may be needed. This is intentional to keep the chat UX responsive.
+
+## AlertDialog import from @jiku/ui
+
+The `AlertDialog` component is imported directly from `@jiku/ui/components/ui/alert-dialog.tsx`, not re-exported from the `@jiku/ui` index. This is temporary until the index is updated.
+
+## Conversation soft delete: deleted_at column
+
+Conversations are soft-deleted via `deleted_at IS NOT NULL`. `getConversationsByProject()` query automatically filters `WHERE deleted_at IS NULL`, so deleted conversations never appear in the UI. Hard delete is not used to preserve conversation history for audit purposes.
+
+## Sidebar conversation list now shows title + agent name
+
+The sidebar was updated to show `<title> · <agent_name>` instead of showing the last message preview. This makes conversations easier to find by their title. Agent name is secondary context (smaller, gray text).
+
 ## ACL: project_memberships vs company_members
 
 Two separate membership systems:

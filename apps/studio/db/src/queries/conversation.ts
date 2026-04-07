@@ -65,7 +65,7 @@ export async function updateConversation(id: string, updates: {
 export async function createTaskConversation(data: {
   agent_id: string
   project_id: string  // used to find agent later
-  type: 'task' | 'heartbeat'
+  type: 'task' | 'heartbeat' | 'cron'
   caller_id: string | null
   parent_conversation_id: string | null
   metadata: Record<string, unknown>

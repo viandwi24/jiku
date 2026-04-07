@@ -9,6 +9,8 @@ import { ensurePersonaSeeded } from '../memory/persona.ts'
 import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
+import { cronTaskScheduler } from '../cron/scheduler.ts'
+import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool } from '../cron/tools.ts'
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
@@ -194,6 +196,16 @@ export class JikuRuntimeManager {
         SkillService.buildOnDemandSkillHint(a.id),
       ])
 
+      const cronCallerCtx = { callerId: null, callerRole: null, callerIsSuperadmin: false }
+      const cronTools = (a as Record<string, unknown>).cron_task_enabled
+        ? [
+            buildCronCreateTool(projectId, a.id, cronCallerCtx),
+            buildCronListTool(projectId, a.id),
+            buildCronUpdateTool(projectId, a.id, cronCallerCtx),
+            buildCronDeleteTool(projectId, a.id, cronCallerCtx),
+          ]
+        : []
+
       runtime.addAgent(
         defineAgent({
           meta: { id: a.id, name: a.name },
@@ -209,6 +221,7 @@ export class JikuRuntimeManager {
             ...shared.browserTools,
             ...shared.filesystemTools,
             ...skillTools,
+            ...cronTools,
             runTaskTool,
             listAgentsTool,
             listProjectMembersTool,
@@ -227,6 +240,11 @@ export class JikuRuntimeManager {
         )
       }
     }
+
+    // Load and schedule cron tasks for the project
+    cronTaskScheduler.loadAndScheduleProject(projectId).catch(err =>
+      console.warn(`[cron] Failed to load cron tasks for project ${projectId}:`, err)
+    )
 
     // Cleanup + auto-activate connectors
     const connectorRows = await getConnectors(projectId)
@@ -298,6 +316,16 @@ export class JikuRuntimeManager {
         SkillService.buildOnDemandSkillHint(a.id),
       ])
 
+      const cronCallerCtxSync = { callerId: null, callerRole: null, callerIsSuperadmin: false }
+      const cronToolsSync = (a as Record<string, unknown>).cron_task_enabled
+        ? [
+            buildCronCreateTool(projectId, a.id, cronCallerCtxSync),
+            buildCronListTool(projectId, a.id),
+            buildCronUpdateTool(projectId, a.id, cronCallerCtxSync),
+            buildCronDeleteTool(projectId, a.id, cronCallerCtxSync),
+          ]
+        : []
+
       runtime.addAgent(
         defineAgent({
           meta: { id: a.id, name: a.name },
@@ -313,6 +341,7 @@ export class JikuRuntimeManager {
             ...shared.browserTools,
             ...shared.filesystemTools,
             ...skillTools,
+            ...cronToolsSync,
             runTaskTool,
             listAgentsTool,
             listProjectMembersTool,
@@ -366,6 +395,16 @@ export class JikuRuntimeManager {
     // Include current shared tools so syncAgent doesn't strip them
     const shared = this.getSharedTools(projectId)
 
+    const cronCallerCtxAgent = { callerId: null, callerRole: null, callerIsSuperadmin: false }
+    const cronToolsAgent = (agent as Record<string, unknown>).cron_task_enabled
+      ? [
+          buildCronCreateTool(projectId, agent.id, cronCallerCtxAgent),
+          buildCronListTool(projectId, agent.id),
+          buildCronUpdateTool(projectId, agent.id, cronCallerCtxAgent),
+          buildCronDeleteTool(projectId, agent.id, cronCallerCtxAgent),
+        ]
+      : []
+
     runtime.addAgent(
       defineAgent({
         meta: { id: agent.id, name: agent.name },
@@ -381,6 +420,7 @@ export class JikuRuntimeManager {
           ...shared.browserTools,
           ...shared.filesystemTools,
           ...skillTools,
+          ...cronToolsAgent,
           runTaskTool,
           listAgentsTool,
         ],
@@ -489,6 +529,7 @@ export class JikuRuntimeManager {
 
   async stopAll(): Promise<void> {
     heartbeatScheduler.stopAll()
+    cronTaskScheduler.stopAll()
     await stopAllBrowserServers()
 
     await Promise.all(

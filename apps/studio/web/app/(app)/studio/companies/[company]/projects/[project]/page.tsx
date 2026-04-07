@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@jiku/ui'
 import { Activity, Bot, MessageSquare, Wrench } from 'lucide-react'
+import { formatTokens } from '@/lib/usage'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -39,8 +40,19 @@ export default function ProjectDashboardPage({ params }: PageProps) {
     enabled: !!project?.id,
   })
 
+  const { data: usageData, isLoading: usageLoading } = useQuery({
+    queryKey: ['project-usage', project?.id, 0],
+    queryFn: () => api.projects.usage(project!.id, { limit: 1, offset: 0 }),
+    enabled: !!project?.id,
+    staleTime: 30_000,
+  })
+
   const agentCount = agentsData?.agents.length ?? 0
   const chatCount = convsData?.conversations.length ?? 0
+  const usageSummary = usageData?.summary
+  const totalTokens = usageSummary
+    ? formatTokens(usageSummary.total_input + usageSummary.total_output)
+    : null
 
   return (
     <div className="p-6 space-y-8">
@@ -55,7 +67,7 @@ export default function ProjectDashboardPage({ params }: PageProps) {
           { label: 'Agents', value: agentsLoading ? '—' : agentCount, icon: Bot, color: 'text-emerald-500' },
           { label: 'Chats', value: convsLoading ? '—' : chatCount, icon: MessageSquare, color: 'text-blue-500' },
           { label: 'Tools', value: '—', icon: Wrench, color: 'text-violet-500' },
-          { label: 'Activity', value: '—', icon: Activity, color: 'text-orange-500' },
+          { label: 'Activity', value: usageLoading ? '—' : (totalTokens ?? '0'), icon: Activity, color: 'text-orange-500' },
         ].map(stat => (
           <Card key={stat.label}>
             <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">

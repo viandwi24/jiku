@@ -5,6 +5,7 @@ import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { Building2, ChevronsUpDown, LayoutDashboard, LogOut, Mail } from 'lucide-react'
 import { useAuthStore } from '@/lib/store/auth.store'
+import { ThemeToggle } from '@/components/theme-toggle'
 import {
   Avatar,
   AvatarFallback,
@@ -80,30 +81,33 @@ export function RootSidebar() {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton className="h-auto py-2">
-                  <Avatar className="h-6 w-6">
-                    <AvatarFallback className="text-xs">
-                      {user?.name?.[0]?.toUpperCase() ?? 'U'}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="flex-1 truncate text-left text-sm">{user?.name}</span>
-                  <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-52">
-                <div className="px-2 py-1.5">
-                  <p className="text-xs font-medium">{user?.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleSignOut}>
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <SidebarMenuButton className="h-auto py-2 flex-1">
+                    <Avatar className="h-6 w-6">
+                      <AvatarFallback className="text-xs">
+                        {user?.name?.[0]?.toUpperCase() ?? 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex-1 truncate text-left text-sm">{user?.name}</span>
+                    <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                  </SidebarMenuButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" className="w-52">
+                  <div className="px-2 py-1.5">
+                    <p className="text-xs font-medium">{user?.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleSignOut}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <ThemeToggle />
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

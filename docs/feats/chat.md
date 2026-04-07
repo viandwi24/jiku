@@ -61,10 +61,36 @@ Credentials are resolved per-request to avoid decrypted keys in long-lived memor
 3. Redirect to `/chats/:id`
 4. `ChatView` mounts, `useEffect` checks `sessionStorage` for pending message, auto-sends via `sendMessage()`
 
+## Conversation Title Management
+
+Auto-title generation and manual rename:
+
+- **Title generation** (`apps/studio/server/src/title/generate.ts`): Async service that uses the agent's own configured LLM to generate a max-50-char title after the first message in a conversation. Fire-and-forget (non-blocking).
+- **Auto-trigger** (`apps/studio/server/src/routes/chat.ts`): After first message is persisted, `generateTitle()` is called in the background if conversation title is null.
+- **Manual rename** (`PATCH /api/conversations/:id/title`): Accept `{ title: string }`, validate length, update title.
+- **Inline edit UI** (`conversation-viewer.tsx`): Click pencil icon on conversation title to edit inline (Enter/blur to save, Escape to cancel).
+
+## Conversation Soft Delete
+
+Conversations are soft-deleted (marked with `deleted_at` timestamp) rather than hard-deleted:
+
+- **DB schema** (`schema/conversations.ts`): Added `deleted_at timestamptz | null` column.
+- **Query filter** (`queries/conversation.ts`): `getConversationsByProject()` filters `WHERE deleted_at IS NULL` — deleted conversations never appear in the list.
+- **Delete endpoint** (`DELETE /api/conversations/:id`): Soft-deletes the conversation.
+- **UI** (`conversation-list-panel.tsx`): Trash icon on hover → click opens `AlertDialog` confirm. Confirmed delete triggers navigate away if deleting the active conversation.
+
+## Sidebar Conversation Display
+
+The sidebar list (`conversation-list-panel.tsx`) now displays:
+- **Primary**: Conversation title (or system-generated label if null)
+- **Secondary**: Agent name (smaller, gray text, right-aligned)
+- Previously showed last message preview
+
 ## Related Files
 
-- `apps/studio/server/src/routes/chat.ts` — HTTP streaming route
-- `apps/studio/server/src/routes/conversations.ts` — CRUD + messages history endpoint
+- `apps/studio/server/src/title/generate.ts` — Title generation service (new)
+- `apps/studio/server/src/routes/chat.ts` — HTTP streaming route + title generation trigger
+- `apps/studio/server/src/routes/conversations.ts` — CRUD + messages history + rename + delete endpoints
 - `apps/studio/server/src/runtime/manager.ts` — JikuRuntimeManager + dynamic provider
 - `apps/studio/server/src/runtime/storage.ts` — StudioStorageAdapter (`parts` column)
 - `apps/studio/server/src/credentials/service.ts` — buildProvider(), resolveAgentModel()
@@ -164,8 +190,17 @@ Users can attach images to messages. Upload via `POST /api/attachments`, served 
 
 `components/chat/conversation-viewer.tsx` — shared component used by both chat page (mode=edit) and run detail page (mode=readonly).
 
-- `mode='edit'`: full PromptInput, context bar, memory preview sheet
+- `mode='edit'`: full PromptInput, context bar, memory preview sheet, inline title editing
 - `mode='readonly'`: no PromptInput, uses `useLiveConversation` for live updates, same context/tools/memory preview
+- **Header**: Displays conversation title (clickable to edit) + agent name (secondary). Pencil icon appears on hover to indicate edit mode.
+- **Title edit**: Click pencil → focus input. Enter or blur to save (calls `api.conversations.rename`). Escape to cancel.
+- **No avatar**: Avatar component removed — agent avatar feature not yet implemented.
+
+## Title Generation Timing
+
+- Fire-and-forget: title generation starts after the first message response but does not block the HTTP response
+- Title may not appear immediately in the UI — it's populated via background task
+- If title generation fails silently, conversation title remains null (no error bubble to user)
 
 ## Known Limitations
 
@@ -173,3 +208,4 @@ Users can attach images to messages. Upload via `POST /api/attachments`, served 
 - Agent selector disappears once conversation is started (intentional — cleaner UX)
 - StreamRegistry is in-memory — a server restart clears all active run state
 - Live-parts buffer is in-memory — lost on server restart (polling client will fall back to DB messages on next poll)
+- Soft delete is not reversible from the current UI (conversations remain in DB with `deleted_at` set)

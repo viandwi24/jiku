@@ -22,6 +22,7 @@ import { aclRolesRouter } from './routes/acl-roles.ts'
 import { aclMembersRouter } from './routes/acl-members.ts'
 import { aclInvitationsRouter } from './routes/acl-invitations.ts'
 import { skillsRouter } from './routes/skills.ts'
+import { cronTasksRouter } from './routes/cron-tasks.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
@@ -65,6 +66,7 @@ app.use('/api', aclRolesRouter)
 app.use('/api', aclMembersRouter)
 app.use('/api', aclInvitationsRouter)
 app.use('/api', skillsRouter)
+app.use('/api', cronTasksRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 

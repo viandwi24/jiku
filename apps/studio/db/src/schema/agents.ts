@@ -32,6 +32,8 @@ export const agents = pgTable('agents', {
    * [id…] = can only delegate to the listed agent IDs
    */
   task_allowed_agents:  text('task_allowed_agents').array().default(null),
+  /** Whether this agent can be used as the target of cron tasks. */
+  cron_task_enabled:    boolean('cron_task_enabled').notNull().default(true),
   /** How to deliver chat attachments to the model. 'base64' = inline data URI. 'proxy_url' = server proxy URL. Default base64 (dev-friendly). */
   file_delivery:        varchar('file_delivery', { length: 20 }).notNull().default('base64'),
   /** Scope for chat attachments uploaded by users. 'per_user' or 'shared'. */

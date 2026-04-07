@@ -12,6 +12,7 @@ import { usage_logs } from './usage_logs.ts'
 import { project_filesystem_config, project_files } from './filesystem.ts'
 import { project_attachments } from './attachments.ts'
 import { project_roles, project_memberships, invitations, superadmin_transfers } from './acl.ts'
+import { cron_tasks } from './cron_tasks.ts'
 
 export const usersRelations = relations(users, ({ many }) => ({
   companies: many(companies),
@@ -103,6 +104,13 @@ export const agentsRelations = relations(agents, ({ one, many }) => ({
   agent_credential: many(agent_credentials),
   usage_logs: many(usage_logs),
   attachments: many(project_attachments),
+  cron_tasks: many(cron_tasks),
+}))
+
+export const cronTasksRelations = relations(cron_tasks, ({ one }) => ({
+  project: one(projects, { fields: [cron_tasks.project_id], references: [projects.id] }),
+  agent: one(agents, { fields: [cron_tasks.agent_id], references: [agents.id] }),
+  caller: one(users, { fields: [cron_tasks.caller_id], references: [users.id] }),
 }))
 
 export const projectAttachmentsRelations = relations(project_attachments, ({ one }) => ({

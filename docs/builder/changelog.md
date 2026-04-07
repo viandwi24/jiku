@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-04-07 — Usage Monitor Enhancement: Charts + Total Tokens + Estimated Cost
+
+- **`aggregateByDay(logs)`** added to `apps/studio/web/lib/usage.ts` — groups logs into daily time-series buckets for the area chart.
+- **`aggregateByAgent(logs)`** added to `apps/studio/web/lib/usage.ts` — groups logs by agent for the project-level bar chart.
+- **`estimateTotalCost(logs, pricingMap)`** added to `apps/studio/web/lib/usage.ts` — sums cost across all logs using model-specific pricing with the same fallback rates as `estimateCost`.
+- **`TokenUsageAreaChart`** — new component in `apps/studio/web/components/usage/usage-charts.tsx`. Stacked area chart (input vs output tokens over time) using shadcn `ChartContainer` + recharts `AreaChart`.
+- **`AgentUsageBarChart`** — new component in same file. Horizontal bar chart showing total tokens per agent (top 10), used on the project usage page.
+- **Agent usage page** (`apps/studio/web/app/.../agents/[agent]/usage/page.tsx`) — stats grid expanded from 3 → 5 cards (added Total Tokens + Estimated Cost). `TokenUsageAreaChart` inserted between stats and table.
+- **Project usage page** (`apps/studio/web/app/.../projects/[project]/usage/page.tsx`) — stats grid expanded from 3 → 5 cards (same additions, all filter-aware). Two-column chart grid added (area chart + agent bar chart), both react to active filters via `useMemo`.
+- **Project dashboard** (`apps/studio/web/app/.../projects/[project]/page.tsx`) — "Activity" card now shows actual total token count from usage summary API instead of "---".
+- Files: `apps/studio/web/lib/usage.ts`, `apps/studio/web/components/usage/usage-charts.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/usage/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/usage/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/page.tsx`
+
+## 2026-04-08 — Conversation Management: Title Generation, Manual Rename, Soft Delete
+
+- **Title generation** (`apps/studio/server/src/title/generate.ts`): New service that auto-generates conversation titles using the agent's own configured LLM after the first user message. Max 50 chars. Fire-and-forget (non-blocking).
+- **Auto-trigger on first message** (`apps/studio/server/src/routes/chat.ts`): After first message is stored, `generateTitle()` is called asynchronously if conversation title is null.
+- **Manual title rename endpoint** (`apps/studio/server/src/routes/conversations.ts`): New `PATCH /conversations/:id/title` route accepts `{ title: string }` body, validates max length, updates conversation.
+- **Soft delete** (`apps/studio/db/src/schema/conversations.ts`): Added `deleted_at timestamp` column to conversations table. Not hard-deleted, just filtered from query results.
+- **Soft delete queries** (`apps/studio/db/src/queries/conversation.ts`): New `softDeleteConversation(id)` function. `getConversationsByProject()` now filters `WHERE deleted_at IS NULL`.
+- **Delete endpoint** (`apps/studio/server/src/routes/conversations.ts`): New `DELETE /conversations/:id` route calls `softDeleteConversation()`.
+- **Web API** (`apps/studio/web/lib/api.ts`): Added `api.conversations.rename(convId, title)` and `api.conversations.delete(convId)`.
+- **Inline title editing** (`apps/studio/web/components/chat/conversation-viewer.tsx`): Click pencil icon on conversation title to edit inline. Enter or blur to save, Escape to cancel. Displays title as primary text with agent name as secondary.
+- **Sidebar delete** (`apps/studio/web/components/chat/conversation-list-panel.tsx`): Trash icon appears on hover. Click opens `AlertDialog` confirm dialog. Confirmed delete removes from sidebar and navigates away if deleting current conversation. Sidebar now shows title (primary) + agent name (secondary) instead of last_message.
+- **Avatar removal**: Removed Avatar/AvatarFallback from both header and sidebar — agent avatar feature not yet implemented.
+- **AlertDialog for delete project** (`apps/studio/web/app/.../settings/general/page.tsx`): Replaced native `confirm()` with `AlertDialog` component from `@jiku/ui`.
+- **Migration**: Created `0003_add_conversation_deleted_at.sql` (requires `bun run db:push`).
+- Files: `apps/studio/server/src/title/generate.ts`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/server/src/routes/conversations.ts`, `apps/studio/db/src/schema/conversations.ts`, `apps/studio/db/src/queries/conversation.ts`, `apps/studio/db/src/migrations/0003_add_conversation_deleted_at.sql`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/chat/conversation-viewer.tsx`, `apps/studio/web/components/chat/conversation-list-panel.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/general/page.tsx`
+
 ## 2026-04-07 — Browser automation marked failed + UI rendering fixes
 
 - **Screenshot renders as image in chat UI** (`packages/ui/src/components/ai-elements/tool.tsx`): `ToolOutput` component now handles `content[]` arrays (Vercel AI SDK tool output format). Image parts (`type: 'image'`) render as `<img>` with base64 src. Text parts render as CodeBlock. Single-image case renders without wrapper div.

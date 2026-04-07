@@ -4,7 +4,8 @@ import { use, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Badge, Button, Switch, cn } from '@jiku/ui'
-import { Bot, ShieldCheck, ShieldOff, Users } from 'lucide-react'
+import { Bot, Clock, ShieldCheck, ShieldOff, Users } from 'lucide-react'
+import { toast } from 'sonner'
 
 interface PageProps {
   params: Promise<{ company: string; project: string; agent: string }>
@@ -58,6 +59,16 @@ export default function AgentTaskPage({ params }: PageProps) {
     },
   })
 
+  const cronEnabledMutation = useMutation({
+    mutationFn: (cron_task_enabled: boolean) =>
+      api.agents.update(currentAgent!.id, { cron_task_enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents', projectData?.id] })
+      toast.success('Cron task setting saved')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save'),
+  })
+
   function setMode(next: DelegationMode) {
     if (next === 'allow_all') setLocalAllowed(null)
     else if (next === 'deny_all') setLocalAllowed([])
@@ -73,8 +84,36 @@ export default function AgentTaskPage({ params }: PageProps) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   }
 
+  const cronTaskEnabled = currentAgent.cron_task_enabled !== false
+
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-8">
+      {/* Cron Task Access */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-1.5">
+            <Clock className="h-4 w-4" />
+            Cron Task Access
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Allow this agent to be used as the target of cron tasks.
+          </p>
+        </div>
+        <div className="flex items-center justify-between border rounded-lg p-4">
+          <div>
+            <p className="text-sm font-medium">Enable Cron Tasks</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              When enabled, this agent can be selected when creating cron tasks
+            </p>
+          </div>
+          <Switch
+            checked={cronTaskEnabled}
+            onCheckedChange={(val) => cronEnabledMutation.mutate(val)}
+            disabled={cronEnabledMutation.isPending}
+          />
+        </div>
+      </section>
+
       <section className="space-y-4">
         <div>
           <h2 className="text-sm font-semibold">Task Delegation</h2>

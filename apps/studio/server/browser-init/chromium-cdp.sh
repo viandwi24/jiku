@@ -2,16 +2,17 @@
 # Run everything in background so container startup is not blocked
 
 (
-  # Wait for X display to be ready
+  # Wait for Wayland socket (linuxserver/chromium uses Wayland, not X11)
   for i in $(seq 1 60); do
-    if DISPLAY=:1 xdpyinfo >/dev/null 2>&1; then
+    if [ -S /tmp/.X11-unix/X1 ] || [ -S /config/.XDG/wayland-1 ] || [ -S /tmp/wayland-1 ]; then
       break
     fi
     sleep 1
   done
+  sleep 2  # extra buffer for compositor to fully init
 
-  # Launch Chromium with CDP enabled
-  DISPLAY=:1 chromium-browser \
+  # Launch Chromium with CDP enabled on Wayland
+  WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/config/.XDG chromium-browser \
     --remote-debugging-port=9222 \
     --remote-debugging-address=0.0.0.0 \
     --remote-allow-origins=* \
@@ -19,6 +20,7 @@
     --disable-dev-shm-usage \
     --no-first-run \
     --no-default-browser-check \
+    --ozone-platform=wayland \
     about:blank &
 
   # Wait for Chrome CDP to be ready on localhost:9222

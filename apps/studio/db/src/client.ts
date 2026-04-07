@@ -24,7 +24,7 @@ export async function checkDbConnection(): Promise<void> {
 }
 
 export async function runMigrations(): Promise<void> {
-  const migrationsFolder = resolve(fileURLToPath(import.meta.url), '../../migrations')
+  const migrationsFolder = resolve(fileURLToPath(import.meta.url), '../migrations')
   console.log('[jiku] Running migrations from', migrationsFolder)
   await migrate(db, { migrationsFolder })
   console.log('[jiku] Migrations complete')

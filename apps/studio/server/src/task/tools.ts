@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { zodSchema, tool } from 'ai'
-import { getConversationById, updateConversation, getAgentsByProjectId, getAgentById } from '@jiku-studio/db'
+import { getConversationById, updateConversation, getAgentsByProjectId, getAgentById, listProjectMembers } from '@jiku-studio/db'
 import { spawnTask } from './runner.ts'
 import type { ToolDefinition, CallerContext } from '@jiku/types'
 
@@ -27,6 +27,35 @@ async function checkTaskDelegationPermission(
     return `Agent is not permitted to delegate tasks to agent ${targetAgentId}`
   }
   return null
+}
+
+/**
+ * Build the list_project_members built-in tool — lets an agent see who is in the project.
+ */
+export function buildListProjectMembersTool(projectId: string): ToolDefinition {
+  return {
+    meta: {
+      id: 'list_project_members',
+      name: 'List Project Members',
+      description: 'List all members of this project with their id, name, email, and role',
+      group: 'task',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({}),
+    execute: async () => {
+      const members = await listProjectMembers(projectId)
+      return {
+        members: members.map(m => ({
+          id: m.user.id,
+          name: m.user.name,
+          email: m.user.email,
+          role: m.role?.name ?? null,
+          is_superadmin: m.is_superadmin,
+        })),
+      }
+    },
+  }
 }
 
 /**

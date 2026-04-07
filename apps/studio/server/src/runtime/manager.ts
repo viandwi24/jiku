@@ -9,7 +9,7 @@ import { ensurePersonaSeeded } from '../memory/persona.ts'
 import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
-import { buildRunTaskTool, buildListAgentsTool } from '../task/tools.ts'
+import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
 import { buildBrowserTools } from '../browser/tool.js'
@@ -175,6 +175,7 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const listProjectMembersTool = buildListProjectMembersTool(projectId)
       const skillTools = buildSkillTools(a.id, projectId)
       const [skillSection, skillHint] = await Promise.all([
         SkillService.buildAlwaysSkillSection(a.id),
@@ -198,6 +199,7 @@ export class JikuRuntimeManager {
             ...skillTools,
             runTaskTool,
             listAgentsTool,
+            listProjectMembersTool,
           ],
         }),
         agentMemoryConfig,
@@ -277,6 +279,7 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const listProjectMembersTool = buildListProjectMembersTool(projectId)
       const skillTools = buildSkillTools(a.id, projectId)
       const [skillSection, skillHint] = await Promise.all([
         SkillService.buildAlwaysSkillSection(a.id),
@@ -300,6 +303,7 @@ export class JikuRuntimeManager {
             ...skillTools,
             runTaskTool,
             listAgentsTool,
+            listProjectMembersTool,
           ],
         }),
         agentMemoryConfig,

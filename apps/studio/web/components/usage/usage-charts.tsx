@@ -76,12 +76,12 @@ export function TokenUsageAreaChart({ data }: TokenUsageAreaChartProps) {
               borderRadius: 6,
               fontSize: 12,
             }}
-            labelFormatter={(label: string) => {
+            labelFormatter={(label) => {
               const d = new Date(label)
               return d.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
             }}
-            formatter={(value: number, name: string) => [
-              formatTokens(value),
+            formatter={(value, name) => [
+              formatTokens(Number(value)),
               name === 'input_tokens' ? 'Token Out (→model)' : 'Token In (←model)',
             ]}
           />
@@ -165,7 +165,7 @@ export function AgentUsageBarChart({ data }: AgentUsageBarChartProps) {
               borderRadius: 6,
               fontSize: 12,
             }}
-            formatter={(value: number) => [formatTokens(value), 'Total Tokens']}
+            formatter={(value) => [formatTokens(Number(value)), 'Total Tokens']}
           />
           <Bar
             dataKey="total_tokens"

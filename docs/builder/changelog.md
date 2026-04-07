@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-04-07 — Cron Task System: Full End-to-End Implementation
+
+- **DB schema** (`apps/studio/db/src/schema/cron_tasks.ts`): New `cron_tasks` table with `id, project_id, name, description, cron_expression, agent_id, prompt, caller_id, caller_role, caller_is_superadmin, run_count, last_run_at, created_at, updated_at` columns. Caller context snapshotted at creation time for permission checks.
+- **Agent config** (`apps/studio/db/src/schema/agents.ts`): Added `cron_task_enabled: boolean DEFAULT true` column — when false, cron tools not injected into that agent.
+- **Migration** (`apps/studio/db/src/migrations/0004_add_cron_tasks.sql`): Creates `cron_tasks` table + adds `cron_task_enabled` to `agents`.
+- **CRUD queries** (`apps/studio/db/src/queries/cron_tasks.ts`): `createCronTask`, `getCronTaskById`, `getCronTasksByProject`, `getCronTasksByAgent`, `updateCronTask`, `deleteCronTask`, `incrementRunCount`, `getEnabledCronTasks` (for scheduler).
+- **Cron scheduler** (`apps/studio/server/src/cron/scheduler.ts`): `CronTaskScheduler` class using `croner@10.0.1`. Methods: `scheduleTask` (parse cron expression + register), `triggerTask` (run conversation), `rescheduleTask`, `stopTask`, `stopAll`, `loadAndScheduleProject` (boot all active tasks). Integrated into `RuntimeManager.wakeUp()`/`syncAgent()`/`stopAll()`.
+- **Cron tools** (`apps/studio/server/src/cron/tools.ts`): Four agent tools `buildCronCreateTool`, `buildCronListTool`, `buildCronUpdateTool`, `buildCronDeleteTool` — CRUD for cron tasks, security model enforces: superadmin can modify all, non-superadmin can only modify tasks they created + only if caller role unchanged.
+- **REST API** (`apps/studio/server/src/routes/cron-tasks.ts`): 6 endpoints — `GET /api/projects/:pid/cron-tasks` (list), `POST /api/projects/:pid/cron-tasks` (create), `GET /api/cron-tasks/:id` (get), `PATCH /api/cron-tasks/:id` (update), `DELETE /api/cron-tasks/:id` (delete), `POST /api/cron-tasks/:id/trigger` (manual trigger). All guarded with permission checks.
+- **Web API client** (`apps/studio/web/lib/api.ts`): Added `CronTask` type + `api.cronTasks.list/create/get/update/delete/trigger` methods. Added `cron_task_enabled` to `Agent` type.
+- **CronExpressionInput component** (`apps/studio/web/components/cron/cron-expression-input.tsx`): New shared component with realtime validation using `cronstrue@3.14.0`. Shows green checkmark for valid expressions, red error text for invalid. Supports keyboard shortcuts (Ctrl+Space to explain).
+- **Frontend pages**: List page (table with enable/edit/delete), Create page (form with CronExpressionInput), Edit/view page (form with task history preview).
+- **Agent integration** (`agents/[agent]/task/page.tsx`): Added `cron_task_enabled` toggle to agent task settings page — allows selectively disabling cron execution per agent without deleting the tasks.
+- **Sidebar nav** (`components/sidebar/project-sidebar.tsx`): Added "Cron Tasks" nav item with Clock icon above Browser, guarded by `cron_tasks:read` permission.
+- **Conversation traceability**: Cron-triggered conversations get `metadata.cron_task_id` and `metadata.trigger: 'cron_task'`. Conversation type supports `'cron'` as valid type.
+- **Permissions** (`packages/types/src/index.ts`): Added `CRON_TASKS_READ` and `CRON_TASKS_WRITE` to `PERMISSIONS` const.
+- Files: `apps/studio/db/src/schema/cron_tasks.ts`, `apps/studio/db/src/schema/agents.ts`, `apps/studio/db/src/queries/cron_tasks.ts`, `apps/studio/db/src/migrations/0004_add_cron_tasks.sql`, `apps/studio/server/src/cron/scheduler.ts`, `apps/studio/server/src/cron/tools.ts`, `apps/studio/server/src/routes/cron-tasks.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/cron/cron-expression-input.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/**`, `packages/types/src/index.ts`
+
+## 2026-04-08 — Usage Monitor Charts: switched to raw ResponsiveContainer (recharts)
+
+- **Chart rendering fix** (`apps/studio/web/components/usage/usage-charts.tsx`): Replaced shadcn `ChartContainer` wrapper with raw `recharts` `ResponsiveContainer` using explicit `height={180}` prop. `ChartContainer` wraps `ResponsiveContainer` with `aspect-video` which conflicts with CSS height classes — charts rendered blank even though data was present. Direct `height` prop on `ResponsiveContainer` is the reliable pattern.
+- **Styling maintained**: Tooltip, Legend, axis ticks all styled to match theme via inline CSS vars (`hsl(var(--popover))`, `hsl(var(--border))`, `hsl(var(--muted-foreground))`). Hard-coded `CHART_COLORS` object replaces the `var(--color-*)` pattern (which only works via `ChartContainer` context).
+- Files: `apps/studio/web/components/usage/usage-charts.tsx`
+
+## 2026-04-08 — Theme toggle button in all sidebar footers
+
+- **New component** (`apps/studio/web/components/theme-toggle.tsx`): `ThemeToggle` button using `next-themes` `useTheme`. Shows `Sun` icon in light mode, `Moon` in dark mode with CSS cross-fade transition (`rotate` + `scale`). Uses `Button` from `@jiku/ui` with `variant="ghost" size="icon"`.
+- **All 3 sidebars updated** — footer now wraps the user dropdown + `ThemeToggle` in a `flex items-center gap-1` div. Toggle sits to the right of the user action button:
+  - `apps/studio/web/components/sidebar/root-sidebar.tsx`
+  - `apps/studio/web/components/sidebar/company-sidebar.tsx`
+  - `apps/studio/web/components/sidebar/project-sidebar.tsx`
+- `ThemeProvider` with `attribute="class"` already configured in `components/providers.tsx` — no additional setup needed.
+- Files: `apps/studio/web/components/theme-toggle.tsx` *(new)*, `components/sidebar/root-sidebar.tsx`, `components/sidebar/company-sidebar.tsx`, `components/sidebar/project-sidebar.tsx`
+
 ## 2026-04-07 — Usage Monitor Enhancement: Charts + Total Tokens + Estimated Cost
 
 - **`aggregateByDay(logs)`** added to `apps/studio/web/lib/usage.ts` — groups logs into daily time-series buckets for the area chart.

@@ -1,12 +1,27 @@
 ## Phase
-Usage monitor enhancement — charts, total tokens, estimated cost.
+Idle — last session completed Cron Task System (full end-to-end implementation).
 
 ## Currently Working On
-- Completed: usage monitor enhancement across agent usage page, project usage page, and project dashboard.
+- Nothing active. Ready for next task.
 
 ## Relevant Files (Most Recently Worked On)
 
-### Usage Monitor Enhancement (this session)
+### Cron Task System (2026-04-07 — complete implementation)
+- `apps/studio/db/src/schema/cron_tasks.ts` — New `cron_tasks` table schema
+- `apps/studio/db/src/schema/agents.ts` — Added `cron_task_enabled: boolean DEFAULT true`
+- `apps/studio/db/src/migrations/0004_add_cron_tasks.sql` — Migration for both tables
+- `apps/studio/db/src/queries/cron_tasks.ts` — CRUD queries (create, get, list, update, delete, increment run count, get enabled)
+- `apps/studio/server/src/cron/scheduler.ts` — `CronTaskScheduler` class (croner-based)
+- `apps/studio/server/src/cron/tools.ts` — Four cron tools (build functions for list/create/update/delete)
+- `apps/studio/server/src/routes/cron-tasks.ts` — 6 REST endpoints (list, create, get, update, delete, trigger)
+- `apps/studio/web/lib/api.ts` — `CronTask` interface + `api.cronTasks.*` methods
+- `apps/studio/web/components/cron/cron-expression-input.tsx` — Realtime cron preview component (cronstrue)
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/page.tsx` — List page
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/new/page.tsx` — Create page
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/[id]/page.tsx` — Edit/view page
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/task/page.tsx` — Added `cron_task_enabled` toggle
+
+### Usage Monitor Enhancement (previous session)
 - `apps/studio/web/lib/usage.ts` — Added `aggregateByDay()`, `aggregateByAgent()`, `estimateTotalCost()` helpers
 - `apps/studio/web/components/usage/usage-charts.tsx` — New: `TokenUsageAreaChart` (stacked area) and `AgentUsageBarChart` (horizontal bar)
 - `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/usage/page.tsx` — Stats 3→5 cards, area chart added
@@ -113,8 +128,7 @@ Usage monitor enhancement — charts, total tokens, estimated cost.
 - Deleting a skill calls `fs.deleteFolder('/skills/{slug}')` to clean up files
 
 ## Next Up
-- Run `bun run db:push` to apply `0003_add_conversation_deleted_at.sql` migration
-- Test: create conversation → first message should trigger title generation and appear in sidebar
-- Test: click conversation title in header to edit inline
-- Test: click trash icon in sidebar to soft-delete conversation with AlertDialog confirm
+- Run `bun run db:push` to apply all pending migrations including `0004_add_cron_tasks.sql`
+- Test cron tasks end-to-end: create task → add agent → enable cron_task_enabled → verify cron execution
+- Test CronExpressionInput preview: valid expressions show green, invalid show red
 - Resume previous backlog tasks

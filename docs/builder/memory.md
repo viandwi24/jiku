@@ -1,5 +1,36 @@
 # Memory
 
+## Cron Task System conventions
+
+**Cron expression library split:**
+- Server (scheduling): `croner@10.0.1` — parses and schedules CRON syntax, no UI needed
+- Frontend (display): `cronstrue@3.14.0` — converts expressions to English phrases (e.g. "Every Monday at 9 AM")
+
+**CronExpressionInput component:** Provides real-time validation with visual feedback (green checkmark for valid, red error for invalid). Located at `apps/studio/web/components/cron/cron-expression-input.tsx`. Reusable for any form that needs cron input.
+
+**Cron task permissions:** Caller context (`caller_id`, `caller_role`, `caller_is_superadmin`) is snapshotted at task creation time and stored in the DB. Permission checks during scheduled execution use the snapshot, not current user state. This ensures predictable permissions regardless of later role changes.
+
+**Cron task enablement:** `agents.cron_task_enabled` column (default true) allows disabling cron execution per agent without deleting the tasks. When false, cron tools are not injected into the agent's runtime.
+
+**Cron conversation metadata:** Conversations triggered by a cron task have:
+- `metadata.cron_task_id: string` — the task that triggered it
+- `metadata.trigger: 'cron_task'` — indicates the trigger source
+- `type: 'cron'` — conversation type classification
+
+**Scheduler integration:** `CronTaskScheduler` is instantiated once per project in `RuntimeManager.wakeUp()`. `loadAndScheduleProject()` is called at boot to register all enabled tasks. `scheduleAgent()` is called during `syncAgent()` to update individual agent task schedules. All tasks are unscheduled during `stopAll()`.
+
+## ChartContainer (shadcn) conflicts with explicit height — use ResponsiveContainer directly
+
+`ChartContainer` from `@jiku/ui` wraps Recharts' `ResponsiveContainer` and adds `aspect-video` to the container class. This conflicts with any explicit CSS height class (`h-45`, `h-[180px]`, etc.) — the `aspect-video` ratio wins and the chart renders blank. When you need a fixed pixel height for a Recharts chart, bypass `ChartContainer` and use `<ResponsiveContainer width="100%" height={180}>` directly. Style tooltips manually via `contentStyle={{ background: 'hsl(var(--popover))', ... }}`.
+
+## Theme toggle: next-themes is already configured
+
+`ThemeProvider attribute="class"` is set up in `apps/studio/web/components/providers.tsx` with `defaultTheme="system" enableSystem`. To add theme toggle anywhere: import `useTheme` from `next-themes`, call `setTheme('dark' | 'light')`. No additional provider setup needed.
+
+## Sidebar footer convention: user dropdown + ThemeToggle side by side
+
+All three sidebars (root, company, project) use the same footer pattern: a `flex items-center gap-1` wrapper containing the `DropdownMenu`-wrapped `SidebarMenuButton` (with `flex-1`) and a `ThemeToggle` button to its right. When adding new footer actions, follow this pattern.
+
 ## Conversation title generation is fire-and-forget
 
 `generateTitle()` in `apps/studio/server/src/title/generate.ts` is called asynchronously after the first message in a conversation is stored. It does NOT block the HTTP response. The title may not appear immediately in the UI — a brief poll/refresh may be needed. This is intentional to keep the chat UX responsive.

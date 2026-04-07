@@ -1,6 +1,6 @@
 ## Backlog
 
-- [ ] Plan 12 — ACL system (full spec in `docs/plans/12-acl.md`)
+- [ ] Plan 17 — Cron Task System improvements (schedule_paused state, timezone support, run history pagination)
 - [ ] Verify Telegram bot responds end-to-end (test: send message → typing indicator → get_datetime tool call → MarkdownV2 response)
 - [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies all pending schema changes (filesystem, attachments, persona_prompt, etc.)
 - [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] Plan 16 — Cron Task System: full end-to-end (DB schema, scheduler, tools, REST API, web UI, expression preview) — completed 2026-04-07
 - [x] Memory System (Plan 8): core types, relevance scoring, builder, extraction, DB schema, server tools + routes, web browser + config UI — completed 2026-04-05
 - [x] Memory previewRun integration — memory section visible in context preview sheet — completed 2026-04-05
 - [x] Fix getMemories agent_id bug — agent_id now optional in DB query so runtime_global queries work — completed 2026-04-05

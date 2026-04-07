@@ -29,7 +29,8 @@ Rendered at the `/studio/companies/[company]/projects/[project]` layout level. S
 ## Conventions
 
 - **Settings placement**: Settings always lives in the same `SidebarGroup` as the primary nav items — no `SidebarSeparator` before it.
-- **User info footer**: Every sidebar level renders a user info dropdown in `SidebarFooter`. Pattern is identical across root, company, and project sidebars.
+- **User info footer**: Every sidebar level renders a user info dropdown in `SidebarFooter`, with a `ThemeToggle` button to its right. Footer uses `flex items-center gap-1` wrapper; `SidebarMenuButton` (inside `DropdownMenuTrigger`) has `flex-1` so it takes available space and the toggle stays right-aligned.
+- **Theme toggle**: `components/theme-toggle.tsx` — `ThemeToggle` component using `next-themes` `useTheme`. Sun/Moon icon swap with CSS transition. `ThemeProvider` is already configured in `providers.tsx`.
 - **AppHeader + Breadcrumb**: Each layout level renders `AppHeader` with a `SidebarTrigger`. `AppBreadcrumb` resolves company/project/agent display names from TanStack Query cache.
 
 ## App Breadcrumb
@@ -47,6 +48,7 @@ A reusable `components/error-boundary.tsx` React class component is also availab
 
 ## Related Files
 
+- `apps/studio/web/components/theme-toggle.tsx` — dark/light toggle button
 - `apps/studio/web/components/sidebar/root-sidebar.tsx`
 - `apps/studio/web/components/sidebar/company-sidebar.tsx`
 - `apps/studio/web/components/sidebar/project-sidebar.tsx`

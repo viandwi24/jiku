@@ -1,5 +1,30 @@
 # Decisions
 
+## ADR-030 — Cron task permissions: caller context snapshotted at creation
+
+**Context:** Cron tasks run periodically on behalf of the original creator. If the creator's role later changes (e.g. demoted from superadmin to member), should the cron task still have access to previous permissions?
+
+**Decision:** Snapshot the caller context (`caller_id`, `caller_role`, `caller_is_superadmin`) at creation time and store in the `cron_tasks` table. Permission checks use the snapshotted context, not the current user state. This ensures:
+- Cron tasks execute with predictable permissions regardless of later role changes
+- Simplified permission model: superadmin can modify all tasks; non-superadmin can only modify their own tasks, but only if role unchanged (security gate)
+
+**Consequences:** Cron task permissions are immutable after creation. If a user loses superadmin status, their snapshotted tasks retain their original privilege level during scheduled execution. This is acceptable for a studio-internal tool where users are trusted. For public APIs, a role-change hook could re-validate task permissions before execution.
+
+---
+
+## ADR-029 — Cron Task System architecture: croner for scheduling, cronstrue for display
+
+**Context:** Need to schedule recurring tasks and display cron expressions in human-readable form.
+
+**Decision:** 
+- Server uses `croner@10.0.1` for parsing and scheduling cron expressions (CRON syntax) in `CronTaskScheduler` class
+- Web frontend uses `cronstrue@3.14.0` for displaying expressions in English (e.g., "Every Monday at 9:00 AM")
+- Two separate libraries for different purposes: scheduling vs display
+
+**Consequences:** Cron expression validation happens server-side when tasks are created/updated. Frontend displays human-readable descriptions via `CronExpressionInput` component (real-time feedback, green/red validation). If cron expression syntax changes, only the server needs updating; frontend cronstrue will adapt on next parse.
+
+---
+
 ## ADR-027 — Conversation title generation is fire-and-forget, non-blocking
 
 **Context:** Conversations need human-readable titles instead of generic labels. Options: generate title synchronously (blocks chat response), or asynchronously (responsive but title may appear with a delay).

@@ -24,6 +24,9 @@ RUN bun install
 
 # ─── Build web (Next.js) ─────────────────────────────────────────────────
 FROM deps AS web-builder
+# NEXT_PUBLIC_* vars are baked at build time — must be passed as build args
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY . .
 RUN cd apps/studio/web && bun run build
 

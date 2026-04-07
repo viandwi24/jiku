@@ -1,5 +1,18 @@
 # Decisions
 
+## ADR-026 — Browser automation (Plan 13) abandoned — to be removed at MVP
+
+**Context:** Plan 13 implemented browser automation using the ported OpenClaw engine. The goal was to let the AI control the visible Chromium browser running in the LinuxServer/noVNC container (visible at localhost:4000) so users can watch the AI browse in real time.
+
+**Decision:** Feature is marked FAILED and will be removed before MVP release. The implementation does not meet planning requirements:
+- The browser tool launches a headless Playwright-managed Chromium (new process), not the visible one at localhost:4000.
+- CDP remote attach mode (`BROWSER_CDP_URL=http://browser:9223`) fails silently — the `chromium-cdp.sh` init script does not execute inside the LinuxServer container, so no CDP endpoint is exposed on port 9222. The system falls back to headless mode without warning.
+- Users see no browser activity in the noVNC viewer; AI automation happens invisibly in a headless process.
+
+**Consequences:** All browser-related code (`apps/studio/server/src/browser/`, browser tool injection in `manager.ts`, browser settings page) must be deleted before MVP. Corresponding DB config columns and routes should also be removed in the cleanup pass.
+
+---
+
 ## ADR-025 — Chat attachments are ephemeral, separate from project_files
 
 **Context:** Chat messages can include image uploads. Two options: store in the virtual filesystem (project_files) or a separate ephemeral table. Virtual disk files are persistent and addressable by agents via fs_* tools — not appropriate for transient chat images.

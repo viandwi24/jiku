@@ -10,7 +10,7 @@
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
 - [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
-- [ ] Browser automation: verify Playwright is installed on host (bun x playwright install chromium)
+- [ ] **[PRE-MVP CLEANUP]** Remove browser automation feature — marked FAILED, does not meet planning requirements. Code exists at `apps/studio/server/src/browser/`, `apps/studio/web/app/.../browser/page.tsx`, and browser tool injection in `runtime/manager.ts`. Remove all of it before MVP release.
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
@@ -62,6 +62,6 @@
 - [x] Real-time streaming for connector conversations — streamRegistry teed in event-router, useLiveConversation hook polls /live-parts — completed 2026-04-06
 - [x] `get_datetime` system tool — returns iso/timezone/local/unix; injected into all agents — completed 2026-04-06
 - [x] Telegram user timezone context — language_code → timezone map injected into connector context string — completed 2026-04-06
-- [x] Plan 13 — Browser Automation: OpenClaw engine ported, browser tools injected at wakeUp(), settings UI — completed 2026-04-06
+- [x] Plan 13 — Browser Automation: OpenClaw engine ported, browser tools injected at wakeUp(), settings UI — completed 2026-04-06 ⚠️ MARKED FAILED — does not meet planning requirements (see ADR-026)
 - [x] Plan 14 — Filesystem: S3/RustFS adapter, virtual path DB, agent tools (fs_list/read/write/move/delete/search), file manager UI (/disk), settings page — completed 2026-04-06
 - [x] Chat image attachments: upload + serve endpoint (/api/attachments), project_attachments DB table, image rendering in chat, ImageGallery fullscreen preview component — completed 2026-04-06

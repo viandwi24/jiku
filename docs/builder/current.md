@@ -35,7 +35,10 @@ Plans 1–14 + Skills (Plan 15) all implemented.
 - `apps/studio/web/app/.../agents/[agent]/memory/page.tsx` — fixed desync bug: useEffect replaces initialized flag
 
 
-### Browser Automation (Plan 13)
+### Browser Automation (Plan 13) — ⚠️ FAILED IMPLEMENTATION
+- Code exists but is **marked as failed** — does not meet planning requirements
+- Root cause: browser tool runs a headless Playwright instance (new process), NOT the visible Chromium at localhost:4000 (noVNC / LinuxServer container). CDP init script (`chromium-cdp.sh`) does not run, so remote attach mode silently falls back to headless. User sees no browser activity in the noVNC viewer.
+- **Will be removed before MVP release** — see backlog task and ADR-026
 - `apps/studio/server/src/browser/` — OpenClaw browser engine (ported), tool-schema.ts, routes/browser.ts
 - `apps/studio/web/app/.../browser/page.tsx` — browser settings page
 - `apps/studio/server/src/runtime/manager.ts` — injects browser tools at wakeUp() if browser_enabled

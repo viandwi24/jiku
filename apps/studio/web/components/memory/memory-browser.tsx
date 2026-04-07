@@ -157,10 +157,10 @@ function MemoryRow({
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete memory?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This memory entry will be permanently removed. The agent will no longer recall this information.
-              </AlertDialogDescription>
             </AlertDialogHeader>
+            <AlertDialogDescription>
+              This memory entry will be permanently removed. The agent will no longer recall this information.
+            </AlertDialogDescription>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction

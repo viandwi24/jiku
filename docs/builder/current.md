@@ -1,8 +1,8 @@
 ## Phase
-Plans 1–14 + Skills (Plan 15) all implemented.
+Plans 1–15 all implemented. Session cleanup complete.
 
 ## Currently Working On
-- Skills on-demand feature (Plan 15) — just completed.
+- Idle — last session completed browser failure documentation + UI rendering fixes.
 
 ## Relevant Files (Most Recently Worked On)
 

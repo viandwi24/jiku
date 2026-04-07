@@ -2,11 +2,12 @@
 
 import { useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ConversationItemWithAgent } from '@/lib/api'
-import { Avatar, AvatarFallback, Button, Input, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
-import { MessageSquare, Plus, ChevronDown } from 'lucide-react'
+import { Button, Input, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@jiku/ui/components/ui/alert-dialog.tsx'
+import { MessageSquare, Plus, ChevronDown, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isToday, isYesterday, isThisWeek, isThisMonth, subDays } from 'date-fns'
 
@@ -44,49 +45,80 @@ function groupConversations(convs: ConversationItemWithAgent[]): { label: string
 
 // ── Conversation item ──────────────────────────────────────────────────────────
 
-function ConvItem({ conv, base, isActive, onClick }: {
+function ConvItem({ conv, base, isActive, onClick, onDelete }: {
   conv: ConversationItemWithAgent
   base: string
   isActive: boolean
   onClick: () => void
+  onDelete: (convId: string) => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors border-b border-border/40 overflow-hidden',
-        isActive && 'bg-muted border-l-2 border-l-primary pl-2.5',
-      )}
-    >
-      <Avatar className="h-7 w-7 mt-0.5 shrink-0">
-        <AvatarFallback className="text-xs">
-          {conv.agent.name.slice(0, 2).toUpperCase()}
-        </AvatarFallback>
-      </Avatar>
-      <div className="flex-1 overflow-hidden" style={{ minWidth: 0 }}>
-        <div className="flex items-center gap-1">
-          <span className="text-xs font-medium flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-            {conv.agent.name}
-          </span>
+    <div className={cn(
+      'group relative w-full flex items-start border-b border-border/40 overflow-hidden',
+      isActive && 'bg-muted border-l-2 border-l-primary',
+    )}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          'flex-1 flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors overflow-hidden',
+          isActive && 'pl-2.5',
+        )}
+      >
+        <div className="flex-1 overflow-hidden" style={{ minWidth: 0 }}>
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-medium flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+              {conv.title ?? conv.agent.name}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
+            {conv.title ? conv.agent.name : (conv.last_message ?? 'No messages yet')}
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
-          {conv.title ?? conv.last_message ?? 'No messages yet'}
-        </p>
-      </div>
-    </button>
+      </button>
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <button
+            type="button"
+            onClick={(e) => e.stopPropagation()}
+            className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 p-2 mt-1 text-muted-foreground hover:text-destructive"
+            aria-label="Delete conversation"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete conversation?</AlertDialogTitle>
+          </AlertDialogHeader>
+          <AlertDialogDescription>
+            &ldquo;{conv.title ?? conv.agent.name}&rdquo; will be removed from your chat history. This action cannot be undone.
+          </AlertDialogDescription>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.stopPropagation(); onDelete(conv.id) }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   )
 }
 
 // ── Group section ──────────────────────────────────────────────────────────────
 
-function GroupSection({ label, items, base, pathname, router, isFirst }: {
+function GroupSection({ label, items, base, pathname, router, isFirst, onDelete }: {
   label: string
   items: ConversationItemWithAgent[]
   base: string
   pathname: string
   router: ReturnType<typeof useRouter>
   isFirst: boolean
+  onDelete: (convId: string) => void
 }) {
   // Today starts expanded, rest collapsed
   const [expanded, setExpanded] = useState(isFirst)
@@ -122,6 +154,7 @@ function GroupSection({ label, items, base, pathname, router, isFirst }: {
               base={base}
               isActive={pathname === `${base}/${conv.id}`}
               onClick={() => router.push(`${base}/${conv.id}`)}
+              onDelete={onDelete}
             />
           ))}
 
@@ -145,6 +178,7 @@ function GroupSection({ label, items, base, pathname, router, isFirst }: {
 export function ConversationListPanel({ companySlug, projectSlug }: ConversationListPanelProps) {
   const router = useRouter()
   const pathname = usePathname()
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
 
   const { data: companyData } = useQuery({
@@ -175,6 +209,16 @@ export function ConversationListPanel({ companySlug, projectSlug }: Conversation
 
   const groups = groupConversations(filtered)
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}/chats`
+
+  const deleteMutation = useMutation({
+    mutationFn: (convId: string) => api.conversations.delete(convId),
+    onSuccess: (_data, convId) => {
+      queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      if (pathname === `${base}/${convId}`) {
+        router.push(base)
+      }
+    },
+  })
 
   return (
     <div className="flex flex-col h-full border-r">
@@ -227,6 +271,7 @@ export function ConversationListPanel({ companySlug, projectSlug }: Conversation
               pathname={pathname}
               router={router}
               isFirst={i === 0}
+              onDelete={(convId) => deleteMutation.mutate(convId)}
             />
           ))
         )}

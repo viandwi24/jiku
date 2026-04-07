@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import { Button, Input, Label, Separator } from '@jiku/ui'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@jiku/ui/components/ui/alert-dialog.tsx'
 import { toast } from 'sonner'
 
 interface PageProps {
@@ -106,18 +107,34 @@ export default function ProjectSettingsGeneralPage({ params }: PageProps) {
             <p className="text-sm font-medium">Delete this project</p>
             <p className="text-xs text-muted-foreground">Permanently deletes this project and all its agents. Cannot be undone.</p>
           </div>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => {
-              if (confirm(`Delete project "${project?.name}"? This cannot be undone.`)) {
-                deleteMutation.mutate()
-              }
-            }}
-            disabled={deleteMutation.isPending || !project || !companyData}
-          >
-            {deleteMutation.isPending ? 'Deleting...' : 'Delete Project'}
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={deleteMutation.isPending || !project || !companyData}
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete Project'}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete project &ldquo;{project?.name}&rdquo;?</AlertDialogTitle>
+              </AlertDialogHeader>
+              <AlertDialogDescription>
+                This will permanently delete the project and all its agents. This action cannot be undone.
+              </AlertDialogDescription>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => deleteMutation.mutate()}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Delete Project
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </section>
     </div>

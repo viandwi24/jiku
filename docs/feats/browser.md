@@ -1,6 +1,10 @@
 # Feature: Browser Automation (Plan 13)
 
-## What it does
+> ⚠️ **STATUS: FAILED — Scheduled for removal before MVP release.** See ADR-026.
+>
+> The feature code exists and is partially functional, but it does NOT meet planning requirements. The AI controls a headless Playwright process, not the visible browser in the noVNC container. Users cannot observe AI browser activity in real time. Will be deleted before MVP.
+
+## What it does (intended)
 
 Per-project browser automation. Agents can control a Chromium browser via a single `browser` tool. Supports navigation, snapshots, screenshots, element interaction (click/type/hover/drag), tab management, console logs, PDF export, file upload, and dialog handling.
 
@@ -82,8 +86,11 @@ PATCH /api/projects/:pid/browser/config  → update config
 - `apps/studio/web/app/.../browser/page.tsx` — settings page with enable toggle, status badge, config form
 - Sidebar: "Browser" nav item in project sidebar
 
-## Known Limitations
+## Known Limitations / Why It Failed
 
+- **Critical**: Browser tool always falls back to headless Playwright — it does NOT control the visible Chromium in the noVNC/LinuxServer container (localhost:4000)
+- **Critical**: Remote CDP attach mode fails silently — `chromium-cdp.sh` init script does not execute in the LinuxServer container, so no CDP endpoint is available on port 9222. System falls back to launching a new headless process with no warning.
+- Users see NO browser activity in the noVNC viewer when the AI is "browsing"
 - Host mode only (Playwright on server) — Chrome extension relay (profile=chrome) not yet supported
 - One browser server per project; port allocation is sequential offset from `control_port`
 - Requires Playwright: `bun x playwright install chromium` on server host

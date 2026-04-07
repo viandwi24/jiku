@@ -75,7 +75,7 @@ function AgentsPage({ params }: PageProps) {
           <EmptyContent>{project && <CreateAgentDialog projectId={project.id} companySlug={companySlug} projectSlug={projectSlug} />}</EmptyContent>
         </Empty>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-4">
           {agents.map(agent => (
             <AgentCard
               key={agent.id}

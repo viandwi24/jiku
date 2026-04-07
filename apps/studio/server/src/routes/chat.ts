@@ -11,6 +11,7 @@ import { pipeUIMessageStreamToResponse } from 'ai'
 import type { UIMessage } from 'ai'
 import type { ChatAttachment, ChatFilePart } from '@jiku/types'
 import { env } from '../env.ts'
+import { generateConversationTitle } from '../title/generate.ts'
 
 const router = Router()
 
@@ -171,6 +172,11 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
       }
     } finally {
       done()
+      // Fire-and-forget: generate title if conversation has none yet
+      if (!conversation.title) {
+        generateConversationTitle(agent.id, input, conversationId)
+          .catch(() => { /* suppress */ })
+      }
     }
   })()
 

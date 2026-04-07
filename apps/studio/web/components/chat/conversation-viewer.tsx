@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import { isToolUIPart, isTextUIPart, isStaticToolUIPart, getToolName } from 'ai'
@@ -10,13 +10,13 @@ import { api } from '@/lib/api'
 import { getToken } from '@/lib/auth'
 import { useConversationObserver } from '@/hooks/use-conversation-observer'
 import { useLiveConversation } from '@/hooks/use-live-conversation'
-import { Avatar, AvatarFallback, Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
+import { Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@jiku/ui/components/ai-elements/conversation.tsx'
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
 import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from '@jiku/ui/components/ai-elements/attachments.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
-import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip, Pencil } from 'lucide-react'
 import { ImageGallery, ImageGalleryTrigger } from '@/components/ui/image-gallery'
 import type { GalleryImage } from '@/components/ui/image-gallery'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
@@ -212,6 +212,69 @@ function MessageParts({ msg }: { msg: UIMessage }) {
   )
 }
 
+function ConversationTitleEdit({ convId, title, agentName }: { convId: string; title: string | null | undefined; agentName: string }) {
+  const qc = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const { mutate: rename } = useMutation({
+    mutationFn: (newTitle: string) => api.conversations.rename(convId, newTitle),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['conversations'] })
+      qc.invalidateQueries({ queryKey: ['conversation', convId] })
+    },
+  })
+
+  const startEdit = () => {
+    setDraft(title ?? agentName)
+    setEditing(true)
+    setTimeout(() => inputRef.current?.select(), 0)
+  }
+
+  const commit = () => {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== (title ?? agentName)) {
+      rename(trimmed)
+    }
+    setEditing(false)
+  }
+
+  const cancel = () => setEditing(false)
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); commit() }
+          if (e.key === 'Escape') { e.preventDefault(); cancel() }
+        }}
+        maxLength={50}
+        className="font-semibold text-sm bg-transparent border-b border-primary outline-none w-full max-w-[260px]"
+        autoFocus
+      />
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startEdit}
+      className="group flex items-center gap-1.5 text-left"
+      title="Click to rename"
+    >
+      <span className="font-semibold text-sm truncate max-w-[260px]">
+        {title ?? agentName}
+      </span>
+      <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity shrink-0" />
+    </button>
+  )
+}
+
 export function ConversationViewer({ convId, mode, conversation, initialMessages, projectId }: ConversationViewerProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [memorySheetOpen, setMemorySheetOpen] = useState(false)
@@ -343,10 +406,11 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, mode])
 
-  // Refresh sidebar + usage after each turn (edit mode only)
+  // Refresh sidebar + usage + conversation after each turn (edit mode only)
   useEffect(() => {
     if (mode === 'edit' && !isStreaming) {
       qc.invalidateQueries({ queryKey: ['conversations'] })
+      qc.invalidateQueries({ queryKey: ['conversation', convId] })
       if (agentId) qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -405,16 +469,25 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       {/* Header */}
       {conversation && (
         <div className="flex items-center gap-2 px-4 py-2.5 border-b shrink-0">
-          <Avatar className="h-6 w-6">
-            <AvatarFallback className="text-xs">
-              {conversation.agent.name.slice(0, 2).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
-          <span className="font-medium text-sm">{conversation.agent.name}</span>
-          {conversation.title && (
-            <span className="text-xs text-muted-foreground truncate">— {conversation.title}</span>
-          )}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex flex-col min-w-0 flex-1">
+            {mode === 'edit' ? (
+              <ConversationTitleEdit
+                convId={convId}
+                title={conversation.title}
+                agentName={conversation.agent.name}
+              />
+            ) : (
+              <span className="font-semibold text-sm truncate">
+                {conversation.title ?? conversation.agent.name}
+              </span>
+            )}
+            {conversation.title && (
+              <span className="text-xs text-muted-foreground truncate leading-none">
+                {conversation.agent.name}
+              </span>
+            )}
+          </div>
+          <div className="ml-auto flex items-center gap-2 shrink-0">
             {mode === 'readonly' && (
               <Badge variant="outline" className="text-xs text-muted-foreground">readonly</Badge>
             )}
@@ -454,12 +527,12 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
               .map(p => (p as { type: 'text'; text: string }).text)
               .join('\n\n')
             return (
-              <Message key={msg.id} from={msg.role}>
+              <Message key={msg.id} from={msg.role} className="flex">
                 <MessageContent>
                   <MessageParts msg={msg} />
                 </MessageContent>
                 {textContent && (
-                  <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                  <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} transition-opacity`}>
                     <CopyButton text={textContent} />
                   </div>
                 )}

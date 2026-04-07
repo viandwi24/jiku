@@ -262,6 +262,16 @@ Check is enforced server-side in `checkTaskDelegationPermission()` in `apps/stud
 
 `apps/studio/web/app/.../agents/[agent]/memory/page.tsx` uses `useEffect(() => { ... }, [resolvedData])` to sync form state from server data. Do NOT use the `initialized` flag + if-inside-render pattern — it causes desync because `invalidateQueries` is async and stale data triggers a premature re-init before fresh data arrives.
 
+## Browser automation (Plan 13) is FAILED — to be removed at MVP
+
+The browser tool code exists but is marked failed. It controls a headless Playwright process, NOT the visible Chromium in noVNC. Remote CDP attach silently falls back to headless because `chromium-cdp.sh` does not run in the LinuxServer container. Do not invest any debugging effort — remove the entire feature before MVP release (see ADR-026, backlog task "[PRE-MVP CLEANUP]").
+
+## ToolOutput renders content[] arrays with image support
+
+`packages/ui/src/components/ai-elements/tool.tsx` `ToolOutput` component handles tool output that is `{ content: ContentPart[] }`. Image parts (`type: 'image'`, `data`, `mimeType`) render as `<img src="data:...">`. Text parts render as CodeBlock. Single-image-only responses render without wrapper div. This pattern is used by the browser screenshot tool.
+
+Never return `{ type: 'text', text: 'Screenshot saved: /path...' }` from server tool handlers — it exposes server filesystem paths to end users. Return only the image data part.
+
 ## Wrap stream untuk cleanup after full consume
 
 `modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).

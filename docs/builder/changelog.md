@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-07 — Browser automation marked failed + UI rendering fixes
+
+- **Screenshot renders as image in chat UI** (`packages/ui/src/components/ai-elements/tool.tsx`): `ToolOutput` component now handles `content[]` arrays (Vercel AI SDK tool output format). Image parts (`type: 'image'`) render as `<img>` with base64 src. Text parts render as CodeBlock. Single-image case renders without wrapper div.
+- **Server path removed from screenshot result** (`apps/studio/server/src/browser/execute.ts`): `screenshot` case no longer returns `{ type: 'text', text: 'Screenshot saved: /path...' }` — only the image data part is returned. Prevents server filesystem paths from being exposed to end users.
+- **Browser tool prompt improved** (`apps/studio/server/src/browser/tool.ts`): Added explicit WORKFLOW steps and COMMON MISTAKES section to tool description. AI no longer claims it cannot browse the web.
+- **Browser automation marked FAILED** (`docs/`): ADR-026 added. `current.md`, `tasks.md`, `decisions.md`, `feats/browser.md` all updated to reflect that Plan 13 does not meet requirements and will be removed before MVP.
+- Files: `packages/ui/src/components/ai-elements/tool.tsx`, `apps/studio/server/src/browser/execute.ts`, `apps/studio/server/src/browser/tool.ts`, `docs/builder/decisions.md`, `docs/builder/current.md`, `docs/builder/tasks.md`, `docs/feats/browser.md`
+
 ## 2026-04-07 — Plan 15: On-Demand Skills System
 
 - **DB schema** (`apps/studio/db/src/schema/skills.ts`): New `project_skills`, `project_skill_files`, `agent_skills` tables. Skills are folder-like structures (multiple markdown files with an entrypoint) assigned to agents per-project.

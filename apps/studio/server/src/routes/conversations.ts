@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getConversationsByAgent, createConversation, getConversationsByProject, getConversationWithAgent, getMessages, getAgentById } from '@jiku-studio/db'
+import { getConversationsByAgent, createConversation, getConversationsByProject, getConversationWithAgent, getMessages, getAgentById, updateConversationTitle, softDeleteConversation } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission, loadPerms } from '../middleware/permission.ts'
 
@@ -66,6 +66,55 @@ router.post('/agents/:aid/conversations', requirePermission('chats:create'), asy
     mode: mode ?? 'chat',
   })
   res.status(201).json({ conversation })
+})
+
+router.patch('/conversations/:id/title', async (req, res) => {
+  const convId = req.params['id']!
+  const { title } = (req.body ?? {}) as { title?: string }
+
+  if (!title || typeof title !== 'string' || title.trim().length === 0) {
+    res.status(400).json({ error: 'title is required and must be a non-empty string' })
+    return
+  }
+  if (title.trim().length > 255) {
+    res.status(400).json({ error: 'title must be 255 characters or fewer' })
+    return
+  }
+
+  const conversation = await getConversationWithAgent(convId)
+  if (!conversation) { res.status(404).json({ error: 'Conversation not found' }); return }
+
+  const agent = await getAgentById(conversation.agent_id)
+  if (agent) {
+    res.locals['project_id'] = agent.project_id
+    const result = await loadPerms(req, res)
+    if (result && !result.resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (result && !result.resolved.isSuperadmin && !result.resolved.permissions.includes('chats:create')) {
+      res.status(403).json({ error: 'Missing permission: chats:create' }); return
+    }
+  }
+
+  await updateConversationTitle(convId, title.trim())
+  res.json({ ok: true })
+})
+
+router.delete('/conversations/:id', async (req, res) => {
+  const convId = req.params['id']!
+  const conversation = await getConversationWithAgent(convId)
+  if (!conversation) { res.status(404).json({ error: 'Conversation not found' }); return }
+
+  const agent = await getAgentById(conversation.agent_id)
+  if (agent) {
+    res.locals['project_id'] = agent.project_id
+    const result = await loadPerms(req, res)
+    if (result && !result.resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (result && !result.resolved.isSuperadmin && !result.resolved.permissions.includes('chats:create')) {
+      res.status(403).json({ error: 'Missing permission: chats:create' }); return
+    }
+  }
+
+  await softDeleteConversation(convId)
+  res.json({ ok: true })
 })
 
 export { router as conversationsRouter }

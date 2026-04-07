@@ -21,6 +21,7 @@ export const conversations = pgTable('conversations', {
   error_message:           text('error_message'),
   created_at:              timestamp('created_at').defaultNow(),
   updated_at:              timestamp('updated_at').defaultNow(),
+  deleted_at:              timestamp('deleted_at'),
 }, (t) => [
   index('idx_conv_agent_type').on(t.agent_id, t.type, t.created_at),
   index('idx_conv_parent').on(t.parent_conversation_id),

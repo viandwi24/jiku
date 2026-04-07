@@ -162,6 +162,13 @@ export const api = {
       request<{ running: boolean }>(`/api/conversations/${convId}/status`),
     liveParts: (convId: string) =>
       request<{ running: boolean; chunks: Record<string, unknown>[] }>(`/api/conversations/${convId}/live-parts`),
+    rename: (convId: string, title: string) =>
+      request<{ ok: boolean }>(`/api/conversations/${convId}/title`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      }),
+    delete: (convId: string) =>
+      request<{ ok: boolean }>(`/api/conversations/${convId}`, { method: 'DELETE' }),
   },
 
   plugins: {

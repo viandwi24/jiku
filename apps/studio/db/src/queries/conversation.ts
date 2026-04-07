@@ -211,9 +211,13 @@ export async function replaceMessages(
   return inserted
 }
 
+export async function softDeleteConversation(id: string) {
+  await db.update(conversations).set({ deleted_at: new Date() }).where(eq(conversations.id, id))
+}
+
 export async function getConversationsByProject(projectId: string, userId: string) {
   const rows = await db.query.conversations.findMany({
-    where: (t, { and, eq: eqFn }) => and(eqFn(t.user_id, userId)),
+    where: (t, { and, eq: eqFn, isNull }) => and(eqFn(t.user_id, userId), isNull(t.deleted_at)),
     with: {
       agent: true,
       messages: {

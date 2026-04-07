@@ -15,8 +15,12 @@ export function buildModeInstruction(mode: AgentMode): string {
  */
 export function buildUserContext(caller: CallerContext): string {
   const name = (caller.user_data.name as string | undefined) ?? caller.user_id
+  const email = caller.user_data.email as string | undefined
   const roles = caller.roles.join(', ') || 'user'
-  return `Current user: ${name} (${roles})`
+  const parts = [`name: ${name}`, `id: ${caller.user_id}`]
+  if (email) parts.push(`email: ${email}`)
+  parts.push(`roles: ${roles}`)
+  return `Current user — ${parts.join(', ')}`
 }
 
 /**

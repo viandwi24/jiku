@@ -1,18 +1,25 @@
 FROM oven/bun:1 AS base
 WORKDIR /app
 
-# Install supervisord and curl
 RUN apt-get update && apt-get install -y supervisor curl && rm -rf /var/lib/apt/lists/*
 
-# ─── Install dependencies ───────────────────────────────────────────────
+# ─── Install dependencies ────────────────────────────────────────────────
 FROM base AS deps
-COPY package.json bun.lock* ./
-COPY packages/ ./packages/
+# Copy root lockfile + workspace manifests — bun needs ALL package.json
+# files to resolve workspace: deps before installing
+COPY package.json bun.lock ./
+COPY packages/core/package.json ./packages/core/
+COPY packages/kit/package.json ./packages/kit/
+COPY packages/types/package.json ./packages/types/
+COPY packages/ui/package.json ./packages/ui/
 COPY apps/studio/server/package.json ./apps/studio/server/
 COPY apps/studio/web/package.json ./apps/studio/web/
 COPY apps/studio/db/package.json ./apps/studio/db/
-# Copy any plugins that are workspace deps
-COPY plugins/ ./plugins/
+COPY plugins/jiku.connector/package.json ./plugins/jiku.connector/
+COPY plugins/jiku.cron/package.json ./plugins/jiku.cron/
+COPY plugins/jiku.skills/package.json ./plugins/jiku.skills/
+COPY plugins/jiku.social/package.json ./plugins/jiku.social/
+COPY plugins/jiku.telegram/package.json ./plugins/jiku.telegram/
 RUN bun install --frozen-lockfile
 
 # ─── Build web (Next.js) ─────────────────────────────────────────────────
@@ -24,21 +31,15 @@ RUN cd apps/studio/web && bun run build
 FROM base AS runner
 WORKDIR /app
 
-# Copy installed node_modules + source
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages ./packages
-COPY --from=deps /app/plugins ./plugins
+# Workspace source + installed deps
+COPY --from=web-builder /app/node_modules ./node_modules
+COPY --from=web-builder /app/packages ./packages
+COPY --from=web-builder /app/plugins ./plugins
+COPY --from=web-builder /app/apps ./apps
 
-# Copy source for server (runs via bun directly, no pre-bundling needed)
-COPY apps/ ./apps/
-
-# Copy pre-built Next.js output
-COPY --from=web-builder /app/apps/studio/web/.next ./apps/studio/web/.next
-COPY --from=web-builder /app/apps/studio/web/public ./apps/studio/web/public
-
-# Copy supervisord config
+# Supervisord config
 COPY infra/dokploy/supervisord.conf /etc/supervisor/conf.d/jiku.conf
 
-EXPOSE 3100 3000
+EXPOSE 3001 3000
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

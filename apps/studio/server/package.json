@@ -26,6 +26,7 @@
     "@jiku/types": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.3.3",
     "@types/busboy": "^1.5.4",
+    "agent-browser": "^0.25.3",
     "ai": "^6.0.146",
     "bcryptjs": "^3.0.3",
     "busboy": "^1.6.0",

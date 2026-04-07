@@ -214,6 +214,7 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
+          max_tool_calls: a.max_tool_calls ?? 40,
           built_in_tools: [
             ...systemTools,
             ...memoryTools,
@@ -334,6 +335,7 @@ export class JikuRuntimeManager {
           provider_id: DYNAMIC_PROVIDER_ID,
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
+          max_tool_calls: a.max_tool_calls ?? 40,
           built_in_tools: [
             ...systemTools,
             ...memoryTools,
@@ -413,6 +415,7 @@ export class JikuRuntimeManager {
         provider_id: DYNAMIC_PROVIDER_ID,
         model_id: DYNAMIC_MODEL_ID,
         compaction_threshold: agent.compaction_threshold ?? 80,
+        max_tool_calls: agent.max_tool_calls ?? 40,
         built_in_tools: [
           ...systemTools,
           ...memoryTools,

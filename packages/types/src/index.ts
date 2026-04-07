@@ -286,6 +286,8 @@ export interface AgentDefinition {
   model_id?: string
   /** Context compaction threshold percentage (0–100). 0 = disabled. Default 80. */
   compaction_threshold?: number
+  /** Maximum number of LLM tool-call steps per run. Default 40. */
+  max_tool_calls?: number
   /**
    * Built-in tools injected directly into this agent (not via plugins).
    * Used for memory tools and other per-agent built-ins.

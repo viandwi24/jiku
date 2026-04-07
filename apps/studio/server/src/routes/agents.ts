@@ -48,7 +48,7 @@ router.post('/projects/:pid/agents', requirePermission('agents:create'), async (
 
 router.patch('/agents/:aid', requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']!
-  const body = req.body as Partial<{ name: string; description: string; base_prompt: string; allowed_modes: string[]; slug: string; compaction_threshold: number; task_allowed_agents: string[] | null }>
+  const body = req.body as Partial<{ name: string; description: string; base_prompt: string; allowed_modes: string[]; slug: string; compaction_threshold: number; max_tool_calls: number; task_allowed_agents: string[] | null }>
 
   const agent = await updateAgent(agentId, body)
   await runtimeManager.syncAgent(agent.project_id, agentId)

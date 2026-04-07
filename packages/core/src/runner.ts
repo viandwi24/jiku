@@ -430,7 +430,7 @@ export class AgentRunner {
           system: systemPrompt,
           messages,
           tools: Object.keys(aiTools).length > 0 ? aiTools : undefined,
-          stopWhen: stepCountIs(20),
+          stopWhen: stepCountIs(this.agent.max_tool_calls ?? 40),
           abortSignal: params.abort_signal,
           onStepFinish: (event) => {
             jikuWriter.write('jiku-step-usage', {

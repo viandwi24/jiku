@@ -42,6 +42,7 @@ export default function AgentInfoPage({ params }: PageProps) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [allowedModes, setAllowedModes] = useState<string[]>([])
+  const [maxToolCalls, setMaxToolCalls] = useState(40)
   const [initialized, setInitialized] = useState(false)
 
   // Sync form when agent loads
@@ -49,6 +50,7 @@ export default function AgentInfoPage({ params }: PageProps) {
     setName(agent.name)
     setDescription(agent.description ?? '')
     setAllowedModes(agent.allowed_modes ?? ['chat'])
+    setMaxToolCalls(agent.max_tool_calls ?? 40)
     setInitialized(true)
   }
 
@@ -60,7 +62,7 @@ export default function AgentInfoPage({ params }: PageProps) {
 
   const mutation = useMutation({
     mutationFn: () =>
-      api.agents.update(agent!.id, { name, description: description || null, allowed_modes: allowedModes }),
+      api.agents.update(agent!.id, { name, description: description || null, allowed_modes: allowedModes, max_tool_calls: maxToolCalls }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents', project?.id] })
       toast.success('Agent updated')
@@ -122,6 +124,19 @@ export default function AgentInfoPage({ params }: PageProps) {
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="max-tool-calls">Max Tool Calls</Label>
+          <Input
+            id="max-tool-calls"
+            type="number"
+            min={1}
+            max={200}
+            value={maxToolCalls}
+            onChange={e => setMaxToolCalls(Number(e.target.value))}
+          />
+          <p className="text-xs text-muted-foreground">Maximum number of tool-call steps per run. Default: 40</p>
         </div>
 
         <div className="flex justify-end">

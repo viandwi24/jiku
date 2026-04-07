@@ -753,6 +753,7 @@ export interface Agent {
   base_prompt: string
   allowed_modes: string[]
   compaction_threshold?: number | null
+  max_tool_calls?: number | null
   file_delivery?: 'base64' | 'proxy_url' | null
   attachment_scope?: 'per_user' | 'shared' | null
   /** null = allow all, [] = deny all, [id…] = allow specific agents */

@@ -95,7 +95,7 @@ router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), a
 
     let statusJson: Record<string, unknown> = {}
     try {
-      const r = await fetch(`${handle.baseUrl}/`, { signal: controller.signal })
+      const r = await fetch(`${handle.baseUrl}/?profile=${encodeURIComponent(projectId)}`, { signal: controller.signal })
       clearTimeout(timeout)
       const latencyMs = Date.now() - t0
 

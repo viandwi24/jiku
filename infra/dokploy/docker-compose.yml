@@ -94,7 +94,6 @@ services:
       # Browser CDP
       BROWSER_CDP_URL: http://browser:9223
       # Server
-      AUTO_MIGRATE: "true"
       PORT: ${SERVER_PORT:-3001}
       JWT_SECRET: ${JWT_SECRET}
       # Web (Next.js)

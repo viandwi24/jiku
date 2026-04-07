@@ -2,17 +2,24 @@
 # Run everything in background so container startup is not blocked
 
 (
-  # Wait for Wayland socket (linuxserver/chromium uses Wayland, not X11)
+  # Wait for Wayland socket — linuxserver/chromium uses /config/.XDG/wayland-1
   for i in $(seq 1 60); do
-    if [ -S /tmp/.X11-unix/X1 ] || [ -S /config/.XDG/wayland-1 ] || [ -S /tmp/wayland-1 ]; then
+    if [ -S /config/.XDG/wayland-1 ]; then
       break
     fi
     sleep 1
   done
-  sleep 2  # extra buffer for compositor to fully init
+  sleep 3  # extra buffer for the DE and any auto-launched Chromium to settle
 
-  # Launch Chromium with CDP enabled on Wayland
-  WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/config/.XDG chromium-browser \
+  # Kill any Chromium already running (launched by the DE without CDP flags)
+  pkill -f chromium-browser 2>/dev/null || true
+  sleep 1
+
+  # Re-launch Chromium with CDP enabled
+  WAYLAND_DISPLAY=wayland-1 \
+  XDG_RUNTIME_DIR=/config/.XDG \
+  HOME=/config \
+  chromium-browser \
     --remote-debugging-port=9222 \
     --remote-debugging-address=0.0.0.0 \
     --remote-allow-origins=* \
@@ -23,7 +30,7 @@
     --ozone-platform=wayland \
     about:blank &
 
-  # Wait for Chrome CDP to be ready on localhost:9222
+  # Wait for CDP to be ready on localhost:9222
   for i in $(seq 1 30); do
     if curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
       break
@@ -35,10 +42,9 @@
   # Injects "Origin: http://localhost" on WebSocket upgrade requests so that
   # Playwright (which sends no Origin) is accepted by Chrome's CDP server.
   python3 -c "
-import socket, threading, re
+import socket, threading
 
 def inject_origin(data):
-    # Only modify HTTP upgrade requests (first chunk of a WebSocket handshake)
     try:
         text = data.decode('utf-8', errors='replace')
     except Exception:
@@ -46,8 +52,7 @@ def inject_origin(data):
     if not text.startswith('GET ') or 'Upgrade: websocket' not in text:
         return data
     if 'Origin:' in text or 'origin:' in text:
-        return data  # already has Origin, leave it
-    # Insert Origin header before the blank line that ends the headers
+        return data
     text = text.replace('\r\n\r\n', '\r\nOrigin: http://localhost\r\n\r\n', 1)
     return text.encode('utf-8')
 

@@ -76,7 +76,9 @@ services:
   # App — server (Bun) + web (Next.js) via supervisord
   # ─────────────────────────────────────────────
   app:
-    image: ${APP_IMAGE:-ghcr.io/your-org/jiku-studio:latest}
+    build:
+      context: ../..
+      dockerfile: infra/dokploy/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:

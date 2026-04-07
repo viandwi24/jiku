@@ -187,21 +187,23 @@ function MessageParts({ msg }: { msg: UIMessage }) {
         if (isToolUIPart(part)) {
           const toolName = getToolName(part)
           return (
-            <Tool key={i}>
-              {isStaticToolUIPart(part) ? (
-                <ToolHeader type={part.type} state={part.state} />
-              ) : (
-                <ToolHeader type={part.type} state={part.state} toolName={toolName} />
-              )}
-              <ToolContent>
-                {'input' in part && part.input !== undefined && (
-                  <ToolInput input={part.input} />
+            <div key={i}>
+              <Tool>
+                {isStaticToolUIPart(part) ? (
+                  <ToolHeader type={part.type} state={part.state} />
+                ) : (
+                  <ToolHeader type={part.type} state={part.state} toolName={toolName} />
                 )}
-                {'output' in part && (
-                  <ToolOutput output={part.output} errorText={part.errorText} />
-                )}
-              </ToolContent>
-            </Tool>
+                <ToolContent>
+                  {'input' in part && part.input !== undefined && (
+                    <ToolInput input={part.input} />
+                  )}
+                  {'output' in part && (
+                    <ToolOutput output={part.output} errorText={part.errorText} />
+                  )}
+                </ToolContent>
+              </Tool>
+            </div>
           )
         }
         return null

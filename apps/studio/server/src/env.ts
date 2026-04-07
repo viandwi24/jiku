@@ -7,4 +7,6 @@ export const env = {
   CREDENTIALS_ENCRYPTION_KEY: process.env.CREDENTIALS_ENCRYPTION_KEY ?? '',
   /** Public base URL for generating proxy URLs (e.g. https://api.jiku.io). Defaults to localhost. */
   PUBLIC_URL: process.env.PUBLIC_URL ?? '',
+  /** Enable the browser control server (Node child process). Default false. Set to "true" to enable. */
+  BROWSER_CONTROL_SERVER_ENABLED: process.env.BROWSER_CONTROL_SERVER_ENABLED === 'true',
 }

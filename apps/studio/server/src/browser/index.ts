@@ -1,6 +1,7 @@
 import type { BrowserProjectConfig } from '@jiku-studio/db'
 import { startBrowserControlServer, stopBrowserControlServer } from './browser/server.js'
 import { resolveRemoteBrowserConfig } from './config.js'
+import { env } from '../env.ts'
 
 export type BrowserServerHandle = {
   port: number
@@ -16,6 +17,10 @@ const registeredProfiles = new Set<string>()
 
 async function ensureSharedServer(): Promise<BrowserServerHandle> {
   if (sharedHandle) return sharedHandle
+
+  if (!env.BROWSER_CONTROL_SERVER_ENABLED) {
+    throw new Error('[browser] Browser control server is disabled (BROWSER_CONTROL_SERVER_ENABLED=false)')
+  }
 
   const resolved = resolveRemoteBrowserConfig()
   const state = await startBrowserControlServer(resolved)

@@ -102,6 +102,7 @@ services:
       CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
+      BROWSER_CONTROL_SERVER_ENABLED: ${BROWSER_CONTROL_SERVER_ENABLED:-false}
     expose:
       - "3001"   # server (Express/Bun)
       - "3000"   # web (Next.js)

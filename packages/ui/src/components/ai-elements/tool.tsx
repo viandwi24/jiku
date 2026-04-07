@@ -132,6 +132,29 @@ export type ToolOutputProps = ComponentProps<"div"> & {
   errorText: ToolPart["errorText"];
 };
 
+type ContentPart = { type: string; text?: string; data?: string; mimeType?: string };
+
+const renderContentParts = (parts: ContentPart[]) => (
+  <>
+    {parts.map((part, idx) => {
+      if (part.type === "image" && part.data && part.mimeType) {
+        return (
+          <img
+            key={idx}
+            src={`data:${part.mimeType};base64,${part.data}`}
+            alt="Tool output"
+            className="h-auto max-w-full overflow-hidden rounded-md"
+          />
+        );
+      }
+      if (part.type === "text" && part.text) {
+        return <CodeBlock key={idx} code={part.text} language="json" />;
+      }
+      return <CodeBlock key={idx} code={JSON.stringify(part, null, 2)} language="json" />;
+    })}
+  </>
+);
+
 export const ToolOutput = ({
   className,
   output,
@@ -145,9 +168,20 @@ export const ToolOutput = ({
   let Output = <div>{output as ReactNode}</div>;
 
   if (typeof output === "object" && !isValidElement(output)) {
-    Output = (
-      <CodeBlock code={JSON.stringify(output, null, 2)} language="json" />
-    );
+    const obj = output as Record<string, unknown>;
+    if (Array.isArray(obj?.content)) {
+      const parts = obj.content as ContentPart[];
+      const hasImageOnly = parts.length === 1 && parts[0].type === "image";
+      Output = hasImageOnly ? (
+        renderContentParts(parts)
+      ) : (
+        <div className="space-y-2">{renderContentParts(parts)}</div>
+      );
+    } else {
+      Output = (
+        <CodeBlock code={JSON.stringify(output, null, 2)} language="json" />
+      );
+    }
   } else if (typeof output === "string") {
     Output = <CodeBlock code={output} language="json" />;
   }

@@ -85,7 +85,6 @@ export async function executeBrowserAction(
       const data = await readFile(result.path)
       return {
         content: [
-          { type: 'text', text: `Screenshot saved: ${result.path}` },
           { type: 'image', data: data.toString('base64'), mimeType: args.type === 'jpeg' ? 'image/jpeg' : 'image/png' },
         ],
       }

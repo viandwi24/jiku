@@ -56,10 +56,23 @@ console.log(`Control server: ${CYAN}${baseUrl}${RESET}`)
 if (cdpUrl) console.log(`CDP URL: ${CYAN}${cdpUrl}${RESET}`)
 console.log()
 
-// 1. Check control server reachability
+// 1. Check control server reachability — list profiles first to get a valid profile name
 info('Step 1: Check control server reachability')
+
+// Get available profiles to find one to test with
+let profileName: string | undefined
+try {
+  const profilesRes = await fetch(`${baseUrl}/profiles`, { signal: AbortSignal.timeout(5000) })
+  if (profilesRes.ok) {
+    const data = await profilesRes.json() as { profiles: Array<{ name: string }> }
+    profileName = data.profiles[0]?.name
+  }
+} catch { /* ignore */ }
+
+const statusUrl = profileName ? `${baseUrl}/?profile=${encodeURIComponent(profileName)}` : `${baseUrl}/`
+
 const reachable = await run('GET / (control server status)', async () => {
-  const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(5000) })
+  const res = await fetch(statusUrl, { signal: AbortSignal.timeout(5000) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 })
@@ -83,13 +96,13 @@ if (cdpUrl) {
 // 3. Status check via browser tool
 info('Step 3: browser status')
 await run('action=status', () =>
-  executeBrowserAction({ action: 'status' }, baseUrl).then(r => JSON.parse(r.content[0].text!))
+  executeBrowserAction({ action: 'status' }, baseUrl, profileName).then(r => JSON.parse(r.content[0].text!))
 )
 
 // 4. Start browser
 info('Step 4: start browser')
 const startResult = await run('action=start', () =>
-  executeBrowserAction({ action: 'start' }, baseUrl).then(r => JSON.parse(r.content[0].text!))
+  executeBrowserAction({ action: 'start' }, baseUrl, profileName).then(r => JSON.parse(r.content[0].text!))
 )
 
 if (!startResult) {
@@ -97,14 +110,17 @@ if (!startResult) {
   process.exit(1)
 }
 
+// Derive CDP port from the status response
+const cdpPort = (reachable as Record<string, unknown>)?.cdpPort as number | undefined
+const cdpBase = cdpPort ? `http://localhost:${cdpPort}` : 'http://localhost:9222'
+
 // 4b. Check WebSocket debugger URL reachability
-info('Step 4b: Check CDP WebSocket URL from /json/version')
-const cdpStatus = await run('GET http://localhost:9222/json/version (WebSocket URL check)', async () => {
-  const res = await fetch('http://localhost:9222/json/version', { signal: AbortSignal.timeout(5000) })
+info(`Step 4b: Check CDP WebSocket URL from ${cdpBase}/json/version`)
+const cdpStatus = await run(`GET ${cdpBase}/json/version (WebSocket URL check)`, async () => {
+  const res = await fetch(`${cdpBase}/json/version`, { signal: AbortSignal.timeout(5000) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const json = await res.json() as { webSocketDebuggerUrl?: string }
   const wsUrl = json.webSocketDebuggerUrl ?? ''
-  // Check if ws URL uses localhost — Playwright will try to connect to this
   if (wsUrl.includes('localhost') || wsUrl.includes('127.0.0.1')) {
     return { wsUrl, warning: 'WebSocket URL uses localhost — Playwright should be able to connect' }
   }
@@ -112,9 +128,9 @@ const cdpStatus = await run('GET http://localhost:9222/json/version (WebSocket U
 }).catch(() => null)
 
 // 4c. Check tabs directly
-info('Step 4c: list CDP tabs directly')
-await run('GET http://localhost:9222/json', async () => {
-  const res = await fetch('http://localhost:9222/json', { signal: AbortSignal.timeout(5000) })
+info(`Step 4c: list CDP tabs directly`)
+await run(`GET ${cdpBase}/json`, async () => {
+  const res = await fetch(`${cdpBase}/json`, { signal: AbortSignal.timeout(5000) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 })
@@ -122,43 +138,24 @@ await run('GET http://localhost:9222/json', async () => {
 // 4d. Check tabs via control server
 info('Step 4d: list tabs via control server')
 await run('action=tabs', () =>
-  executeBrowserAction({ action: 'tabs' }, baseUrl).then(r => JSON.parse(r.content[0].text!))
+  executeBrowserAction({ action: 'tabs' }, baseUrl, profileName).then(r => JSON.parse(r.content[0].text!))
 )
 
 // 4e. Test Playwright connectOverCDP directly
-info('Step 4e: Test Playwright connectOverCDP directly')
-await run('playwright.connectOverCDP(http://localhost:9222)', async () => {
+info(`Step 4e: Test Playwright connectOverCDP directly`)
+await run(`playwright.connectOverCDP(${cdpBase})`, async () => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.connectOverCDP('http://localhost:9222', { timeout: 5000 })
+  const browser = await chromium.connectOverCDP(cdpBase, { timeout: 5000 })
   const contexts = browser.contexts()
   const pages = contexts.flatMap(c => c.pages())
   await browser.close()
   return { contexts: contexts.length, pages: pages.length }
 })
 
-// 4f. Test raw WebSocket connect with Origin header
-info('Step 4f: Test raw WebSocket with Origin header')
-await run('WebSocket ws://localhost:9222 with Origin: http://localhost', async () => {
-  const wsUrlRes = await fetch('http://localhost:9222/json/version', { signal: AbortSignal.timeout(3000) })
-  const wsJson = await wsUrlRes.json() as { webSocketDebuggerUrl: string }
-  const wsUrl = wsJson.webSocketDebuggerUrl
-
-  return await new Promise<unknown>((resolve, reject) => {
-    const WebSocket = require('ws')
-    const ws = new WebSocket(wsUrl, {
-      headers: { 'Origin': 'http://localhost' },
-      handshakeTimeout: 4000,
-    })
-    const t = setTimeout(() => { ws.terminate(); reject(new Error('timeout')) }, 4500)
-    ws.once('open', () => { clearTimeout(t); ws.close(); resolve({ connected: true, wsUrl }) })
-    ws.once('error', (err: Error) => { clearTimeout(t); reject(err) })
-  })
-})
-
 // 5. Navigate
 info('Step 5: navigate to https://example.com')
 const navResult = await run('action=navigate url=https://example.com', () =>
-  executeBrowserAction({ action: 'navigate', targetUrl: 'https://example.com' }, baseUrl)
+  executeBrowserAction({ action: 'navigate', targetUrl: 'https://example.com' }, baseUrl, profileName)
     .then(r => JSON.parse(r.content[0].text!))
 )
 
@@ -170,7 +167,7 @@ if (!navResult) {
 // 6. Snapshot
 info('Step 6: snapshot')
 await run('action=snapshot', async () => {
-  const r = await executeBrowserAction({ action: 'snapshot', snapshotFormat: 'aria' }, baseUrl)
+  const r = await executeBrowserAction({ action: 'snapshot', snapshotFormat: 'aria' }, baseUrl, profileName)
   const text = r.content[0].text ?? ''
   return text.slice(0, 200) + (text.length > 200 ? '...' : '')
 })
@@ -178,7 +175,7 @@ await run('action=snapshot', async () => {
 // 7. Screenshot
 info('Step 7: screenshot')
 await run('action=screenshot', async () => {
-  const r = await executeBrowserAction({ action: 'screenshot', type: 'png' }, baseUrl)
+  const r = await executeBrowserAction({ action: 'screenshot', type: 'png' }, baseUrl, profileName)
   const img = r.content.find(c => c.type === 'image')
   return img ? `image captured (${Math.round((img.data?.length ?? 0) * 0.75 / 1024)}kb)` : r.content[0].text
 })

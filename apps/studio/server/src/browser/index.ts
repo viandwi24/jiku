@@ -1,6 +1,6 @@
 import type { BrowserProjectConfig } from '@jiku-studio/db'
 import { startBrowserControlServer, stopBrowserControlServer } from './browser/server.js'
-import { resolveRemoteBrowserConfig } from './config.js'
+import { resolveProjectBrowserConfig, resolveBaseServerConfig } from './config.js'
 import { env } from '../env.ts'
 
 export type BrowserServerHandle = {
@@ -10,7 +10,6 @@ export type BrowserServerHandle = {
 
 // The browser control server is a global singleton — one Node child process per app process.
 // All projects share the same server; each project gets an isolated profile via ?profile=<projectId>.
-// Only remote mode is supported (local/managed mode would conflict across projects).
 
 let sharedHandle: BrowserServerHandle | null = null
 const registeredProfiles = new Set<string>()
@@ -22,7 +21,7 @@ async function ensureSharedServer(): Promise<BrowserServerHandle> {
     throw new Error('[browser] Browser control server is disabled (BROWSER_CONTROL_SERVER_ENABLED=false)')
   }
 
-  const resolved = resolveRemoteBrowserConfig()
+  const resolved = resolveBaseServerConfig()
   const state = await startBrowserControlServer(resolved)
 
   if (!state) {
@@ -38,31 +37,32 @@ async function ensureSharedServer(): Promise<BrowserServerHandle> {
 }
 
 /**
- * Register a project as a remote profile on the shared browser control server.
- * Only supports remote mode — if the config is not remote, returns null.
+ * Start browser tools for a project.
+ *
+ * - remote mode: registers project as a named profile on the shared server via HTTP
+ * - managed mode: passes the full config (with profile) when starting the server,
+ *   or registers the profile via HTTP if server is already running
  */
 export async function startBrowserServer(
   projectId: string,
   config: BrowserProjectConfig,
 ): Promise<BrowserServerHandle> {
-  if (config.mode !== 'remote' || !config.cdp_url) {
-    throw new Error(
-      `[browser] Project ${projectId} browser config is not remote — only remote mode is supported`,
-    )
-  }
-
   const handle = await ensureSharedServer()
 
-  // Register this project as a named profile if not already done
   if (!registeredProfiles.has(projectId)) {
+    const projectConfig = resolveProjectBrowserConfig(config, projectId)
+    const profile = projectConfig.profiles[projectId] as Record<string, unknown>
+
     const res = await fetch(`${handle.baseUrl}/profiles/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: projectId, cdpUrl: config.cdp_url }),
+      body: JSON.stringify({
+        name: projectId,
+        cdpUrl: (profile['cdpUrl'] as string | undefined) ?? undefined,
+      }),
     })
 
     if (!res.ok && res.status !== 409) {
-      // 409 = already exists, which is fine
       const body = await res.text().catch(() => '')
       throw new Error(`[browser] Failed to register profile for project ${projectId}: ${body}`)
     }
@@ -75,7 +75,6 @@ export async function startBrowserServer(
 
 export async function stopBrowserServer(_projectId: string): Promise<void> {
   // Individual projects cannot stop the shared server.
-  // The server is stopped only when all projects are shut down.
 }
 
 export async function stopAllBrowserServers(): Promise<void> {

@@ -89,7 +89,13 @@ export class JikuRuntimeManager {
         browserTools = buildBrowserTools(handle.baseUrl, projectId)
         console.log(`[browser] Project ${projectId} browser server started on port ${handle.port}`)
       } catch (err) {
-        console.warn(`[browser] Failed to start browser server for project ${projectId}:`, err)
+        const msg = err instanceof Error ? err.message : String(err)
+        const isDisabled = msg.includes('BROWSER_CONTROL_SERVER_ENABLED')
+        if (isDisabled) {
+          console.log(`[browser] Skipping browser tools for project ${projectId} (server disabled)`)
+        } else {
+          console.warn(`[browser] Failed to start browser server for project ${projectId}:`, err)
+        }
       }
     }
 

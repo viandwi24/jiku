@@ -20,7 +20,7 @@ COPY plugins/jiku.cron/package.json ./plugins/jiku.cron/
 COPY plugins/jiku.skills/package.json ./plugins/jiku.skills/
 COPY plugins/jiku.social/package.json ./plugins/jiku.social/
 COPY plugins/jiku.telegram/package.json ./plugins/jiku.telegram/
-RUN bun install --frozen-lockfile
+RUN bun install
 
 # ─── Build web (Next.js) ─────────────────────────────────────────────────
 FROM deps AS web-builder

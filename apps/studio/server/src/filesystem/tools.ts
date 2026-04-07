@@ -7,6 +7,12 @@ import { getFilesystemService } from './service.ts'
  * Returns empty array if filesystem is not enabled/configured.
  * Called from RuntimeManager.wakeUp() after checking filesystem config.
  */
+const FS_HINT =
+  'Use filesystem tools ONLY when the user explicitly asks to create, read, or manage a file, ' +
+  'or when the task inherently involves persisting data to disk (e.g. generating a report file, ' +
+  'saving a document). For all other requests, respond directly in the conversation — do NOT save ' +
+  'output to a file unless the user specifically wants one.'
+
 export function buildFilesystemTools(projectId: string): ToolDefinition[] {
   const tools: ToolDefinition[] = [
     {
@@ -16,6 +22,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: 'List files and folders at a given path in the project filesystem',
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:read',
       modes: ['chat', 'task'],
       input: z.object({
@@ -41,6 +48,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: 'Read the content of a file from the project filesystem',
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:read',
       modes: ['chat', 'task'],
       input: z.object({
@@ -66,6 +74,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: "Write content to a file in the project filesystem. Creates the file if it doesn't exist, overwrites if it does.",
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:write',
       modes: ['chat', 'task'],
       input: z.object({
@@ -92,6 +101,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: 'Move or rename a file in the project filesystem',
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:write',
       modes: ['chat', 'task'],
       input: z.object({
@@ -118,6 +128,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: 'Delete a file from the project filesystem',
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:write',
       modes: ['chat', 'task'],
       input: z.object({
@@ -143,6 +154,7 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         description: 'Search files by name or path pattern in the project filesystem',
         group: 'filesystem',
       },
+      prompt: FS_HINT,
       permission: 'fs:read',
       modes: ['chat', 'task'],
       input: z.object({

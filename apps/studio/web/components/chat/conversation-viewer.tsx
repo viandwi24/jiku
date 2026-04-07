@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
@@ -16,13 +16,44 @@ import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai
 import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from '@jiku/ui/components/ai-elements/attachments.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
-import { ArrowDown, ArrowUp, Bot, Paperclip } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip } from 'lucide-react'
 import { ImageGallery, ImageGalleryTrigger } from '@/components/ui/image-gallery'
 import type { GalleryImage } from '@/components/ui/image-gallery'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
 import { ContextBar } from './context-bar'
 import { CompactionIndicator } from './compaction-indicator'
 import { MemoryPreviewSheet } from './memory-preview-sheet'
+
+function useCopyText() {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const copy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+
+  return { copied, copy }
+}
+
+function CopyButton({ text, className }: { text: string; className?: string }) {
+  const { copied, copy } = useCopyText()
+  return (
+    <button
+      type="button"
+      onClick={() => copy(text)}
+      title="Copy"
+      className={`flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors ${className ?? ''}`}
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  )
+}
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 const API_BASE = API_URL
@@ -415,16 +446,24 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
             />
           ))}
 
-          {displayMessages.map(msg => (
-            <Message key={msg.id} from={msg.role}>
-              {/* <div>
-                {JSON.stringify(msg)}
-              </div> */}
-              <MessageContent>
-                <MessageParts msg={msg} />
-              </MessageContent>
-            </Message>
-          ))}
+          {displayMessages.map(msg => {
+            const textContent = msg.parts
+              .filter(p => p.type === 'text')
+              .map(p => (p as { type: 'text'; text: string }).text)
+              .join('\n\n')
+            return (
+              <Message key={msg.id} from={msg.role}>
+                <MessageContent>
+                  <MessageParts msg={msg} />
+                </MessageContent>
+                {textContent && (
+                  <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                    <CopyButton text={textContent} />
+                  </div>
+                )}
+              </Message>
+            )
+          })}
 
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">

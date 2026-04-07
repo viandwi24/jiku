@@ -15,6 +15,24 @@ export function buildMemoryTools(
   storage: StudioStorageAdapter,
   runtimeId: string,
 ) {
+  const MEMORY_SAVE_HINT = [
+    'MEMORY SAVING GUIDELINES — follow strictly:',
+    '',
+    'SAVE to memory: user preferences, communication style, recurring workflows, long-term goals,',
+    '  standing instructions, agent persona traits, and patterns that will genuinely recur across sessions.',
+    '',
+    'DO NOT SAVE: content that was only provided as source material for the current task (e.g. news articles,',
+    '  financial reports, documents, data the user pasted in to process). The facts inside that content are',
+    '  ephemeral — they exist only to fulfil the current request and must NOT be stored as memories.',
+    '  Ask yourself: "Will this still matter in a future, unrelated conversation?" If no, do not save it.',
+    '',
+    'Examples:',
+    '  ✓ Save → "User prefers captions written in formal Indonesian"',
+    '  ✓ Save → "User usually needs both caption and voice-over for each news item"',
+    '  ✗ Do NOT save → "Iran rejected ceasefire and demands permanent end to war" (news fact, not a preference)',
+    '  ✗ Do NOT save → "Q1 2026 APBN deficit reached Rp240.1 trillion" (report data, not a preference)',
+  ].join('\n')
+
   const tools: ReturnType<typeof defineTool>[] = [
 
     // ── Always-available tools ─────────────────────────────────────
@@ -26,6 +44,7 @@ export function buildMemoryTools(
         description: 'Save an important fact to core memory. Always available in future conversations.',
         group: 'memory',
       },
+      prompt: MEMORY_SAVE_HINT,
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
@@ -98,6 +117,7 @@ export function buildMemoryTools(
         description: 'Save a fact to extended memory. Retrieved based on relevance, not always present.',
         group: 'memory',
       },
+      prompt: MEMORY_SAVE_HINT,
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({

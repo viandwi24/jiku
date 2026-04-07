@@ -61,13 +61,13 @@ router.post('/projects/:pid/skills', requirePermission('agents:write'), async (r
     slug,
     description: body.description ?? null,
     tags: body.tags ?? [],
-    entrypoint: body.entrypoint ?? 'index.md',
+    entrypoint: body.entrypoint ?? 'SKILL.md',
   })
 
   // Seed the entrypoint file in the filesystem so the skill has a starting point
   const fs = await getFilesystemService(projectId)
   if (fs) {
-    const initialContent = `# ${skill.name}\n\n${skill.description ? `${skill.description}\n\n` : ''}<!-- Add your skill instructions here -->\n`
+    const initialContent = `---\nname: ${skill.name}\ndescription: fill this with skill description\n---\n`
     await fs.write(skillFsPath(slug, skill.entrypoint), initialContent).catch(() => {
       // Non-fatal: filesystem may not be configured yet
     })

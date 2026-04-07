@@ -241,8 +241,9 @@ function SkillFileEditor({
         </Button>
       </div>
 
-      {/* FileExplorer scoped to /skills/{slug}/ */}
+      {/* FileExplorer scoped to /skills/{slug}/ — key resets all state when skill changes */}
       <FileExplorer
+        key={skill.id}
         projectId={projectId}
         rootPath={`/skills/${skill.slug}`}
         hideUpload

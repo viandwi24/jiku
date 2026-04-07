@@ -103,17 +103,17 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
     expose:
-      - "${SERVER_PORT:-3001}"   # server (Express/Bun)
-      - "3000"                   # web (Next.js)
+      - "3001"   # server (Express/Bun)
+      - "3000"   # web (Next.js)
     networks:
       - dokploy-network
     labels:
       - "traefik.enable=true"
       # Server API
-      - "traefik.http.routers.jiku-api.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.jiku-api.rule=Host(`${API_DOMAIN}`)"
       - "traefik.http.routers.jiku-api.entrypoints=websecure"
       - "traefik.http.routers.jiku-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.jiku-api.loadbalancer.server.port=${SERVER_PORT:-3001}"
+      - "traefik.http.services.jiku-api.loadbalancer.server.port=3001"
       # Web UI
       - "traefik.http.routers.jiku-web.rule=Host(`${WEB_DOMAIN}`)"
       - "traefik.http.routers.jiku-web.entrypoints=websecure"

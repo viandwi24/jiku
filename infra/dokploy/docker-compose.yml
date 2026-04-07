@@ -98,8 +98,10 @@ services:
       # Server
       PORT: ${SERVER_PORT:-3001}
       JWT_SECRET: ${JWT_SECRET}
-      # Web (Next.js)
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     expose:
       - "${SERVER_PORT:-3001}"   # server (Express/Bun)
       - "3000"                   # web (Next.js)

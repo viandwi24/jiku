@@ -101,8 +101,21 @@ async function bootstrap() {
   await seedPluginRegistry(sharedLoader)
   runtimeManager.setPluginLoader(sharedLoader)
 
-  const projects = await getAllProjects()
-  await Promise.all(projects.map(p => runtimeManager.wakeUp(p.id)))
+  let projects: Awaited<ReturnType<typeof getAllProjects>> = []
+  try {
+    projects = await getAllProjects()
+    console.log(`[jiku] Found ${projects.length} project(s)`)
+  } catch (err) {
+    console.error('[jiku] Failed to load projects (is the DB migrated?):', err)
+    process.exit(1)
+  }
+
+  try {
+    await Promise.all(projects.map(p => runtimeManager.wakeUp(p.id)))
+  } catch (err) {
+    console.error('[jiku] Failed to wake up project runtimes:', err)
+    process.exit(1)
+  }
   console.log(`[jiku] Booted ${projects.length} project runtimes`)
 
   app.listen(env.PORT, () => {

@@ -22,7 +22,9 @@ export function buildBrowserTools(serverBaseUrl: string, projectId: string): Too
       modes: ['chat', 'task'],
       input: BrowserToolInputSchema,
       execute: async (args) => {
-        return executeBrowserAction(args as import('./tool-schema.js').BrowserToolInput, serverBaseUrl, projectId)
+        // Strip profile from AI input — profile is always the owning projectId, never AI-controlled
+        const { profile: _ignored, ...safeArgs } = args as import('./tool-schema.js').BrowserToolInput & { profile?: string }
+        return executeBrowserAction(safeArgs as import('./tool-schema.js').BrowserToolInput, serverBaseUrl, projectId)
       },
     },
   ]

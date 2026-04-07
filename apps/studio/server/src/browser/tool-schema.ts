@@ -28,7 +28,6 @@ export const BrowserToolInputSchema = z.object({
     'close', 'snapshot', 'screenshot', 'navigate', 'console',
     'pdf', 'upload', 'dialog', 'act',
   ]),
-  profile: z.string().optional(),
   targetUrl: z.string().optional(),
   targetId: z.string().optional(),
   limit: z.number().optional(),

@@ -29,7 +29,7 @@ import { connectorRegistry } from './connectors/registry.ts'
 import { PluginLoader } from '@jiku/core'
 import ConnectorPlugin from '@jiku/plugin-connector'
 import TelegramPlugin from '@jiku/plugin-telegram'
-import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
+import { checkDbConnection, runMigrations, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
 
 const app = express()
@@ -86,6 +86,7 @@ process.on('uncaughtException', (err) => {
 
 async function bootstrap() {
   await checkDbConnection()
+  await runMigrations()
   await seedPermissions()
 
   const sharedLoader = new PluginLoader()

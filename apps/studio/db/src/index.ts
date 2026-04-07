@@ -1,4 +1,4 @@
-export { db, checkDbConnection } from './client.ts'
+export { db, checkDbConnection, runMigrations } from './client.ts'
 export type { DbClient } from './client.ts'
 export * from './schema/index.ts'
 export * from './queries/auth.ts'

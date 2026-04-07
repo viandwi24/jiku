@@ -1,0 +1,1 @@
+DROP TABLE "project_skill_files" CASCADE;

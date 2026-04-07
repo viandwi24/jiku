@@ -79,7 +79,13 @@ export class JikuRuntimeManager {
     const browserCfg = await getProjectBrowserConfig(projectId)
     if (browserCfg.enabled) {
       try {
-        const handle = await startBrowserServer(projectId, browserCfg.config)
+        const timeoutMs = 10_000
+        const handle = await Promise.race([
+          startBrowserServer(projectId, browserCfg.config),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Browser server start timed out after ${timeoutMs}ms`)), timeoutMs)
+          ),
+        ])
         browserTools = buildBrowserTools(handle.baseUrl, projectId)
         console.log(`[browser] Project ${projectId} browser server started on port ${handle.port}`)
       } catch (err) {

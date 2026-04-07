@@ -47,8 +47,7 @@ services:
       # RustFS console routed via Traefik (optional — configure domain via Dokploy UI instead)
       - "traefik.enable=true"
       - "traefik.http.routers.rustfs-console.rule=Host(`${RUSTFS_CONSOLE_DOMAIN}`)"
-      - "traefik.http.routers.rustfs-console.entrypoints=websecure"
-      - "traefik.http.routers.rustfs-console.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rustfs-console.entrypoints=web"
       - "traefik.http.services.rustfs-console.loadbalancer.server.port=9001"
 
   # ─────────────────────────────────────────────
@@ -63,14 +62,18 @@ services:
       - PGID=1000
       - TZ=${TZ:-Etc/UTC}
     expose:
-      - "3000"  # noVNC
-      - "3001"  # noVNC alt
-      - "9222"  # CDP (direct)
-      - "9223"  # CDP proxy (injected origin)
+      - "3000"  # noVNC web UI
+      - "9222"  # CDP (direct, internal only)
+      - "9223"  # CDP proxy — app connect via http://browser:9223
     volumes:
       - browser_init:/custom-cont-init.d
     networks:
       - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jiku-browser.rule=Host(`${BROWSER_DOMAIN}`)"
+      - "traefik.http.routers.jiku-browser.entrypoints=web"
+      - "traefik.http.services.jiku-browser.loadbalancer.server.port=3000"
 
   # ─────────────────────────────────────────────
   # App — server (Bun) + web (Next.js) via supervisord
@@ -96,12 +99,12 @@ services:
       # Browser CDP
       BROWSER_CDP_URL: http://browser:9223
       # Server
-      PORT: ${SERVER_PORT:-3100}
+      PORT: ${SERVER_PORT:-3001}
       JWT_SECRET: ${JWT_SECRET}
       # Web (Next.js)
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     expose:
-      - "${SERVER_PORT:-3100}"   # server (Express/Bun)
+      - "${SERVER_PORT:-3001}"   # server (Express/Bun)
       - "3000"                   # web (Next.js)
     networks:
       - dokploy-network
@@ -111,7 +114,7 @@ services:
       - "traefik.http.routers.jiku-api.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/api`)"
       - "traefik.http.routers.jiku-api.entrypoints=websecure"
       - "traefik.http.routers.jiku-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.jiku-api.loadbalancer.server.port=${SERVER_PORT:-3100}"
+      - "traefik.http.services.jiku-api.loadbalancer.server.port=${SERVER_PORT:-3001}"
       # Web UI
       - "traefik.http.routers.jiku-web.rule=Host(`${WEB_DOMAIN}`)"
       - "traefik.http.routers.jiku-web.entrypoints=websecure"

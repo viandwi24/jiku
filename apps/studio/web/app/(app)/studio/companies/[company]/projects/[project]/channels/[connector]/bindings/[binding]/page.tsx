@@ -19,6 +19,7 @@ import {
   Separator,
   Switch,
 } from '@jiku/ui'
+import { Input } from '@jiku/ui'
 import { ArrowLeft, CheckCircle2, XCircle, Clock, User } from 'lucide-react'
 import Link from 'next/link'
 
@@ -144,6 +145,37 @@ export default function BindingDetailPage({ params }: PageProps) {
                   <SelectItem value="keyword">Keyword</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Routing (Plan 15.5) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Routing</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Priority</p>
+              <p className="text-[10px] text-muted-foreground">Higher number = higher priority. Default 0.</p>
+              <Input
+                type="number"
+                className="h-8 text-xs w-24"
+                value={binding.priority ?? 0}
+                onChange={e => updateBindingMutation.mutate({ priority: parseInt(e.target.value) || 0 })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Trigger Regex</p>
+              <p className="text-[10px] text-muted-foreground">Optional regex matched against message text.</p>
+              <Input
+                className="h-8 text-xs"
+                value={binding.trigger_regex ?? ''}
+                placeholder="e.g. ^(help|support).*"
+                onChange={e => updateBindingMutation.mutate({ trigger_regex: e.target.value || null })}
+              />
             </div>
           </div>
         </CardContent>

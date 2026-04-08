@@ -17,6 +17,10 @@ export const connectors = pgTable('connectors', {
   display_name:   text('display_name').notNull(),
   credential_id:  uuid('credential_id').references(() => credentials.id, { onDelete: 'set null' }),
   config:         jsonb('config').notNull().default({}), // extra non-secret config (e.g. allowed_chat_ids)
+  /** Match mode: 'all' = execute all matching bindings, 'first' = first match wins (by priority). */
+  match_mode:     text('match_mode').notNull().default('all'),
+  /** Fallback agent when no binding matches. Null = no fallback (current behavior). */
+  default_agent_id: uuid('default_agent_id').references(() => agents.id, { onDelete: 'set null' }),
   status:         text('status').notNull().default('inactive'),
   error_message:  text('error_message'),
   created_at:     timestamp('created_at').notNull().defaultNow(),
@@ -48,6 +52,14 @@ export const connector_bindings = pgTable('connector_bindings', {
   output_adapter:       text('output_adapter').notNull().default('conversation'),
   // output_config: adapter-specific config (e.g. { agent_id, conversation_mode } for conversation)
   output_config:        jsonb('output_config').notNull().default({}),
+
+  // ── Routing (Plan 15.5) ───────────────────────────────────────────────────
+  /** Higher priority wins when multiple bindings match. Default 0. */
+  priority:             integer('priority').notNull().default(0),
+  /** Regex pattern matched against message text. Null = no regex check. */
+  trigger_regex:        text('trigger_regex'),
+  /** Schedule filter: only match during certain hours. JSON: AvailabilitySchedule shape. */
+  schedule_filter:      jsonb('schedule_filter'),
 
   // ── Security ─────────────────────────────────────────────────────────────
   rate_limit_rpm:       integer('rate_limit_rpm'),

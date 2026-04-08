@@ -36,13 +36,13 @@ function RawDataDialog({ log }: { log: UsageLog }) {
           <div className="flex-1 overflow-auto space-y-4 text-xs font-mono">
             <div>
               <p className="text-muted-foreground mb-1">System Prompt</p>
-              <pre className="bg-muted rounded p-3 whitespace-pre-wrap break-words">
+              <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word">
                 {log.raw_system_prompt ?? '(not captured)'}
               </pre>
             </div>
             <div>
               <p className="text-muted-foreground mb-1">Messages</p>
-              <pre className="bg-muted rounded p-3 whitespace-pre-wrap break-words">
+              <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word">
                 {log.raw_messages ? JSON.stringify(log.raw_messages, null, 2) : '(not captured)'}
               </pre>
             </div>

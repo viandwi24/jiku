@@ -1,34 +1,39 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ResolvedMemoryConfig } from '@/lib/api'
-import { Button, Label, Separator, Slider, Switch } from '@jiku/ui'
+import { Button, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch, cn } from '@jiku/ui'
 import { toast } from 'sonner'
+
+const EMBEDDING_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', models: [
+    { id: 'text-embedding-3-small', name: 'text-embedding-3-small (1536d, cheapest)', dimensions: 1536 },
+    { id: 'text-embedding-3-large', name: 'text-embedding-3-large (3072d)', dimensions: 3072 },
+  ]},
+  { id: 'openrouter', name: 'OpenRouter', models: [
+    { id: 'openai/text-embedding-3-small', name: 'text-embedding-3-small (1536d)', dimensions: 1536 },
+    { id: 'openai/text-embedding-3-large', name: 'text-embedding-3-large (3072d)', dimensions: 3072 },
+  ]},
+]
+
+const SUB_TABS = [
+  { id: 'policy', label: 'Policy' },
+  { id: 'scoring', label: 'Scoring' },
+  { id: 'core', label: 'Core' },
+  { id: 'semantic', label: 'Semantic Search' },
+] as const
+
+type SubTab = typeof SUB_TABS[number]['id']
 
 interface MemoryConfigProps {
   projectId: string
 }
 
-function SliderField({
-  label,
-  description,
-  value,
-  onChange,
-  min,
-  max,
-  step,
-  format,
-}: {
-  label: string
-  description?: string
-  value: number
-  onChange: (v: number) => void
-  min: number
-  max: number
-  step: number
-  format?: (v: number) => string
+function SliderField({ label, description, value, onChange, min, max, step, format }: {
+  label: string; description?: string; value: number; onChange: (v: number) => void
+  min: number; max: number; step: number; format?: (v: number) => string
 }) {
   return (
     <div className="space-y-2">
@@ -37,14 +42,7 @@ function SliderField({
         <span className="text-sm tabular-nums font-medium">{format ? format(value) : value}</span>
       </div>
       {description && <p className="text-xs text-muted-foreground">{description}</p>}
-      <Slider
-        value={[value]}
-        onValueChange={([v]) => onChange(v ?? value)}
-        min={min}
-        max={max}
-        step={step}
-        className="w-full"
-      />
+      <Slider value={[value]} onValueChange={([v]) => onChange(v ?? value)} min={min} max={max} step={step} className="w-full" />
       <div className="flex justify-between text-xs text-muted-foreground">
         <span>{format ? format(min) : min}</span>
         <span>{format ? format(max) : max}</span>
@@ -55,6 +53,7 @@ function SliderField({
 
 export function MemoryConfig({ projectId }: MemoryConfigProps) {
   const qc = useQueryClient()
+  const [activeTab, setActiveTab] = useState<SubTab>('policy')
 
   const { data: configData, isLoading } = useQuery({
     queryKey: ['project-memory-config', projectId],
@@ -63,18 +62,18 @@ export function MemoryConfig({ projectId }: MemoryConfigProps) {
   })
 
   const [cfg, setCfg] = useState<ResolvedMemoryConfig | null>(null)
-  const [initialized, setInitialized] = useState(false)
 
-  if (configData?.config && !initialized) {
-    setCfg(configData.config)
-    setInitialized(true)
-  }
+  // Sync local state from server data — re-syncs after save + refetch
+  useEffect(() => {
+    if (configData?.config) {
+      setCfg(configData.config)
+    }
+  }, [configData])
 
   const saveMutation = useMutation({
     mutationFn: () => api.memoryConfig.updateProject(projectId, cfg!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project-memory-config', projectId] })
-      setInitialized(false)
       toast.success('Memory config saved')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save'),
@@ -88,186 +87,331 @@ export function MemoryConfig({ projectId }: MemoryConfigProps) {
     setCfg(prev => prev ? updater(prev) : prev)
   }
 
+  const embeddingDefaults = { enabled: false, provider: '', model: '', credential_id: null as string | null, dimensions: 1536 }
+
+  const semanticEnabled = cfg.embedding?.enabled ?? false
+
   return (
-    <div className="px-6 py-4 max-w-xl space-y-8">
-      {/* Default Policy */}
-      <section className="space-y-4">
+    <div className="flex flex-col h-full">
+      {/* Methods overview */}
+      <div className="px-6 pt-4 pb-3 border-b space-y-3">
         <div>
-          <h2 className="text-sm font-semibold">Default Policy</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Applied to all agents that don't override these settings.</p>
+          <h2 className="text-sm font-semibold">Retrieval Methods</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Jiku uses multiple methods to find relevant memories. Each method contributes a weighted score.
+          </p>
         </div>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-4">
+        <div className="grid grid-cols-2 gap-2">
+          <MethodCard
+            name="Keyword Matching"
+            desc="Overlap kata antara input dan memory"
+            active={cfg.relevance.weights.keyword > 0}
+            weight={cfg.relevance.weights.keyword}
+            onToggle={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, keyword: v ? 0.25 : 0 } } }))}
+            onClick={() => setActiveTab('scoring')}
+          />
+          <MethodCard
+            name="Semantic Search"
+            desc="Kemiripan makna via vector embedding (Qdrant)"
+            active={semanticEnabled && (cfg.relevance.weights.semantic ?? 0) > 0}
+            weight={cfg.relevance.weights.semantic ?? 0}
+            onToggle={v => {
+              patchCfg(p => ({
+                ...p,
+                embedding: { ...(p.embedding ?? embeddingDefaults), enabled: v },
+                relevance: { ...p.relevance, weights: { ...p.relevance.weights, semantic: v ? 0.35 : 0 } },
+              }))
+              if (v) setActiveTab('semantic')
+            }}
+            onClick={() => setActiveTab('semantic')}
+          />
+          <MethodCard
+            name="Recency"
+            desc="Memory yang baru diakses lebih relevan"
+            active={cfg.relevance.weights.recency > 0}
+            weight={cfg.relevance.weights.recency}
+            onToggle={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, recency: v ? 0.25 : 0 } } }))}
+            onClick={() => setActiveTab('scoring')}
+          />
+          <MethodCard
+            name="Access Frequency"
+            desc="Memory yang sering dipakai lebih relevan"
+            active={cfg.relevance.weights.access > 0}
+            weight={cfg.relevance.weights.access}
+            onToggle={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, access: v ? 0.15 : 0 } } }))}
+            onClick={() => setActiveTab('scoring')}
+          />
+        </div>
+      </div>
+
+      {/* Sub-tab navigation */}
+      <div className="px-6 pt-3 pb-2 flex gap-1 border-b">
+        {SUB_TABS.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+              activeTab === tab.id
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60',
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div className="px-6 py-5 max-w-xl space-y-6 flex-1 overflow-auto">
+        {activeTab === 'policy' && (
+          <>
             <div>
-              <Label className="text-sm font-medium">Read project memory</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Agents can read runtime_global memories shared across all agents.</p>
+              <h2 className="text-sm font-semibold">Default Policy</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Applied to all agents that don't override these settings.</p>
             </div>
-            <Switch
-              checked={cfg.policy.read.runtime_global}
-              onCheckedChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, read: { ...p.policy.read, runtime_global: v } } }))}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-4">
+              <ToggleRow label="Read project memory" desc="Agents can read runtime_global memories shared across all agents."
+                checked={cfg.policy.read.runtime_global}
+                onChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, read: { ...p.policy.read, runtime_global: v } } }))} />
+              <ToggleRow label="Write project memory" desc="Agents can write to runtime_global memories visible to all agents."
+                checked={cfg.policy.write.runtime_global}
+                onChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, write: { ...p.policy.write, runtime_global: v } } }))} />
+              <ToggleRow label="Write agent-global memory" desc="Agents can write memories visible to all users of the same agent."
+                checked={cfg.policy.write.agent_global}
+                onChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, write: { ...p.policy.write, agent_global: v } } }))} />
+              <ToggleRow label="Cross-user read" desc="Agents can read agent_shared memories belonging to other users."
+                checked={cfg.policy.read.cross_user}
+                onChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, read: { ...p.policy.read, cross_user: v } } }))} />
+            </div>
+          </>
+        )}
+
+        {activeTab === 'scoring' && (
+          <>
             <div>
-              <Label className="text-sm font-medium">Write project memory</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Agents can write to runtime_global memories visible to all agents.</p>
+              <h2 className="text-sm font-semibold">Relevance Scoring</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Controls how extended memories are scored and selected for injection.</p>
             </div>
-            <Switch
-              checked={cfg.policy.write.runtime_global}
-              onCheckedChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, write: { ...p.policy.write, runtime_global: v } } }))}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-5">
+              <SliderField label="Max extended memories" description="Maximum number of relevance-scored memories injected per run."
+                value={cfg.relevance.max_extended} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, max_extended: v } }))}
+                min={1} max={20} step={1} />
+              <SliderField label="Min score threshold" description="Memories scoring below this are not injected."
+                value={cfg.relevance.min_score} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, min_score: v } }))}
+                min={0.01} max={0.5} step={0.01} format={v => v.toFixed(2)} />
+              <SliderField label="Keyword weight" description="Weight for keyword overlap between memory and current input."
+                value={cfg.relevance.weights.keyword} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, keyword: v } } }))}
+                min={0} max={1} step={0.05} format={v => v.toFixed(2)} />
+              <SliderField label="Recency weight" description="Weight for how recently the memory was accessed."
+                value={cfg.relevance.weights.recency} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, recency: v } } }))}
+                min={0} max={1} step={0.05} format={v => v.toFixed(2)} />
+              <SliderField label="Access frequency weight" description="Weight for how frequently the memory has been accessed."
+                value={cfg.relevance.weights.access} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, access: v } } }))}
+                min={0} max={1} step={0.05} format={v => v.toFixed(2)} />
+              <SliderField label="Recency half-life (days)" description="Days until recency score decays to 50%."
+                value={cfg.relevance.recency_half_life_days} onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, recency_half_life_days: v } }))}
+                min={7} max={180} step={7} format={v => `${v}d`} />
+            </div>
+          </>
+        )}
+
+        {activeTab === 'core' && (
+          <>
             <div>
-              <Label className="text-sm font-medium">Write agent-global memory</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Agents can write memories visible to all users of the same agent.</p>
+              <h2 className="text-sm font-semibold">Core Memory</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Core memories are always injected into the system prompt.</p>
             </div>
-            <Switch
-              checked={cfg.policy.write.agent_global}
-              onCheckedChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, write: { ...p.policy.write, agent_global: v } } }))}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-5">
+              <SliderField label="Max chars" description="Hard character limit for core memory content."
+                value={cfg.core.max_chars} onChange={v => patchCfg(p => ({ ...p, core: { ...p.core, max_chars: v } }))}
+                min={500} max={8000} step={500} format={v => `${v.toLocaleString()} chars`} />
+              <SliderField label="Token budget" description="Maximum tokens allocated to the entire memory section."
+                value={cfg.core.token_budget} onChange={v => patchCfg(p => ({ ...p, core: { ...p.core, token_budget: v } }))}
+                min={100} max={2000} step={100} format={v => `${v} tokens`} />
+            </div>
+          </>
+        )}
+
+        {activeTab === 'semantic' && (
+          <>
             <div>
-              <Label className="text-sm font-medium">Cross-user read</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Agents can read agent_shared memories belonging to other users.</p>
+              <h2 className="text-sm font-semibold">Semantic Search</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Use vector embeddings for meaning-based memory retrieval via Qdrant.
+              </p>
             </div>
-            <Switch
-              checked={cfg.policy.read.cross_user}
-              onCheckedChange={v => patchCfg(p => ({ ...p, policy: { ...p.policy, read: { ...p.policy.read, cross_user: v } } }))}
-            />
-          </div>
-        </div>
-      </section>
 
-      <Separator />
+            <ToggleRow label="Enable Semantic Search" desc="When enabled, memories are embedded and scored by semantic similarity."
+              checked={cfg.embedding?.enabled ?? false}
+              onChange={v => patchCfg(p => ({ ...p, embedding: { ...(p.embedding ?? embeddingDefaults), enabled: v } }))} />
 
-      {/* Relevance Scoring */}
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">Relevance Scoring</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Controls how extended memories are scored and selected for injection.</p>
-        </div>
-        <div className="space-y-5">
-          <SliderField
-            label="Max extended memories"
-            description="Maximum number of relevance-scored memories injected per run."
-            value={cfg.relevance.max_extended}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, max_extended: v } }))}
-            min={1} max={20} step={1}
-          />
-          <SliderField
-            label="Min score threshold"
-            description="Memories scoring below this are not injected."
-            value={cfg.relevance.min_score}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, min_score: v } }))}
-            min={0.01} max={0.5} step={0.01} format={v => v.toFixed(2)}
-          />
-          <SliderField
-            label="Keyword weight"
-            description="Weight for keyword overlap between memory and current input."
-            value={cfg.relevance.weights.keyword}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, keyword: v } } }))}
-            min={0} max={1} step={0.05} format={v => v.toFixed(2)}
-          />
-          <SliderField
-            label="Recency weight"
-            description="Weight for how recently the memory was accessed."
-            value={cfg.relevance.weights.recency}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, recency: v } } }))}
-            min={0} max={1} step={0.05} format={v => v.toFixed(2)}
-          />
-          <SliderField
-            label="Access frequency weight"
-            description="Weight for how frequently the memory has been accessed."
-            value={cfg.relevance.weights.access}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, access: v } } }))}
-            min={0} max={1} step={0.05} format={v => v.toFixed(2)}
-          />
-          <SliderField
-            label="Recency half-life (days)"
-            description="Days until recency score decays to 50%."
-            value={cfg.relevance.recency_half_life_days}
-            onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, recency_half_life_days: v } }))}
-            min={7} max={180} step={7} format={v => `${v}d`}
-          />
-        </div>
-      </section>
-
-      <Separator />
-
-      {/* Core Memory */}
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">Core Memory</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Core memories are always injected into the system prompt.</p>
-        </div>
-        <div className="space-y-5">
-          <SliderField
-            label="Max chars"
-            description="Hard character limit for core memory content."
-            value={cfg.core.max_chars}
-            onChange={v => patchCfg(p => ({ ...p, core: { ...p.core, max_chars: v } }))}
-            min={500} max={8000} step={500} format={v => `${v.toLocaleString()} chars`}
-          />
-          <SliderField
-            label="Token budget"
-            description="Maximum tokens allocated to the entire memory section."
-            value={cfg.core.token_budget}
-            onChange={v => patchCfg(p => ({ ...p, core: { ...p.core, token_budget: v } }))}
-            min={100} max={2000} step={100} format={v => `${v} tokens`}
-          />
-        </div>
-      </section>
-
-      <Separator />
-
-      {/* Extraction */}
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">Extraction</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Automatically extract and store facts after each conversation turn.</p>
-        </div>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label className="text-sm font-medium">Enabled</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Run a small LLM after each turn to extract memorable facts.</p>
-            </div>
-            <Switch
-              checked={cfg.extraction.enabled}
-              onCheckedChange={v => patchCfg(p => ({ ...p, extraction: { ...p.extraction, enabled: v } }))}
-            />
-          </div>
-          {cfg.extraction.enabled && (
-            <div className="space-y-1.5">
-              <Label className="text-sm font-medium">Target scope</Label>
-              <p className="text-xs text-muted-foreground">Which scope to extract facts into.</p>
-              <div className="flex gap-2 mt-1">
-                {(['agent_caller', 'agent_global', 'both'] as const).map(opt => (
-                  <button
-                    key={opt}
-                    onClick={() => patchCfg(p => ({ ...p, extraction: { ...p.extraction, target_scope: opt } }))}
-                    className={`px-3 py-1.5 text-xs rounded border transition-colors ${
-                      cfg.extraction.target_scope === opt
-                        ? 'bg-primary text-primary-foreground border-primary'
-                        : 'bg-background text-muted-foreground border-border hover:text-foreground'
-                    }`}
+            {cfg.embedding?.enabled && (
+              <div className="space-y-4 border rounded-lg p-4">
+                {/* Provider */}
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Embedding Provider</Label>
+                  <Select
+                    value={cfg.embedding.provider || ''}
+                    onValueChange={v => {
+                      const providerModels = EMBEDDING_PROVIDERS.find(p => p.id === v)?.models ?? []
+                      const firstModel = providerModels[0]
+                      patchCfg(p => ({ ...p, embedding: {
+                        ...(p.embedding ?? embeddingDefaults),
+                        provider: v,
+                        model: firstModel?.id ?? '',
+                        dimensions: firstModel?.dimensions ?? 1536,
+                      }}))
+                    }}
                   >
-                    {opt === 'agent_caller' ? 'user-scoped' : opt === 'agent_global' ? 'agent-global' : 'both'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+                    <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select provider..." /></SelectTrigger>
+                    <SelectContent>
+                      {EMBEDDING_PROVIDERS.map(p => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-      <div className="pt-2">
+                {/* Model */}
+                {cfg.embedding.provider && (
+                  <div className="space-y-1.5">
+                    <Label className="text-sm font-medium">Embedding Model</Label>
+                    <Select
+                      value={cfg.embedding.model || ''}
+                      onValueChange={v => {
+                        const allModels = EMBEDDING_PROVIDERS.flatMap(p => p.models)
+                        const model = allModels.find(m => m.id === v)
+                        patchCfg(p => ({ ...p, embedding: {
+                          ...(p.embedding ?? embeddingDefaults),
+                          model: v,
+                          dimensions: model?.dimensions ?? 1536,
+                        }}))
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select model..." /></SelectTrigger>
+                      <SelectContent>
+                        {(EMBEDDING_PROVIDERS.find(p => p.id === cfg.embedding?.provider)?.models ?? []).map(m => (
+                          <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {/* Credential */}
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Credential</Label>
+                  <p className="text-xs text-muted-foreground">Select the API credential for the embedding provider.</p>
+                  <EmbeddingCredentialPicker
+                    projectId={projectId}
+                    adapterId={cfg.embedding.provider}
+                    value={cfg.embedding.credential_id ?? null}
+                    onChange={v => patchCfg(p => ({ ...p, embedding: {
+                      ...(p.embedding ?? embeddingDefaults),
+                      credential_id: v,
+                    }}))}
+                  />
+                </div>
+
+                {/* Semantic weight */}
+                <SliderField label="Semantic weight" description="Weight for semantic similarity in memory scoring."
+                  value={cfg.relevance.weights.semantic ?? 0.35}
+                  onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, semantic: v } } }))}
+                  min={0} max={1} step={0.05} format={v => v.toFixed(2)} />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Save — always visible at bottom */}
+      <div className="px-6 py-3 border-t">
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !projectId}>
-          {saveMutation.isPending ? 'Saving...' : 'save'}
+          {saveMutation.isPending ? 'Saving...' : 'Save'}
         </Button>
       </div>
     </div>
+  )
+}
+
+function MethodCard({ name, desc, active, weight, onToggle, onClick }: {
+  name: string; desc: string; active: boolean; weight: number
+  onToggle: (enabled: boolean) => void; onClick?: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        'text-left rounded-lg border p-3 transition-colors',
+        active ? 'border-primary/40 bg-primary/5' : 'border-border/50 bg-muted/20',
+      )}
+    >
+      <div className="flex items-center justify-between mb-1">
+        <button onClick={onClick} className="text-xs font-semibold hover:underline cursor-pointer">
+          {name}
+        </button>
+        <div className="flex items-center gap-2">
+          <span className={cn(
+            'text-[10px] px-1.5 py-0.5 rounded font-medium',
+            active ? 'bg-green-500/10 text-green-600' : 'bg-muted text-muted-foreground',
+          )}>
+            {active ? `${(weight * 100).toFixed(0)}%` : 'off'}
+          </span>
+          <Switch
+            checked={active}
+            onCheckedChange={onToggle}
+            className="scale-75"
+          />
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground leading-snug">{desc}</p>
+    </div>
+  )
+}
+
+function ToggleRow({ label, desc, checked, onChange }: {
+  label: string; desc: string; checked: boolean; onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <Label className="text-sm font-medium">{label}</Label>
+        <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </div>
+  )
+}
+
+function EmbeddingCredentialPicker({ projectId, adapterId, value, onChange }: {
+  projectId: string; adapterId: string; value: string | null; onChange: (credId: string | null) => void
+}) {
+  const { data } = useQuery({
+    queryKey: ['credentials', projectId],
+    queryFn: () => api.credentials.listProject(projectId),
+    enabled: !!projectId,
+  })
+
+  const filtered = (data?.credentials ?? []).filter(c => c.adapter_id === adapterId)
+
+  if (!adapterId) return null
+
+  if (filtered.length === 0) {
+    return (
+      <p className="text-xs text-amber-600">
+        No {adapterId} credential found. Add one in Project Settings &rarr; Credentials.
+      </p>
+    )
+  }
+
+  return (
+    <Select value={value ?? ''} onValueChange={v => onChange(v || null)}>
+      <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select credential..." /></SelectTrigger>
+      <SelectContent>
+        {filtered.map(c => (
+          <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }

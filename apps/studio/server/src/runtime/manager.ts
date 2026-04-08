@@ -11,7 +11,7 @@ import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
 import { cronTaskScheduler } from '../cron/scheduler.ts'
 import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool } from '../cron/tools.ts'
-import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool } from '../task/tools.ts'
+import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
 import { buildBrowserTools } from '../browser/tool.js'
@@ -178,6 +178,29 @@ export class JikuRuntimeManager {
     // Resolve and cache shared tools (browser server is started here)
     const shared = await this.resolveSharedTools(projectId)
 
+    // Plan 15.6: Load and connect MCP servers, collect tools
+    let mcpTools: import('@jiku/types').ToolDefinition[] = []
+    try {
+      const { getMcpServersByProject } = await import('@jiku-studio/db')
+      const { mcpManager } = await import('../mcp/client.ts')
+      const servers = await getMcpServersByProject(projectId)
+      for (const server of servers.filter(s => s.enabled)) {
+        try {
+          await mcpManager.connect({
+            id: server.id,
+            name: server.name,
+            transport: server.transport as 'stdio' | 'sse' | 'streamable-http',
+            config: server.config as Record<string, unknown>,
+          })
+        } catch (err) {
+          console.warn(`[mcp] Failed to connect to ${server.name}:`, err)
+        }
+      }
+      mcpTools = mcpManager.getAllTools()
+    } catch {
+      // MCP not available — graceful fallback
+    }
+
     // Register all agents with their tools
     for (const a of agentRows) {
       const agentMemoryConfig = resolveMemoryConfig(
@@ -189,6 +212,7 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const agentReadHistoryTool = buildAgentReadHistoryTool(projectId)
       const listProjectMembersTool = buildListProjectMembersTool(projectId)
       const skillTools = buildSkillTools(a.id, projectId)
       const [skillSection, skillHint] = await Promise.all([
@@ -223,8 +247,10 @@ export class JikuRuntimeManager {
             ...shared.filesystemTools,
             ...skillTools,
             ...cronTools,
+            ...mcpTools,
             runTaskTool,
             listAgentsTool,
+            agentReadHistoryTool,
             listProjectMembersTool,
           ],
         }),
@@ -300,6 +326,13 @@ export class JikuRuntimeManager {
     const projectMemoryConfig = (projectRow?.memory_config as import('@jiku/types').ProjectMemoryConfig | null)
       ?? DEFAULT_PROJECT_MEMORY_CONFIG
 
+    // Plan 15.6: Reload MCP tools
+    let mcpTools: import('@jiku/types').ToolDefinition[] = []
+    try {
+      const { mcpManager } = await import('../mcp/client.ts')
+      mcpTools = mcpManager.getAllTools()
+    } catch { /* MCP not available */ }
+
     for (const a of agentRows) {
       const agentMemoryConfig = resolveMemoryConfig(
         projectMemoryConfig,
@@ -310,6 +343,7 @@ export class JikuRuntimeManager {
         user_id: 'system', roles: [], permissions: [], user_data: {},
       }), () => undefined)
       const listAgentsTool = buildListAgentsTool(projectId)
+      const agentReadHistoryTool = buildAgentReadHistoryTool(projectId)
       const listProjectMembersTool = buildListProjectMembersTool(projectId)
       const skillTools = buildSkillTools(a.id, projectId)
       const [skillSection, skillHint] = await Promise.all([
@@ -344,8 +378,10 @@ export class JikuRuntimeManager {
             ...shared.filesystemTools,
             ...skillTools,
             ...cronToolsSync,
+            ...mcpTools,
             runTaskTool,
             listAgentsTool,
+            agentReadHistoryTool,
             listProjectMembersTool,
           ],
         }),
@@ -388,6 +424,7 @@ export class JikuRuntimeManager {
       user_id: 'system', roles: [], permissions: [], user_data: {},
     }), () => undefined)
     const listAgentsTool = buildListAgentsTool(projectId)
+    const agentReadHistoryTool = buildAgentReadHistoryTool(projectId)
     const skillTools = buildSkillTools(agent.id, projectId)
     const [skillSection, skillHint] = await Promise.all([
       SkillService.buildAlwaysSkillSection(agent.id),
@@ -396,6 +433,13 @@ export class JikuRuntimeManager {
 
     // Include current shared tools so syncAgent doesn't strip them
     const shared = this.getSharedTools(projectId)
+
+    // Plan 15.6: Get current MCP tools
+    let mcpToolsAgent: import('@jiku/types').ToolDefinition[] = []
+    try {
+      const { mcpManager } = await import('../mcp/client.ts')
+      mcpToolsAgent = mcpManager.getAllTools()
+    } catch { /* MCP not available */ }
 
     const cronCallerCtxAgent = { callerId: null, callerRole: null, callerIsSuperadmin: false }
     const cronToolsAgent = (agent as Record<string, unknown>).cron_task_enabled
@@ -424,8 +468,10 @@ export class JikuRuntimeManager {
           ...shared.filesystemTools,
           ...skillTools,
           ...cronToolsAgent,
+          ...mcpToolsAgent,
           runTaskTool,
           listAgentsTool,
+          agentReadHistoryTool,
         ],
       }),
       agentMemoryConfig,
@@ -482,6 +528,38 @@ export class JikuRuntimeManager {
       throw new Error('No model configured for this agent. Assign a credential in Agent Settings.')
     }
 
+    // Plan 15.2: Query Qdrant for semantic scores (fire-and-forget on failure)
+    let semanticScores: Map<string, number> | undefined
+    if (params.input) {
+      try {
+        const { createEmbeddingService } = await import('../memory/embedding.ts')
+        const { vectorStore } = await import('../memory/qdrant.ts')
+        const embeddingService = await createEmbeddingService(projectId)
+        if (embeddingService) {
+          const [queryEmbedding] = await embeddingService.embed([params.input])
+          if (queryEmbedding) {
+            const results = await vectorStore.search(projectId, queryEmbedding, 20)
+            if (results.length > 0) {
+              semanticScores = new Map(results.map(r => [r.id, r.score]))
+            }
+          }
+        }
+      } catch {
+        // Graceful fallback: no semantic scores, keyword scoring only
+      }
+    }
+
+    // Plan 15.6: Load tool on/off states for this agent
+    let toolStates = params.tool_states
+    if (!toolStates) {
+      try {
+        const { getToolStates } = await import('@jiku-studio/db')
+        toolStates = await getToolStates(projectId, params.agent_id)
+      } catch {
+        // Graceful fallback: if tool states unavailable, all tools enabled
+      }
+    }
+
     const cacheKey = `${params.agent_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     this.modelCache.set(cacheKey, buildProvider(modelInfo))
 
@@ -489,6 +567,8 @@ export class JikuRuntimeManager {
       ...params,
       provider_id: DYNAMIC_PROVIDER_ID,
       model_id: cacheKey,
+      tool_states: toolStates,
+      semantic_scores: semanticScores,
     })
 
     const originalStream = result.stream

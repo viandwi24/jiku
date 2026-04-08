@@ -76,9 +76,9 @@ function MemoryRow({
       {/* Agent */}
       <td className="px-2 py-2 w-32">
         {agentName ? (
-          <span className="text-xs text-foreground truncate block max-w-[120px]">{agentName}</span>
+          <span className="text-xs text-foreground truncate block max-w-30">{agentName}</span>
         ) : memory.agent_id ? (
-          <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-[120px]">
+          <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-30">
             {memory.agent_id.slice(0, 8)}
           </span>
         ) : (
@@ -106,7 +106,7 @@ function MemoryRow({
       {/* Section */}
       <td className="px-2 py-2 w-24">
         {memory.section && (
-          <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-[90px]">
+          <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-22.5">
             {memory.section}
           </span>
         )}

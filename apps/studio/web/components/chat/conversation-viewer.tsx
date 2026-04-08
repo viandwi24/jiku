@@ -165,7 +165,7 @@ function MessageParts({ msg }: { msg: UIMessage }) {
               <img
                 src={img.src}
                 alt={img.alt ?? ''}
-                className="max-w-[200px] max-h-[160px] rounded-lg object-cover border border-white/10"
+                className="max-w-50 max-h-40 rounded-lg object-cover border border-white/10"
               />
             </ImageGalleryTrigger>
           ))}
@@ -254,7 +254,7 @@ function ConversationTitleEdit({ convId, title, agentName }: { convId: string; t
           if (e.key === 'Escape') { e.preventDefault(); cancel() }
         }}
         maxLength={50}
-        className="font-semibold text-sm bg-transparent border-b border-primary outline-none w-full max-w-[260px]"
+        className="font-semibold text-sm bg-transparent border-b border-primary outline-none w-full max-w-65"
         autoFocus
       />
     )
@@ -267,7 +267,7 @@ function ConversationTitleEdit({ convId, title, agentName }: { convId: string; t
       className="group flex items-center gap-1.5 text-left"
       title="Click to rename"
     >
-      <span className="font-semibold text-sm truncate max-w-[260px]">
+      <span className="font-semibold text-sm truncate max-w-65">
         {title ?? agentName}
       </span>
       <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity shrink-0" />
@@ -308,6 +308,14 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       }),
     }),
   })
+
+  // Sync messages when initialMessages changes (e.g. navigating back to same conversation)
+  // useChat only reads `messages` prop at mount — this effect handles post-mount updates
+  useEffect(() => {
+    if (initialMessages.length > 0 && messages.length === 0 && status === 'ready') {
+      setMessages(initialMessages)
+    }
+  }, [initialMessages, messages.length, status])
 
   const isStreaming = status === 'streaming' || status === 'submitted'
 

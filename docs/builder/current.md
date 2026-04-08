@@ -1,8 +1,12 @@
 ## Phase
-Idle — last session completed Cron Task System (full end-to-end implementation).
+Plan 15 — OpenClaw-Inspired Agentic Improvements. ALL 4 SPRINTS COMPLETE. 9/9 active features implemented.
 
 ## Currently Working On
-- Nothing active. Ready for next task.
+- Plan 15 FULLY IMPLEMENTED (backend + UI for all features with UI components)
+- Pending migrations: `0005`, `0006`, `0007` — run `bun run db:push`
+- Qdrant needs `docker compose up qdrant` to start
+- MCP SDK installed (`@modelcontextprotocol/sdk@1.29.0`)
+- Qdrant client installed (`@qdrant/js-client-rest@1.17.0`)
 
 ## Relevant Files (Most Recently Worked On)
 

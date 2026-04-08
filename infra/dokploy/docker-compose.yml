@@ -47,6 +47,20 @@ services:
 
 
   # ─────────────────────────────────────────────
+  # Qdrant (Vector DB for semantic memory)
+  # ─────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    restart: unless-stopped
+    expose:
+      - "6333"
+      - "6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - dokploy-network
+
+  # ─────────────────────────────────────────────
   # App — server (Bun) + web (Next.js) via supervisord
   # ─────────────────────────────────────────────
   app:
@@ -60,6 +74,8 @@ services:
       postgres:
         condition: service_healthy
       rustfs:
+        condition: service_started
+      qdrant:
         condition: service_started
     environment:
       # Database
@@ -76,6 +92,8 @@ services:
       CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
+      # Qdrant
+      QDRANT_URL: http://qdrant:6333
     expose:
       - "3001"   # server (Express/Bun)
       - "3000"   # web (Next.js)
@@ -97,6 +115,7 @@ services:
 volumes:
   postgres_data:
   rustfs_data:
+  qdrant_data:
 
 networks:
   dokploy-network:

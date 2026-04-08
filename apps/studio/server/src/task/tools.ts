@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { zodSchema, tool } from 'ai'
-import { getConversationById, updateConversation, getAgentsByProjectId, getAgentById, listProjectMembers } from '@jiku-studio/db'
+import { getConversationById, updateConversation, getAgentsByProjectId, getAgentById, listProjectMembers, getMessages, listConversationsByAgent } from '@jiku-studio/db'
 import { spawnTask } from './runner.ts'
 import type { ToolDefinition, CallerContext } from '@jiku/types'
 
@@ -71,16 +71,86 @@ export function buildListAgentsTool(projectId: string): ToolDefinition {
     },
     permission: '*',
     modes: ['chat', 'task'],
-    input: z.object({}),
-    execute: async () => {
-      const agents = await getAgentsByProjectId(projectId)
+    input: z.object({
+      mode: z.enum(['chat', 'task']).optional().describe('Filter by supported mode'),
+      search: z.string().optional().describe('Search in name/description'),
+    }),
+    execute: async (input: unknown) => {
+      const { mode, search } = (input ?? {}) as { mode?: string; search?: string }
+      let agents = await getAgentsByProjectId(projectId)
+
+      if (mode) {
+        agents = agents.filter(a => (a.allowed_modes as string[]).includes(mode))
+      }
+      if (search) {
+        const q = search.toLowerCase()
+        agents = agents.filter(a =>
+          a.name.toLowerCase().includes(q) ||
+          (a.description ?? '').toLowerCase().includes(q)
+        )
+      }
+
       return {
         agents: agents.map(a => ({
           id: a.id,
           name: a.name,
           slug: a.slug,
           description: a.description ?? null,
+          modes: a.allowed_modes,
         })),
+      }
+    },
+  }
+}
+
+/**
+ * Plan 15.4: Build the agent_read_history tool — read conversation history of another agent.
+ */
+export function buildAgentReadHistoryTool(projectId: string): ToolDefinition {
+  return {
+    meta: {
+      id: 'agent_read_history',
+      name: 'Read Agent History',
+      description: 'Read recent conversation history of another agent. Useful for reviewing what another agent has done.',
+      group: 'task',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({
+      agent_id: z.string().describe('Agent ID whose history to read'),
+      conversation_id: z.string().optional().describe('Specific conversation. If omitted, reads latest.'),
+      limit: z.number().int().min(1).max(20).default(5).describe('Number of recent messages to return'),
+    }),
+    execute: async (input: unknown) => {
+      const { agent_id, conversation_id, limit } = input as { agent_id: string; conversation_id?: string; limit: number }
+
+      let convId = conversation_id
+      if (!convId) {
+        // Get latest conversation for this agent
+        const conversations = await listConversationsByAgent(agent_id)
+        if (conversations.length === 0) {
+          return { messages: [], note: 'No conversations found for this agent.' }
+        }
+        convId = conversations[0]!.id
+      }
+
+      const messages = await getMessages(convId)
+      const recent = messages.slice(-limit)
+
+      // Return text parts only (strip tool internals for security)
+      return {
+        conversation_id: convId,
+        messages: recent.map(m => {
+          const parts = (m.parts ?? []) as Array<Record<string, unknown>>
+          const textParts = parts
+            .filter(p => p.type === 'text')
+            .map(p => p.text as string)
+          return {
+            role: m.role,
+            text: textParts.join('\n') || null,
+            created_at: m.created_at,
+          }
+        }),
       }
     },
   }
@@ -163,6 +233,8 @@ export function buildRunTaskTool(
         status: result.status,
         task_id: conversationId,
         output: result.output,
+        tool_results: result.tool_results,
+        message_count: result.message_count,
       }
     },
   }

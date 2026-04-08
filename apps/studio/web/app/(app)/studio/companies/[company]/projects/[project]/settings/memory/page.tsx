@@ -1,11 +1,22 @@
 'use client'
 
-import { use, useState } from 'react'
+import { use, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ResolvedMemoryConfig } from '@/lib/api'
-import { Button, Label, Separator, Slider, Switch } from '@jiku/ui'
+import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Slider, Switch } from '@jiku/ui'
 import { toast } from 'sonner'
+
+const EMBEDDING_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', models: [
+    { id: 'text-embedding-3-small', name: 'text-embedding-3-small (1536d, cheapest)', dimensions: 1536 },
+    { id: 'text-embedding-3-large', name: 'text-embedding-3-large (3072d)', dimensions: 3072 },
+  ]},
+  { id: 'openrouter', name: 'OpenRouter', models: [
+    { id: 'openai/text-embedding-3-small', name: 'text-embedding-3-small (1536d)', dimensions: 1536 },
+    { id: 'openai/text-embedding-3-large', name: 'text-embedding-3-large (3072d)', dimensions: 3072 },
+  ]},
+]
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -53,6 +64,40 @@ function SliderField({
   )
 }
 
+function CredentialPicker({ projectId, adapterId, value, onChange }: {
+  projectId: string
+  adapterId: string
+  value: string | null
+  onChange: (credId: string | null) => void
+}) {
+  const { data } = useQuery({
+    queryKey: ['credentials', projectId],
+    queryFn: () => api.credentials.listProject(projectId),
+    enabled: !!projectId,
+  })
+
+  const filtered = (data?.credentials ?? []).filter(c => c.adapter_id === adapterId)
+
+  if (filtered.length === 0) {
+    return (
+      <p className="text-xs text-amber-600">
+        No {adapterId} credential found. Add one in Project Settings → Credentials first.
+      </p>
+    )
+  }
+
+  return (
+    <Select value={value ?? ''} onValueChange={v => onChange(v || null)}>
+      <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select credential..." /></SelectTrigger>
+      <SelectContent>
+        {filtered.map(c => (
+          <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 export default function ProjectSettingsMemoryPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const qc = useQueryClient()
@@ -79,18 +124,17 @@ export default function ProjectSettingsMemoryPage({ params }: PageProps) {
 
   // Local state
   const [cfg, setCfg] = useState<ResolvedMemoryConfig | null>(null)
-  const [initialized, setInitialized] = useState(false)
 
-  if (configData?.config && !initialized) {
-    setCfg(configData.config)
-    setInitialized(true)
-  }
+  useEffect(() => {
+    if (configData?.config) {
+      setCfg(configData.config)
+    }
+  }, [configData])
 
   const saveMutation = useMutation({
     mutationFn: () => api.memoryConfig.updateProject(projectId, cfg!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project-memory-config', projectId] })
-      setInitialized(false)
       toast.success('Memory config saved')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save'),
@@ -307,6 +351,110 @@ export default function ProjectSettingsMemoryPage({ params }: PageProps) {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <Separator />
+
+      {/* Semantic Search (Embedding) */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold">Semantic Search</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Use vector embeddings for meaning-based memory retrieval (requires Qdrant + embedding API).
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label className="text-sm font-medium">Enable Semantic Search</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">When enabled, memories are embedded and scored by semantic similarity.</p>
+            </div>
+            <Switch
+              checked={cfg.embedding?.enabled ?? false}
+              onCheckedChange={v => patchCfg(p => ({ ...p, embedding: { ...p.embedding, enabled: v } }))}
+            />
+          </div>
+
+          {cfg.embedding?.enabled && (
+            <div className="space-y-4 border rounded-lg p-4">
+              {/* Provider */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Embedding Provider</Label>
+                <Select
+                  value={cfg.embedding.provider || ''}
+                  onValueChange={v => {
+                    const providerModels = EMBEDDING_PROVIDERS.find(p => p.id === v)?.models ?? []
+                    const firstModel = providerModels[0]
+                    patchCfg(p => ({ ...p, embedding: {
+                      ...p.embedding,
+                      provider: v,
+                      model: firstModel?.id ?? '',
+                      dimensions: firstModel?.dimensions ?? 1536,
+                    }}))
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select provider..." /></SelectTrigger>
+                  <SelectContent>
+                    {EMBEDDING_PROVIDERS.map(p => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Model */}
+              {cfg.embedding.provider && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Embedding Model</Label>
+                  <Select
+                    value={cfg.embedding.model || ''}
+                    onValueChange={v => {
+                      const allModels = EMBEDDING_PROVIDERS.flatMap(p => p.models)
+                      const model = allModels.find(m => m.id === v)
+                      patchCfg(p => ({ ...p, embedding: {
+                        ...p.embedding,
+                        model: v,
+                        dimensions: model?.dimensions ?? 1536,
+                      }}))
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select model..." /></SelectTrigger>
+                    <SelectContent>
+                      {(EMBEDDING_PROVIDERS.find(p => p.id === cfg.embedding.provider)?.models ?? []).map(m => (
+                        <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* Credential */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Credential</Label>
+                <p className="text-xs text-muted-foreground">Select the API credential for the embedding provider. Must match the provider above.</p>
+                <CredentialPicker
+                  projectId={projectId}
+                  adapterId={cfg.embedding.provider}
+                  value={cfg.embedding.credential_id ?? null}
+                  onChange={v => patchCfg(p => ({ ...p, embedding: { ...p.embedding, credential_id: v } }))}
+                />
+              </div>
+
+              {/* Semantic weight slider */}
+              <SliderField
+                label="Semantic weight"
+                description="Weight for semantic similarity in memory scoring. Higher = more reliance on meaning, less on keywords."
+                value={cfg.relevance.weights.semantic ?? 0.35}
+                onChange={v => patchCfg(p => ({ ...p, relevance: { ...p.relevance, weights: { ...p.relevance.weights, semantic: v } } }))}
+                min={0}
+                max={1}
+                step={0.05}
+                format={v => v.toFixed(2)}
+              />
             </div>
           )}
         </div>

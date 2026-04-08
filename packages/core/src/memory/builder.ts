@@ -11,8 +11,10 @@ export async function buildMemoryContext(params: {
   }
   current_input: string
   config: ResolvedMemoryConfig
+  /** Plan 15.2: Semantic similarity scores from vector search (memoryId → score 0-1) */
+  semanticScores?: Map<string, number>
 }): Promise<MemoryContext> {
-  const { memories, current_input, config } = params
+  const { memories, current_input, config, semanticScores } = params
 
   const runtimeCore = config.policy.read.runtime_global
     ? memories.runtime_global.filter(m => m.tier === 'core')
@@ -22,7 +24,7 @@ export async function buildMemoryContext(params: {
   const callerCore = memories.agent_caller.filter(m => m.tier === 'core')
   const extPool    = memories.extended_pool.filter(m => m.tier === 'extended')
 
-  const relevantExtended = findRelevantMemories(extPool, current_input, config.relevance)
+  const relevantExtended = findRelevantMemories(extPool, current_input, config.relevance, semanticScores)
 
   const totalTokens = estimateTokens(
     [...runtimeCore, ...agentCore, ...callerCore, ...relevantExtended]
@@ -73,7 +75,13 @@ export function formatMemorySection(
   }
 
   if (sections.length === 0) return ''
-  return `## What I Remember\n\n${sections.join('\n\n')}`
+  return [
+    '## What I Remember',
+    '',
+    'IMPORTANT: Actively apply these memories when generating responses. If a memory mentions an allergy, dietary restriction, preference, or dislike — do NOT include the restricted item in suggestions, recommendations, or examples. Filter your output based on what you know about the user, not just mention it as an afterthought.',
+    '',
+    ...sections,
+  ].join('\n')
 }
 
 /**
@@ -96,6 +104,25 @@ export function formatPersonaSection(
     lines.push(...selfMemories.map(m => `- ${m.content}`))
   } else {
     lines.push(`I am ${seed?.name ?? agentName}, an AI assistant. I'm still learning about myself.`)
+  }
+
+  // Plan 15.9: Structured traits
+  if (seed?.traits) {
+    lines.push('')
+    lines.push('### Communication Style')
+    lines.push(`- Formality: ${seed.traits.formality}`)
+    lines.push(`- Verbosity: ${seed.traits.verbosity}`)
+    lines.push(`- Humor: ${seed.traits.humor}`)
+    lines.push(`- Empathy: ${seed.traits.empathy}`)
+    lines.push(`- Expertise display: ${seed.traits.expertise_display}`)
+  }
+
+  // Plan 15.9: Boundaries
+  if (seed?.boundaries && seed.boundaries.length > 0) {
+    lines.push('')
+    lines.push('### Boundaries')
+    lines.push('You must NEVER do the following:')
+    seed.boundaries.forEach(b => lines.push(`- ${b}`))
   }
 
   return lines.join('\n')

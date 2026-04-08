@@ -648,6 +648,28 @@ export const api = {
     removeSkill: (agentId: string, skillId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}/skills/${skillId}`, { method: 'DELETE' }),
   },
+
+  mcpServers: {
+    list: (projectId: string) =>
+      request<{ servers: McpServerItem[] }>(`/api/projects/${projectId}/mcp-servers`),
+    create: (projectId: string, body: { name: string; transport: string; config: Record<string, unknown>; agent_id?: string; enabled?: boolean }) =>
+      request<{ server: McpServerItem }>(`/api/projects/${projectId}/mcp-servers`, { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<{ name: string; transport: string; config: Record<string, unknown>; enabled: boolean; agent_id: string | null }>) =>
+      request<{ server: McpServerItem }>(`/api/mcp-servers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
+    test: (id: string) =>
+      request<{ success: boolean; tool_count?: number; error?: string; tools?: Array<{ id: string; name: string }> }>(`/api/mcp-servers/${id}/test`, { method: 'POST' }),
+  },
+
+  toolStates: {
+    get: (agentId: string) =>
+      request<{ states: { project: Record<string, boolean>; agent: Record<string, boolean> } }>(`/api/agents/${agentId}/tools/states`),
+    set: (agentId: string, toolId: string, enabled: boolean) =>
+      request<{ ok: boolean }>(`/api/agents/${agentId}/tools/${encodeURIComponent(toolId)}/state`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+    reset: (agentId: string, toolId: string) =>
+      request<{ ok: boolean }>(`/api/agents/${agentId}/tools/${encodeURIComponent(toolId)}/state`, { method: 'DELETE' }),
+  },
 }
 
 // Types
@@ -759,7 +781,33 @@ export interface Agent {
   /** null = allow all, [] = deny all, [id…] = allow specific agents */
   task_allowed_agents?: string[] | null
   cron_task_enabled?: boolean | null
+  /** Queue mode: 'off' | 'queue' | 'ack_queue' */
+  queue_mode?: string | null
+  /** Auto-reply rules */
+  auto_replies?: AutoReplyRule[] | null
+  /** Availability schedule */
+  availability_schedule?: AvailabilitySchedule | null
   created_at: string | null
+}
+
+export interface AutoReplyRule {
+  trigger: 'exact' | 'contains' | 'regex' | 'command'
+  pattern: string
+  response: string
+  enabled: boolean
+}
+
+export interface ScheduleHours {
+  days: number[]
+  from: string
+  to: string
+}
+
+export interface AvailabilitySchedule {
+  enabled: boolean
+  timezone: string
+  hours: ScheduleHours[]
+  offline_message: string
 }
 
 export interface CronTask {
@@ -1052,11 +1100,18 @@ export interface ResolvedMemoryConfig {
   relevance: {
     min_score: number
     max_extended: number
-    weights: { keyword: number; recency: number; access: number }
+    weights: { keyword: number; semantic?: number; recency: number; access: number }
     recency_half_life_days: number
   }
   core: { max_chars: number; token_budget: number }
   extraction: { enabled: boolean; model: string; target_scope: 'agent_caller' | 'agent_global' | 'both' }
+  embedding: {
+    enabled: boolean
+    provider: string
+    model: string
+    credential_id: string | null
+    dimensions: number
+  }
 }
 
 export type AgentMemoryConfig = {
@@ -1069,6 +1124,15 @@ export type AgentMemoryConfig = {
   }
   core?: Partial<ResolvedMemoryConfig['core']>
   extraction?: Partial<ResolvedMemoryConfig['extraction']>
+  embedding?: Partial<ResolvedMemoryConfig['embedding']>
+}
+
+export interface PersonaTraits {
+  formality: 'casual' | 'balanced' | 'formal'
+  verbosity: 'concise' | 'moderate' | 'detailed'
+  humor: 'none' | 'light' | 'frequent'
+  empathy: 'low' | 'moderate' | 'high'
+  expertise_display: 'simplified' | 'balanced' | 'technical'
 }
 
 export interface PersonaSeed {
@@ -1078,6 +1142,10 @@ export interface PersonaSeed {
   communication_style?: string
   background?: string
   initial_memories?: string[]
+  /** Structured communication traits. */
+  traits?: PersonaTraits
+  /** Hard boundaries — things the agent refuses to do. */
+  boundaries?: string[]
 }
 
 export interface ConnectorPlugin {
@@ -1095,6 +1163,10 @@ export interface ConnectorItem {
   display_name: string
   credential_id?: string | null
   config: Record<string, unknown>
+  /** Match mode: 'all' = execute all matching bindings, 'first' = first match wins. */
+  match_mode?: 'all' | 'first'
+  /** Fallback agent when no binding matches. */
+  default_agent_id?: string | null
   status: 'active' | 'inactive' | 'error'
   error_message?: string | null
   created_at: string
@@ -1112,6 +1184,12 @@ export interface ConnectorBinding {
   trigger_keywords?: string[] | null
   trigger_event_type?: string | null
   trigger_event_filter?: Record<string, unknown> | null
+  /** Routing priority — higher wins. Default 0. */
+  priority?: number
+  /** Regex pattern matched against message text. */
+  trigger_regex?: string | null
+  /** Schedule filter (AvailabilitySchedule shape). */
+  schedule_filter?: Record<string, unknown> | null
   output_adapter: string
   output_config: Record<string, unknown>
   rate_limit_rpm?: number | null
@@ -1287,5 +1365,19 @@ export interface AgentSkillAssignment {
   mode: 'always' | 'on_demand'
   created_at: string
   skill: SkillItem
+}
+
+export interface McpServerItem {
+  id: string
+  project_id: string
+  agent_id?: string | null
+  name: string
+  transport: string
+  config: Record<string, unknown>
+  enabled: boolean
+  connected?: boolean
+  tool_count?: number
+  created_at: string
+  updated_at: string
 }
 

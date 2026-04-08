@@ -85,7 +85,11 @@ router.get('/projects/:pid/memory-config', authMiddleware, requirePermission('me
   try {
     const project = await getProjectById(projectId)
     if (!project) { res.status(404).json({ error: 'Project not found' }); return }
-    const config = (project.memory_config as ProjectMemoryConfig | null) ?? DEFAULT_PROJECT_MEMORY_CONFIG
+    // Deep-merge DB data with defaults so new fields (embedding, semantic weight) always exist
+    const raw = project.memory_config as Record<string, unknown> | null
+    const config = raw
+      ? deepMerge(DEFAULT_PROJECT_MEMORY_CONFIG as unknown as Record<string, unknown>, raw) as ProjectMemoryConfig
+      : DEFAULT_PROJECT_MEMORY_CONFIG
     res.json({ config })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get memory config' })
@@ -106,6 +110,11 @@ router.patch('/projects/:pid/memory-config', authMiddleware, requirePermission('
     const merged = deepMerge(current as Record<string, unknown>, updates as Record<string, unknown>) as ProjectMemoryConfig
 
     await updateProjectMemoryConfig(projectId, merged)
+
+    // Clear embedding service cache so next memory save picks up new config
+    const { clearEmbeddingCache } = await import('../memory/embedding.ts')
+    clearEmbeddingCache(projectId)
+
     res.json({ config: merged })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update memory config' })

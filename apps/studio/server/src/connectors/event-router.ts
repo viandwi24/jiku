@@ -1,4 +1,4 @@
-import type { ConnectorEvent, ConnectorBinding, ConnectorIdentity, CallerContext, ConnectorCallerContext } from '@jiku/types'
+import type { ConnectorEvent, ConnectorBinding, ConnectorIdentity, CallerContext, ConnectorCallerContext, AutoReplyRule, AvailabilitySchedule as AvailabilityScheduleType, AgentQueueMode } from '@jiku/types'
 import {
   getActiveBindingsForProject,
   findIdentityByExternalId,
@@ -9,9 +9,13 @@ import {
   createConversation,
   redeemInviteCode,
   getConnectorById,
+  getAgentById,
 } from '@jiku-studio/db'
 import { connectorRegistry } from './registry.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
+import { conversationQueue } from '../runtime/conversation-queue.ts'
+import { evaluateAutoReply } from '../auto-reply/evaluator.ts'
+import { isWithinSchedule, type AvailabilitySchedule } from '../utils/schedule.ts'
 
 /**
  * Try to handle an invite code redemption for a message event.
@@ -106,6 +110,20 @@ function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boole
       default:
         break
     }
+  }
+
+  // Plan 15.5: Regex match
+  if (binding.trigger_regex && event.type === 'message') {
+    const text = event.content?.text ?? ''
+    try {
+      if (!new RegExp(binding.trigger_regex, 'i').test(text)) return false
+    } catch { return false }
+  }
+
+  // Plan 15.5: Schedule filter (time-of-day gate)
+  if (binding.schedule_filter) {
+    const schedule = binding.schedule_filter as unknown as AvailabilitySchedule
+    if (schedule.enabled && !isWithinSchedule(schedule)) return false
   }
 
   return true
@@ -280,9 +298,18 @@ export async function routeConnectorEvent(
     return 'pending_approval'
   }
 
+  // Plan 15.5: Sort by priority (descending — higher wins)
+  const sorted = [...matchingBindings].sort((a, b) =>
+    ((b.binding as ConnectorBinding).priority ?? 0) - ((a.binding as ConnectorBinding).priority ?? 0)
+  )
+
+  // Determine match mode from the connector (all same connector for a given plugin)
+  const firstConnector = sorted[0]?.connector
+  const matchMode = (firstConnector as Record<string, unknown>)?.match_mode as string ?? 'all'
+
   let result: RouteResult = 'dropped'
 
-  for (const { binding, connector } of matchingBindings) {
+  for (const { binding, connector } of sorted) {
     const typedBinding = binding as ConnectorBinding
 
     // 2. Find or create identity — now keyed by connector_id
@@ -399,6 +426,49 @@ export async function routeConnectorEvent(
     }
 
     result = 'routed'
+
+    // Plan 15.5: first-match mode — stop after first successful route
+    if (matchMode === 'first') break
+  }
+
+  // Plan 15.5: Fallback default agent — if no binding matched and connector has a default
+  if (result === 'dropped' && firstConnector && event.type === 'message') {
+    const defaultAgentId = (firstConnector as Record<string, unknown>).default_agent_id as string | null
+    if (defaultAgentId && connectorUuid) {
+      const externalUserId = event.sender.external_id
+      let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+      if (!identity) {
+        identity = await createIdentity({
+          connector_id: connectorUuid,
+          binding_id: null,
+          external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
+          display_name: event.sender.display_name ?? event.sender.username,
+          status: 'approved',
+        })
+      }
+      const typedIdentity = identity as ConnectorIdentity
+      if (typedIdentity.status === 'approved') {
+        // Create a synthetic binding for the fallback
+        const fallbackBinding: ConnectorBinding = {
+          id: 'fallback',
+          connector_id: connectorUuid,
+          source_type: 'any',
+          trigger_source: 'message',
+          trigger_mode: 'always',
+          output_adapter: 'conversation',
+          output_config: { agent_id: defaultAgentId, conversation_mode: 'persistent' },
+          include_sender_info: true,
+          enabled: true,
+          priority: 0,
+          created_at: new Date(),
+        }
+        const caller = buildConnectorCaller(typedIdentity, fallbackBinding, event)
+        executeConversationAdapter(event, fallbackBinding, typedIdentity, caller, connectorUuid, projectId, runtimeManager).catch(err =>
+          console.error('[connector] fallback adapter error:', err)
+        )
+        result = 'routed'
+      }
+    }
   }
 
   return result
@@ -423,6 +493,22 @@ async function executeConversationAdapter(
 
   const connectorAdapter = connectorRegistry.getAdapterForConnector(connectorId)
 
+  // --- Auto-reply intercept ---
+  const agentRecord = await getAgentById(agentId)
+  if (agentRecord && event.type === 'message') {
+    const autoReplyRules = (agentRecord.auto_replies ?? []) as AutoReplyRule[]
+    const availabilitySchedule = (agentRecord.availability_schedule ?? null) as AvailabilitySchedule | null
+    const inputText = event.content?.text ?? ''
+    const autoReply = evaluateAutoReply(inputText, autoReplyRules, availabilitySchedule)
+    if (autoReply.matched && autoReply.response) {
+      connectorAdapter?.sendMessage(
+        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+        { text: autoReply.response },
+      ).catch(() => {})
+      return
+    }
+  }
+
   let conversationId: string
   if (conversationMode === 'persistent') {
     if (identity.conversation_id) {
@@ -445,12 +531,56 @@ async function executeConversationAdapter(
     conversationId = conv.id
   }
 
-  // Guard: already running → notify and skip
+  // --- Queue mode intercept: if running + queue enabled, enqueue instead of drop ---
+  const queueMode = ((agentRecord?.queue_mode ?? 'off') as AgentQueueMode)
   if (runningConversations.has(conversationId)) {
-    connectorAdapter?.sendMessage(
-      { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-      { text: '⏳ Agent is still processing your previous message. Please wait a moment.' },
-    ).catch(() => {})
+    if (queueMode === 'off') {
+      connectorAdapter?.sendMessage(
+        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+        { text: '⏳ Agent is still processing your previous message. Please wait a moment.' },
+      ).catch(() => {})
+      return
+    }
+
+    if (queueMode === 'ack_queue') {
+      connectorAdapter?.sendMessage(
+        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+        { text: '⏳ Your message has been queued and will be processed shortly.' },
+      ).catch(() => {})
+    }
+
+    // Enqueue — will be processed when current run finishes
+    const contextString = buildConnectorContextString(event, binding, identity)
+    const inputText = event.type === 'message'
+      ? (event.content?.text ?? '(no text content)')
+      : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
+    const queuedInput = contextString ? `${contextString}\n\n${inputText}` : inputText
+
+    conversationQueue.enqueue(conversationId, {
+      input: queuedInput,
+      caller,
+      resolve: async (runResult) => {
+        // Drain stream for response text
+        let responseText = ''
+        const reader = runResult.stream.getReader()
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (value.type === 'text-delta') responseText += (value as { delta?: string; textDelta?: string }).delta ?? (value as { delta?: string; textDelta?: string }).textDelta ?? ''
+          }
+        } finally {
+          reader.releaseLock()
+        }
+        if (responseText && connectorAdapter) {
+          connectorAdapter.sendMessage(
+            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+            { text: responseText, markdown: true },
+          ).catch(() => {})
+        }
+      },
+      reject: () => {},
+    })
     return
   }
 
@@ -539,6 +669,72 @@ async function executeConversationAdapter(
   } finally {
     if (typingInterval) clearInterval(typingInterval)
     runningConversations.delete(conversationId)
+
+    // Process next queued message if any
+    drainConnectorQueue(conversationId, agentId, projectId, connectorId, event, binding, identity, runtimeManager)
+      .catch(err => console.error('[connector] queue drain error:', err))
+  }
+}
+
+/**
+ * Drain the connector conversation queue: process next queued message.
+ */
+async function drainConnectorQueue(
+  conversationId: string,
+  agentId: string,
+  projectId: string,
+  connectorId: string,
+  originalEvent: ConnectorEvent,
+  binding: ConnectorBinding,
+  identity: ConnectorIdentity,
+  runtimeManager: import('../runtime/manager.ts').JikuRuntimeManager,
+): Promise<void> {
+  const next = conversationQueue.dequeue(conversationId)
+  if (!next) return
+
+  const connectorAdapter = connectorRegistry.getAdapterForConnector(connectorId)
+
+  // Send typing indicator
+  connectorAdapter?.sendTyping?.({ ref_keys: originalEvent.ref_keys }).catch(() => {})
+
+  runningConversations.add(conversationId)
+
+  try {
+    const runResult = await runtimeManager.run(projectId, {
+      agent_id: agentId,
+      conversation_id: conversationId,
+      caller: next.caller,
+      mode: 'chat',
+      input: next.input,
+    })
+
+    // Register in streamRegistry for web observers
+    const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
+    const [observerStream, drainStream] = runResult.stream.tee()
+
+    // Drain observer branch
+    ;(async () => {
+      try {
+        const obsReader = observerStream.getReader()
+        while (true) {
+          const { done, value } = await obsReader.read()
+          if (done) break
+          bufferChunk(value as Record<string, unknown>)
+          broadcast(`data: ${JSON.stringify(value)}\n\n`)
+        }
+      } finally {
+        registryDone()
+      }
+    })()
+
+    next.resolve({ ...runResult, stream: drainStream })
+  } catch (err) {
+    next.reject(err instanceof Error ? err : new Error(String(err)))
+  } finally {
+    runningConversations.delete(conversationId)
+    // Recursively drain next
+    drainConnectorQueue(conversationId, agentId, projectId, connectorId, originalEvent, binding, identity, runtimeManager)
+      .catch(() => {})
   }
 }
 

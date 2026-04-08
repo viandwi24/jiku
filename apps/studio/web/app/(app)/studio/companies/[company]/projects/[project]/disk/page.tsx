@@ -399,7 +399,7 @@ function AttachmentsTab({ projectId }: { projectId: string }) {
             <div key={convId} className="space-y-1">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-1 mb-1">
                 <User className="w-3 h-3" />
-                <span className="font-mono truncate max-w-[200px]">
+                <span className="font-mono truncate max-w-50">
                   {convId === '_none' ? 'No conversation' : `conv: ${convId.slice(0, 8)}…`}
                 </span>
                 <span className="text-muted-foreground/50">·</span>

@@ -1,5 +1,6 @@
-import { createTaskConversation, updateConversation, getConversationById } from '@jiku-studio/db'
+import { createTaskConversation, updateConversation, getConversationById, getMessages } from '@jiku-studio/db'
 import { runtimeManager } from '../runtime/manager.ts'
+import { buildProgressTool } from './progress-tool.ts'
 import type { CallerContext } from '@jiku/types'
 
 /** Build a system CallerContext (no real user) for task/heartbeat runs */
@@ -25,9 +26,19 @@ export function buildCaller(callerId: string | null): CallerContext {
   }
 }
 
+export interface RunTaskToolResult {
+  tool_name: string
+  args: unknown
+  result: unknown
+}
+
 export interface RunTaskResult {
   status: 'completed' | 'failed'
   output?: string
+  /** Plan 15.4: Structured tool results from the run */
+  tool_results?: RunTaskToolResult[]
+  /** Plan 15.4: Number of messages generated */
+  message_count?: number
 }
 
 /**
@@ -49,12 +60,16 @@ export async function runTaskConversation(
   try {
     const caller = buildCaller(callerId)
 
+    // Plan 15.8: Inject progress tool for task mode
+    const progressTool = buildProgressTool(conversationId)
+
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
       caller,
       mode: 'task',
       input: goal,
       conversation_id: conversationId,
+      extra_built_in_tools: [progressTool],
     })
 
     // Drain the stream fully
@@ -74,12 +89,34 @@ export async function runTaskConversation(
     const meta = (conv?.metadata ?? {}) as Record<string, unknown>
     const finalOutput = (meta.output as string | undefined) ?? (outputText || undefined)
 
+    // Plan 15.4: Extract tool results from messages
+    const messages = await getMessages(conversationId)
+    const toolResults: RunTaskToolResult[] = []
+    for (const msg of messages) {
+      if (msg.role !== 'assistant') continue
+      const parts = (msg.parts ?? []) as Array<Record<string, unknown>>
+      for (const part of parts) {
+        if (part.type === 'tool-invocation' && part.state === 'result') {
+          toolResults.push({
+            tool_name: part.toolName as string,
+            args: part.args,
+            result: part.result,
+          })
+        }
+      }
+    }
+
     await updateConversation(conversationId, {
       run_status: 'completed',
       finished_at: new Date(),
     })
 
-    return { status: 'completed', output: finalOutput }
+    return {
+      status: 'completed',
+      output: finalOutput,
+      tool_results: toolResults.length > 0 ? toolResults : undefined,
+      message_count: messages.length,
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     await updateConversation(conversationId, {

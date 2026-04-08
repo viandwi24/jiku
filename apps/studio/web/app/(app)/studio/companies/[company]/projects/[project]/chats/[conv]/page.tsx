@@ -35,6 +35,8 @@ export default function ConversationPage({ params }: PageProps) {
   const { data: historyData, isLoading: historyLoading } = useQuery({
     queryKey: ['conversation-messages', convId],
     queryFn: () => api.conversations.messages(convId),
+    // Always refetch when component mounts — prevents stale cache after navigation
+    refetchOnMount: 'always',
   })
 
   if (convLoading || historyLoading || !historyData) {

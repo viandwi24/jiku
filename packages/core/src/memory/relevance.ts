@@ -17,8 +17,10 @@ function tokenize(text: string): string[] {
 export function scoreMemory(
   memory: AgentMemory,
   currentInput: string,
-  weights = { keyword: 0.5, recency: 0.3, access: 0.2 },
+  weights: { keyword: number; recency: number; access: number; semantic?: number } = { keyword: 0.5, recency: 0.3, access: 0.2 },
   halfLifeDays = 30,
+  /** Plan 15.2: Semantic similarity score from Qdrant (0-1). Undefined = not available. */
+  semanticScore?: number,
 ): number {
   // 1. Keyword overlap
   const inputWords = new Set(tokenize(currentInput))
@@ -39,8 +41,13 @@ export function scoreMemory(
     high: 1.5, medium: 1.0, low: 0.6,
   }
 
+  // Plan 15.2: 4-factor hybrid scoring when semantic available
+  const sem = semanticScore ?? 0
+  const semWeight = weights.semantic ?? 0
+
   return (
     keywordScore * weights.keyword +
+    sem          * semWeight +
     recencyScore * weights.recency +
     accessScore  * weights.access
   ) * (importanceWeight[memory.importance] ?? 1.0)
@@ -52,14 +59,19 @@ export function findRelevantMemories(
   config: {
     max_extended: number
     min_score: number
-    weights: { keyword: number; recency: number; access: number }
+    weights: { keyword: number; recency: number; access: number; semantic?: number }
     recency_half_life_days: number
   },
+  /** Plan 15.2: Map of memoryId → semantic similarity score from Qdrant */
+  semanticScores?: Map<string, number>,
 ): AgentMemory[] {
   return memories
     .map(m => ({
       memory: m,
-      score: scoreMemory(m, currentInput, config.weights, config.recency_half_life_days),
+      score: scoreMemory(
+        m, currentInput, config.weights, config.recency_half_life_days,
+        semanticScores?.get(m.id),
+      ),
     }))
     .filter(({ score }) => score >= config.min_score)
     .sort((a, b) => b.score - a.score)

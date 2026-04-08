@@ -52,7 +52,7 @@ export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen }:
           <MoreHorizontal className="w-3.5 h-3.5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[140px]" onClick={e => e.stopPropagation()}>
+      <DropdownMenuContent align="end" className="min-w-35" onClick={e => e.stopPropagation()}>
         {onOpen && (
           <DropdownMenuItem onClick={onOpen} className="text-xs gap-2">
             {entry.type === 'folder' ? <FolderOpen className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}

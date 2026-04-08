@@ -1,5 +1,85 @@
 # Changelog
 
+## 2026-04-08 — Plan 15 Sprint 4: Inter-Agent + Tool Streaming + Progress
+
+- **15.4 Enhanced Inter-Agent Calling:**
+  - **Task Runner** (`apps/studio/server/src/task/runner.ts`): `RunTaskResult` now includes `tool_results` (structured tool call results) and `message_count`. `runTaskConversation()` extracts tool results from conversation messages after drain.
+  - **run_task tool** (`apps/studio/server/src/task/tools.ts`): Response now includes `tool_results` + `message_count` for attach mode.
+  - **agent_read_history tool** (new): Read recent conversation history of another agent. Returns text-only parts (strips tool internals). Supports specific conversation or latest.
+  - **list_agents enhanced**: Now accepts `mode` (filter by chat/task) and `search` (filter by name/description). Returns `modes` field.
+  - **Runtime Manager** (`apps/studio/server/src/runtime/manager.ts`): `agentReadHistoryTool` registered in all 3 agent registration paths.
+
+- **15.1 Tool Streaming (Progressive Results):**
+  - **Types** (`packages/types/src/index.ts`): Added `ToolStreamChunk` interface (`type: 'progress' | 'partial'`). Added `executeStream?` to `ToolDefinition` — optional async generator.
+  - **Runner** (`packages/core/src/runner.ts`): When `executeStream` is defined on a tool, runner uses it and emits progress chunks via `jiku-tool-data` stream event. Non-streaming tools unchanged.
+
+- **15.8 Progress Reporting Tool:**
+  - **Progress Tool** (`apps/studio/server/src/task/progress-tool.ts`): New `report_progress` built-in tool. Agent calls it to report step/percentage/details. Appends to `conversation.metadata.progress_log` and emits via stream.
+  - **Types** (`packages/types/src/index.ts`): Added `extra_built_in_tools` to `JikuRunParams` — enables per-run tool injection.
+  - **Runner** (`packages/core/src/runner.ts`): Merges `extra_built_in_tools` with `agent.built_in_tools`.
+  - **Task Runner** (`apps/studio/server/src/task/runner.ts`): Injects `buildProgressTool(conversationId)` via `extra_built_in_tools` for task mode runs.
+
+- Files: `apps/studio/server/src/task/runner.ts`, `apps/studio/server/src/task/tools.ts`, `apps/studio/server/src/task/progress-tool.ts`, `apps/studio/server/src/runtime/manager.ts`, `packages/types/src/index.ts`, `packages/core/src/runner.ts`
+
+## 2026-04-08 — Plan 15 Sprint 3: MCP Support + Tool On/Off + Semantic Memory
+
+- **15.6 MCP Support + Tool On/Off Registry:**
+  - **DB Schema** (`apps/studio/db/src/schema/mcp_servers.ts`): New `mcp_servers`, `project_tool_states`, `agent_tool_states` tables.
+  - **Migration** (`apps/studio/db/src/migrations/0007_add_mcp_and_tool_states.sql`): 3 tables + indexes.
+  - **DB Queries** (`apps/studio/db/src/queries/mcp_servers.ts`): Full CRUD for MCP servers + tool state get/set/delete.
+  - **MCP Client** (`apps/studio/server/src/mcp/client.ts`): `MCPClientManager` class — connect/disconnect/getTools for stdio/sse/streamable-http transports. 5s connect timeout.
+  - **MCP Wrapper** (`apps/studio/server/src/mcp/wrapper.ts`): `wrapMCPTool()` — converts MCP tool schema to Jiku `ToolDefinition`.
+  - **Runner** (`packages/core/src/runner.ts`): Tool filtering by on/off state (agent override > project override > default enabled). Uses `tool_states` from `JikuRunParams`.
+  - **Runtime Manager** (`apps/studio/server/src/runtime/manager.ts`): Loads tool states from DB before each run, passes to runner.
+  - **API Routes** (`apps/studio/server/src/routes/mcp-servers.ts`, `tool-states.ts`): MCP server CRUD + test endpoint. Tool state get/set/reset per agent.
+  - **Types** (`packages/types/src/index.ts`): Added `ToolStatesMap` type. Extended `JikuRunParams` with `tool_states`.
+  - **Web API** (`apps/studio/web/lib/api.ts`): Added `McpServerItem` type. Added `api.mcpServers.*` and `api.toolStates.*` methods.
+  - **UI** (`apps/studio/web/.../agents/[agent]/tools/page.tsx`): Tool list now shows toggle switches per tool (enabled/disabled). Loads + saves agent tool states.
+
+- **15.2 Semantic Memory (Qdrant + Hybrid Scoring):**
+  - **Docker Compose**: Added Qdrant v1.13.2 to both dev (`apps/studio/server/docker-compose.yml`) and prod (`infra/dokploy/docker-compose.yml`).
+  - **Embedding Service** (`apps/studio/server/src/memory/embedding.ts`): `EmbeddingService` abstraction. Uses OpenAI `text-embedding-3-small` (1536 dim). Resolves API key from project credentials or env.
+  - **Qdrant Client** (`apps/studio/server/src/memory/qdrant.ts`): `MemoryVectorStore` — upsert/delete/search/ensureCollection. Graceful fallback on connection errors.
+  - **Relevance Scoring** (`packages/core/src/memory/relevance.ts`): `scoreMemory()` now supports 4-factor hybrid scoring (keyword + semantic + recency + access). `findRelevantMemories()` accepts optional `semanticScores` map.
+  - **Types** (`packages/types/src/index.ts`): Added `semantic?` to `ResolvedMemoryConfig.relevance.weights`.
+
+- Files: `apps/studio/db/src/schema/mcp_servers.ts`, `apps/studio/db/src/queries/mcp_servers.ts`, `apps/studio/db/src/migrations/0007_add_mcp_and_tool_states.sql`, `apps/studio/server/src/mcp/client.ts`, `apps/studio/server/src/mcp/wrapper.ts`, `packages/core/src/runner.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/routes/mcp-servers.ts`, `apps/studio/server/src/routes/tool-states.ts`, `apps/studio/server/src/index.ts`, `packages/types/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/.../tools/page.tsx`, `apps/studio/server/docker-compose.yml`, `infra/dokploy/docker-compose.yml`, `apps/studio/server/src/memory/embedding.ts`, `apps/studio/server/src/memory/qdrant.ts`, `packages/core/src/memory/relevance.ts`
+
+## 2026-04-08 — Plan 15 Sprint 2: Channel Routing + Structured Persona
+
+- **15.5 Channel Routing Rules:**
+  - **DB Schema** (`apps/studio/db/src/schema/connectors.ts`): Added `priority`, `trigger_regex`, `schedule_filter` to `connector_bindings`. Added `match_mode`, `default_agent_id` to `connectors`.
+  - **Migration** (`apps/studio/db/src/migrations/0006_add_channel_routing.sql`): 5 column additions.
+  - **DB Queries** (`apps/studio/db/src/queries/connector.ts`): Updated `createBinding`, `updateBinding`, `updateConnector` to accept new fields.
+  - **Event Router** (`apps/studio/server/src/connectors/event-router.ts`): `matchesTrigger()` now supports regex + schedule filter. `routeConnectorEvent()` sorts by priority (descending), supports `first` match mode, implements fallback default agent.
+  - **Types** (`packages/types/src/index.ts`): Extended `ConnectorBinding` with `priority`, `trigger_regex`, `schedule_filter`. Extended `ConnectorRecord` with `match_mode`, `default_agent_id`.
+  - **Web Types** (`apps/studio/web/lib/api.ts`): Updated `ConnectorBinding` and `ConnectorItem` interfaces.
+  - **UI** (`apps/studio/web/.../bindings/[binding]/page.tsx`): Added "Routing" card with priority input and trigger regex field.
+
+- **15.9 Structured Persona:**
+  - **Types** (`packages/types/src/index.ts`): Added `PersonaTraits` interface (formality, verbosity, humor, empathy, expertise_display) with `DEFAULT_PERSONA_TRAITS`. Extended `PersonaSeed` with `traits` and `boundaries`.
+  - **Builder** (`packages/core/src/memory/builder.ts`): `formatPersonaSection()` now injects "Communication Style" and "Boundaries" sections into system prompt when traits/boundaries are set.
+  - **Web Types** (`apps/studio/web/lib/api.ts`): Added `PersonaTraits` interface, extended `PersonaSeed`.
+  - **UI** (`apps/studio/web/.../agents/[agent]/persona/page.tsx`): Added "Communication Traits" section with toggle buttons for each trait dimension. Added "Boundaries" section with add/remove list. Saves to persona_seed via existing API.
+
+- Files: `apps/studio/db/src/schema/connectors.ts`, `apps/studio/db/src/queries/connector.ts`, `apps/studio/db/src/migrations/0006_add_channel_routing.sql`, `apps/studio/server/src/connectors/event-router.ts`, `packages/types/src/index.ts`, `packages/core/src/memory/builder.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/.../bindings/[binding]/page.tsx`, `apps/studio/web/.../persona/page.tsx`
+
+## 2026-04-08 — Plan 15 Sprint 1: Conversation Queue + Auto-Reply (Backend)
+
+- **Conversation Queue** (`apps/studio/server/src/runtime/conversation-queue.ts`): New `ConversationQueue` class with in-memory FIFO queue per conversation. Enqueues messages when agent is busy, processes them after current run completes. Max 10 per conversation, 5-minute timeout. Exported singleton `conversationQueue`.
+- **Auto-Reply Evaluator** (`apps/studio/server/src/auto-reply/evaluator.ts`): Rule-based auto-reply before LLM invocation. Supports 4 trigger types: `exact`, `contains`, `regex`, `command`. Checks availability schedule first (offline message), then rules in order.
+- **Schedule Utility** (`apps/studio/server/src/utils/schedule.ts`): `isWithinSchedule()` — timezone-aware availability checking using `Intl.DateTimeFormat`. Graceful fallback if timezone invalid.
+- **Types** (`packages/types/src/index.ts`): Added `AgentQueueMode`, `AutoReplyRule`, `ScheduleHours`, `AvailabilitySchedule` types.
+- **DB Schema** (`apps/studio/db/src/schema/agents.ts`): Added `queue_mode varchar(20) DEFAULT 'off'`, `auto_replies jsonb DEFAULT '[]'`, `availability_schedule jsonb DEFAULT NULL` columns.
+- **Migration** (`apps/studio/db/src/migrations/0005_add_queue_and_auto_reply.sql`): Adds 3 columns to agents table.
+- **Chat Route** (`apps/studio/server/src/routes/chat.ts`): Auto-reply intercept before LLM (returns SSE stream with auto-reply text). Queue mode intercept: returns 202 with queue position if running + queue enabled. Queue drain on run completion (recursive FIFO processing).
+- **Event Router** (`apps/studio/server/src/connectors/event-router.ts`): Auto-reply intercept for connector messages (direct response, skip LLM). Queue mode: `ack_queue` sends acknowledgment, enqueues message. Queue drain via `drainConnectorQueue()` after run completion.
+- **Agent API** (`apps/studio/server/src/routes/agents.ts`): PATCH endpoint accepts `queue_mode`, `auto_replies`, `availability_schedule`.
+- **Web API** (`apps/studio/web/lib/api.ts`): Added `queue_mode`, `auto_replies`, `availability_schedule` to Agent interface. Added `AutoReplyRule`, `ScheduleHours`, `AvailabilitySchedule` types.
+- **Agent Layout** (`apps/studio/web/.../agents/[agent]/layout.tsx`): Added "auto-reply" nav item with `MessageCircleReply` icon.
+- **Auto-Reply Page** (`apps/studio/web/.../agents/[agent]/auto-reply/page.tsx`): Full settings page with 3 sections: Queue Mode selector (off/queue/ack_queue), Auto-Reply Rules editor (add/remove/toggle rules with trigger type, pattern, response), Availability Schedule editor (enable/disable, timezone, day/hour windows, offline message).
+- Files: `apps/studio/server/src/runtime/conversation-queue.ts`, `apps/studio/server/src/auto-reply/evaluator.ts`, `apps/studio/server/src/utils/schedule.ts`, `packages/types/src/index.ts`, `apps/studio/db/src/schema/agents.ts`, `apps/studio/db/src/migrations/0005_add_queue_and_auto_reply.sql`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/routes/agents.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/.../agents/[agent]/layout.tsx`, `apps/studio/web/.../agents/[agent]/auto-reply/page.tsx`
+
 ## 2026-04-07 — Cron Task System: Full End-to-End Implementation
 
 - **DB schema** (`apps/studio/db/src/schema/cron_tasks.ts`): New `cron_tasks` table with `id, project_id, name, description, cron_expression, agent_id, prompt, caller_id, caller_role, caller_is_superadmin, run_count, last_run_at, created_at, updated_at` columns. Caller context snapshotted at creation time for permission checks.

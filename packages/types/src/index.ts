@@ -64,6 +64,12 @@ export interface ToolMeta {
   group?: string
 }
 
+/** Plan 15.1: Chunk yielded during tool streaming */
+export interface ToolStreamChunk {
+  type: 'progress' | 'partial'
+  data: unknown
+}
+
 export interface ToolDefinition {
   meta: ToolMeta
   permission: string
@@ -71,6 +77,11 @@ export interface ToolDefinition {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: any
   execute: (args: unknown, ctx: ToolContext) => Promise<unknown>
+  /**
+   * Plan 15.1: Optional streaming execute. When defined, takes precedence over execute.
+   * Yields intermediate results; final return value is the tool result.
+   */
+  executeStream?: (args: unknown, ctx: ToolContext) => AsyncGenerator<ToolStreamChunk, unknown>
   prompt?: string
 }
 
@@ -472,6 +483,13 @@ export interface ChatFilePart {
   url: string
 }
 
+export interface ToolStatesMap {
+  /** Project-level tool overrides: tool_id → enabled */
+  project: Record<string, boolean>
+  /** Agent-level tool overrides: tool_id → enabled */
+  agent: Record<string, boolean>
+}
+
 export interface JikuRunParams {
   agent_id: string
   caller: CallerContext
@@ -484,6 +502,12 @@ export interface JikuRunParams {
   provider_id?: string
   model_id?: string
   abort_signal?: AbortSignal
+  /** Tool on/off states for filtering. Agent override > project override > default (enabled). */
+  tool_states?: ToolStatesMap
+  /** Plan 15.8: Extra built-in tools injected per-run (e.g., progress tool for task mode). */
+  extra_built_in_tools?: ToolDefinition[]
+  /** Plan 15.2: Semantic similarity scores from Qdrant (memoryId → score 0-1). Injected by studio layer. */
+  semantic_scores?: Map<string, number>
 }
 
 // ============================================================
@@ -595,6 +619,52 @@ export interface PreviewRunResult {
 
 export type MemoryScope = 'agent_caller' | 'agent_global' | 'runtime_global' | 'agent_self'
 
+// ============================================================
+// AUTO-REPLY & QUEUE (Plan 15)
+// ============================================================
+
+export type AgentQueueMode = 'off' | 'queue' | 'ack_queue'
+
+export interface AutoReplyRule {
+  trigger: 'exact' | 'contains' | 'regex' | 'command'
+  pattern: string
+  response: string
+  enabled: boolean
+}
+
+export interface ScheduleHours {
+  days: number[]   // 0=Sunday, 1=Monday, ..., 6=Saturday
+  from: string     // 'HH:MM' (24h format)
+  to: string       // 'HH:MM' (24h format)
+}
+
+export interface AvailabilitySchedule {
+  enabled: boolean
+  timezone: string
+  hours: ScheduleHours[]
+  offline_message: string
+}
+
+// ============================================================
+// PERSONA
+// ============================================================
+
+export interface PersonaTraits {
+  formality: 'casual' | 'balanced' | 'formal'
+  verbosity: 'concise' | 'moderate' | 'detailed'
+  humor: 'none' | 'light' | 'frequent'
+  empathy: 'low' | 'moderate' | 'high'
+  expertise_display: 'simplified' | 'balanced' | 'technical'
+}
+
+export const DEFAULT_PERSONA_TRAITS: PersonaTraits = {
+  formality: 'balanced',
+  verbosity: 'moderate',
+  humor: 'light',
+  empathy: 'moderate',
+  expertise_display: 'balanced',
+}
+
 export interface PersonaSeed {
   name?: string
   role?: string
@@ -602,6 +672,10 @@ export interface PersonaSeed {
   communication_style?: string
   background?: string
   initial_memories?: string[]
+  /** Structured communication traits. */
+  traits?: PersonaTraits
+  /** Hard boundaries — things the agent refuses to do. */
+  boundaries?: string[]
 }
 export type MemoryTier = 'core' | 'extended'
 export type MemoryImportance = 'low' | 'medium' | 'high'
@@ -651,6 +725,8 @@ export interface ResolvedMemoryConfig {
     max_extended: number
     weights: {
       keyword: number
+      /** Plan 15.2: Semantic similarity weight. Default 0 (disabled until Qdrant available). */
+      semantic?: number
       recency: number
       access: number
     }
@@ -664,6 +740,18 @@ export interface ResolvedMemoryConfig {
     enabled: boolean
     model: string
     target_scope: 'agent_caller' | 'agent_global' | 'both'
+  }
+  /** Plan 15.2: Embedding config for semantic memory search via Qdrant. */
+  embedding: {
+    enabled: boolean
+    /** Credential adapter ID: 'openai' | 'openrouter' | etc. */
+    provider: string
+    /** Embedding model ID, e.g. 'text-embedding-3-small'. */
+    model: string
+    /** Credential ID to use for authentication. null = use env fallback. */
+    credential_id: string | null
+    /** Vector dimensions (auto-detected from model, but stored for collection creation). */
+    dimensions: number
   }
 }
 
@@ -679,6 +767,7 @@ export type AgentMemoryConfig = {
   }
   core?: Partial<ResolvedMemoryConfig['core']>
   extraction?: Partial<ResolvedMemoryConfig['extraction']>
+  embedding?: Partial<ResolvedMemoryConfig['embedding']>
 }
 
 // ============================================================
@@ -866,6 +955,12 @@ export interface ConnectorBinding {
   trigger_event_filter?: Record<string, unknown> | null
   output_adapter: string
   output_config: Record<string, unknown>
+  /** Routing priority — higher wins. Default 0. */
+  priority: number
+  /** Regex pattern matched against message text. */
+  trigger_regex?: string | null
+  /** Schedule filter (AvailabilitySchedule shape). */
+  schedule_filter?: Record<string, unknown> | null
   rate_limit_rpm?: number | null
   include_sender_info: boolean
   enabled: boolean
@@ -909,6 +1004,10 @@ export interface ConnectorRecord {
   plugin_id: string
   display_name: string
   config: Record<string, unknown>
+  /** Match mode: 'all' = execute all matching bindings, 'first' = first match wins. */
+  match_mode: 'all' | 'first'
+  /** Fallback agent when no binding matches. */
+  default_agent_id?: string | null
   status: 'active' | 'inactive' | 'error'
   error_message?: string | null
   created_at: Date

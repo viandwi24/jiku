@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ToolDefinition } from '@jiku/types'
+import type { ToolDefinition, ToolStreamChunk } from '@jiku/types'
 import { getFilesystemService } from './service.ts'
 
 /**
@@ -167,6 +167,33 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
           const files = await fs.search(query, extension)
+          return {
+            files: files.map(f => ({ path: f.path, name: f.name, size_bytes: f.size_bytes, updated_at: f.updated_at })),
+            count: files.length,
+          }
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'Search failed' }
+        }
+      },
+      // Plan 15.1: Streaming search — yields progress per batch of matches
+      async *executeStream(args: unknown): AsyncGenerator<ToolStreamChunk, unknown> {
+        const { query, extension } = args as { query: string; extension?: string }
+        const fs = await getFilesystemService(projectId)
+        if (!fs) return { error: 'Filesystem is not configured for this project' }
+        try {
+          const files = await fs.search(query, extension)
+          const BATCH = 5
+          for (let i = 0; i < files.length; i += BATCH) {
+            const batch = files.slice(i, i + BATCH)
+            yield {
+              type: 'progress',
+              data: {
+                found: batch.map(f => f.path),
+                total_so_far: Math.min(i + BATCH, files.length),
+                total: files.length,
+              },
+            }
+          }
           return {
             files: files.map(f => ({ path: f.path, name: f.name, size_bytes: f.size_bytes, updated_at: f.updated_at })),
             count: files.length,

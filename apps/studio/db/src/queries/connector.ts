@@ -46,6 +46,8 @@ export async function updateConnector(id: string, data: Partial<{
   config: Record<string, unknown>
   status: string
   error_message: string | null
+  match_mode: string
+  default_agent_id: string | null
 }>) {
   const rows = await db
     .update(connectors)
@@ -102,6 +104,9 @@ export async function createBinding(data: {
   output_config?: Record<string, unknown>
   rate_limit_rpm?: number
   include_sender_info?: boolean
+  priority?: number
+  trigger_regex?: string
+  schedule_filter?: Record<string, unknown>
 }) {
   const rows = await db
     .insert(connector_bindings)
@@ -132,6 +137,9 @@ export async function updateBinding(id: string, data: Partial<{
   rate_limit_rpm: number
   include_sender_info: boolean
   enabled: boolean
+  priority: number
+  trigger_regex: string
+  schedule_filter: Record<string, unknown>
 }>) {
   const rows = await db
     .update(connector_bindings)

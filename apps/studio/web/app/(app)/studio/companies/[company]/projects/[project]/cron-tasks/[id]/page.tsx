@@ -265,7 +265,7 @@ export default function CronTaskDetailPage({ params }: PageProps) {
         <Textarea
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
-          className="text-sm min-h-[120px]"
+          className="text-sm min-h-30"
         />
       </div>
 

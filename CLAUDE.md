@@ -1,5 +1,15 @@
 # CLAUDE.md
 
+## Engineering Standards
+
+- **NEVER ship half-baked features.** Every feature must be fully implemented end-to-end: backend, API, UI config, and properly wired into the running system. No dead code, no "wire it later", no "it works for now".
+- **Production-grade always.** This is a production-scale system. Never take shortcuts with "yang penting jalan dulu" (just make it work for now). Every implementation must be configurable, properly integrated, and ready for real users.
+- **No orphaned code.** If you create a file (service, utility, module), it MUST be imported and used by the system before you move on. Verify by searching for imports across the codebase.
+- **Config over hardcode.** Features that depend on external services (API keys, model selection, providers) must have UI configuration — not hardcoded values or env-var-only fallbacks.
+- **Verify integration.** After implementing a feature, verify it's actually running: check that imports exist, services are called, data flows end-to-end. Don't just write code and assume it works.
+
+---
+
 ## Tech Stack
 
 - **Runtime:** Bun

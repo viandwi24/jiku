@@ -28,6 +28,8 @@ import type {
   MemoryTier,
   MemoryVisibility,
 } from '@jiku/types'
+import { createEmbeddingService } from '../memory/embedding.ts'
+import { vectorStore } from '../memory/qdrant.ts'
 
 function toJikuConversation(row: {
   id: string
@@ -239,7 +241,31 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
       source: memory.source,
       expires_at: memory.expires_at ?? undefined,
     })
-    return toAgentMemory(row)
+    const saved = toAgentMemory(row)
+
+    // Plan 15.2: Upsert embedding to Qdrant (fire-and-forget, graceful fallback)
+    this.upsertEmbedding(saved).catch(err =>
+      console.warn('[memory] embedding upsert failed:', err instanceof Error ? err.message : err)
+    )
+
+    return saved
+  }
+
+  /** Generate embedding and upsert to Qdrant for semantic search. */
+  private async upsertEmbedding(memory: AgentMemory): Promise<void> {
+    const embeddingService = await createEmbeddingService(this.projectId)
+    if (!embeddingService) return
+
+    await vectorStore.ensureCollection(this.projectId, embeddingService.dimensions)
+    const [embedding] = await embeddingService.embed([memory.content])
+    if (!embedding) return
+
+    await vectorStore.upsert(this.projectId, memory.id, embedding, {
+      agent_id: memory.agent_id,
+      scope: memory.scope,
+      tier: memory.tier,
+      caller_id: memory.caller_id ?? '',
+    })
   }
 
   async updateMemory(id: string, data: Partial<Pick<AgentMemory,
@@ -250,6 +276,8 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
 
   async deleteMemory(id: string): Promise<void> {
     await dbDeleteMemory(id)
+    // Plan 15.2: Remove from Qdrant (fire-and-forget)
+    vectorStore.delete(this.projectId, id).catch(() => {})
   }
 
   async touchMemories(ids: string[]): Promise<void> {

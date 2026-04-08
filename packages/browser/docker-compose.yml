@@ -1,0 +1,16 @@
+services:
+  chrome:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    ports:
+      - "9222:9222"   # CDP
+      - "6080:6080"   # noVNC web viewer
+    environment:
+      - SCREEN_WIDTH=1280
+      - SCREEN_HEIGHT=720
+      - SCREEN_DEPTH=24
+      - CDP_PORT=9222
+      - NOVNC_PORT=6080
+    shm_size: "2gb"
+    restart: unless-stopped

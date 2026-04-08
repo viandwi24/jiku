@@ -157,7 +157,7 @@ export default function NewCronTaskPage({ params }: PageProps) {
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
           placeholder="Enter the prompt to send to the agent when this task runs..."
-          className="text-sm min-h-[120px]"
+          className="text-sm min-h-30"
         />
       </div>
 

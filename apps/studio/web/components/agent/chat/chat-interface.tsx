@@ -36,7 +36,7 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20 MB
 
 function AttachmentChip({ file, onRemove }: { file: PendingFile; onRemove: () => void }) {
   return (
-    <div className={`flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-md bg-muted border text-xs max-w-[160px] shrink-0 ${file.error ? 'border-red-400' : ''}`}>
+    <div className={`flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-md bg-muted border text-xs max-w-40 shrink-0 ${file.error ? 'border-red-400' : ''}`}>
       {file.uploading ? (
         <Loader2 className="w-4 h-4 text-muted-foreground shrink-0 animate-spin" />
       ) : file.previewUrl ? (
@@ -258,7 +258,7 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
                 )
               })}
               {/* Text */}
-              <p className="whitespace-pre-wrap break-words">
+              <p className="whitespace-pre-wrap wrap-break-word">
                 {msg.parts.map((part, i) =>
                   part.type === 'text' ? <span key={i}>{part.text}</span> : null,
                 )}
@@ -377,7 +377,7 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
             <Paperclip className="w-4 h-4" />
           </button>
           <textarea
-            className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[42px] max-h-32"
+            className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-10.5 max-h-32"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {

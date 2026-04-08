@@ -1,10 +1,11 @@
 'use client'
 
 import { use, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Input, cn } from '@jiku/ui'
+import { Input, Switch, cn } from '@jiku/ui'
 import { ChevronDown, Search, Wrench } from 'lucide-react'
+import { toast } from 'sonner'
 import type { PreviewRunResult } from '@/lib/api'
 
 interface PageProps {
@@ -40,16 +41,17 @@ function schemaToParams(schema: unknown) {
   }))
 }
 
-function ToolRow({ t }: { t: Tool }) {
+function ToolRow({ t, enabled, onToggle }: { t: Tool; enabled: boolean; onToggle?: (enabled: boolean) => void }) {
   const [open, setOpen] = useState(false)
   const params = schemaToParams(t.input_schema)
 
   return (
-    <div className="border border-border/40 rounded-lg overflow-hidden text-xs">
-      <button
-        className="flex items-center gap-2 w-full px-3 py-2.5 hover:bg-muted/40 transition-colors text-left"
-        onClick={() => setOpen(o => !o)}
-      >
+    <div className={cn("border border-border/40 rounded-lg overflow-hidden text-xs", !enabled && "opacity-50")}>
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <button
+          className="flex items-center gap-2 flex-1 min-w-0 hover:bg-muted/40 transition-colors text-left -mx-1 px-1 rounded"
+          onClick={() => setOpen(o => !o)}
+        >
         <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -65,7 +67,15 @@ function ToolRow({ t }: { t: Tool }) {
           )}
         </div>
         <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform', open && 'rotate-180')} />
-      </button>
+        </button>
+        {onToggle && (
+          <Switch
+            checked={enabled}
+            onCheckedChange={onToggle}
+            className="shrink-0"
+          />
+        )}
+      </div>
 
       {open && (
         <div className="border-t border-border/30 bg-muted/10 divide-y divide-border/20">
@@ -100,7 +110,11 @@ function ToolRow({ t }: { t: Tool }) {
   )
 }
 
-function ToolsList({ tools }: { tools: Tool[] }) {
+function ToolsList({ tools, toolStates, onToggle }: {
+  tools: Tool[]
+  toolStates?: { project: Record<string, boolean>; agent: Record<string, boolean> }
+  onToggle?: (toolId: string, enabled: boolean) => void
+}) {
   const [query, setQuery] = useState('')
 
   const filtered = query.trim()
@@ -150,7 +164,12 @@ function ToolsList({ tools }: { tools: Tool[] }) {
               ))}
             </div>
           </div>
-          {groupTools.map(t => <ToolRow key={t.id} t={t} />)}
+          {groupTools.map(t => {
+            const agentState = toolStates?.agent[t.id]
+            const projectState = toolStates?.project[t.id]
+            const isEnabled = agentState !== undefined ? agentState : projectState !== undefined ? projectState : true
+            return <ToolRow key={t.id} t={t} enabled={isEnabled} onToggle={onToggle ? (v) => onToggle(t.id, v) : undefined} />
+          })}
         </div>
       ))}
     </div>
@@ -188,6 +207,24 @@ export default function AgentToolsPage({ params }: PageProps) {
     staleTime: 60_000,
   })
 
+  const queryClient = useQueryClient()
+
+  const { data: toolStatesData } = useQuery({
+    queryKey: ['tool-states', currentAgent?.id],
+    queryFn: () => api.toolStates.get(currentAgent!.id),
+    enabled: !!currentAgent?.id,
+  })
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ toolId, enabled }: { toolId: string; enabled: boolean }) =>
+      api.toolStates.set(currentAgent!.id, toolId, enabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tool-states', currentAgent?.id] })
+      toast.success('Tool state updated')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed'),
+  })
+
   if (!currentAgent) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   }
@@ -197,13 +234,17 @@ export default function AgentToolsPage({ params }: PageProps) {
       <div>
         <h2 className="text-sm font-semibold">Available Tools</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
-          All tools registered for this agent, grouped by category.
+          All tools registered for this agent. Toggle to enable/disable per agent.
         </p>
       </div>
       {!preview ? (
         <p className="text-xs text-muted-foreground">Loading tools…</p>
       ) : (
-        <ToolsList tools={preview.active_tools} />
+        <ToolsList
+          tools={preview.active_tools}
+          toolStates={toolStatesData?.states}
+          onToggle={(toolId, enabled) => toggleMutation.mutate({ toolId, enabled })}
+        />
       )}
     </div>
   )

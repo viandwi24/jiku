@@ -147,17 +147,33 @@ export class AgentRunner {
     if (!scope.allowed_modes.includes(mode)) throw new JikuAccessError(`Mode '${mode}' not allowed`)
 
     // Merge built-in agent tools (e.g. memory tools) with plugin-resolved tools
-    const builtInResolved = (this.agent.built_in_tools ?? []).map(t => ({
+    const allBuiltIn = [
+      ...(this.agent.built_in_tools ?? []),
+      ...(params.extra_built_in_tools ?? []),
+    ]
+    const builtInResolved = allBuiltIn.map(t => ({
       ...t,
       plugin_id: '__builtin__',
       resolved_id: `__builtin__:${t.meta.id}`,
       tool_name: `builtin_${t.meta.id}`,
       resolved_permission: '*',
     }))
-    const modeTools = [
+    let modeTools = [
       ...scope.active_tools.filter(t => t.modes.includes(mode)),
       ...builtInResolved.filter(t => t.modes.includes(mode)),
     ]
+
+    // Plan 15.6: Filter tools by on/off state (agent override > project override > default enabled)
+    if (params.tool_states) {
+      const { project, agent: agentStates } = params.tool_states
+      modeTools = modeTools.filter(t => {
+        const agentState = agentStates[t.resolved_id]
+        if (agentState !== undefined) return agentState
+        const projectState = project[t.resolved_id]
+        if (projectState !== undefined) return projectState
+        return true // default: enabled
+      })
+    }
 
     // 2. Resolve model — run-level > agent-level > runtime defaults
     const model = this.providers.resolve(
@@ -253,6 +269,7 @@ export class AgentRunner {
         },
         current_input: input,
         config,
+        semanticScores: params.semantic_scores,
       })
 
       accessedMemoryIds = [
@@ -417,11 +434,31 @@ export class AgentRunner {
             writer: jikuWriter,
           }
 
-          aiTools[resolvedTool.tool_name] = tool({
-            description: resolvedTool.meta.description,
-            inputSchema: toInputSchema(resolvedTool.input),
-            execute: async (args: unknown) => resolvedTool.execute(args, toolCtx),
-          })
+          if (resolvedTool.executeStream) {
+            // Plan 15.1: Streaming tool — yield progress chunks
+            const streamExec = resolvedTool.executeStream
+            const toolId = resolvedTool.resolved_id
+            aiTools[resolvedTool.tool_name] = tool({
+              description: resolvedTool.meta.description,
+              inputSchema: toInputSchema(resolvedTool.input),
+              execute: async (args: unknown) => {
+                const gen = streamExec(args, toolCtx)
+                let finalValue: unknown
+                for await (const chunk of gen) {
+                  jikuWriter.write('jiku-tool-data', { tool_id: toolId, data: chunk })
+                }
+                const result = await gen.return(undefined)
+                finalValue = result.value
+                return finalValue
+              },
+            })
+          } else {
+            aiTools[resolvedTool.tool_name] = tool({
+              description: resolvedTool.meta.description,
+              inputSchema: toInputSchema(resolvedTool.input),
+              execute: async (args: unknown) => resolvedTool.execute(args, toolCtx),
+            })
+          }
         }
 
         // Run LLM — merge AI SDK stream directly into the UI stream writer
@@ -502,33 +539,9 @@ export class AgentRunner {
           })
         }
 
-        // Post-run memory extraction (fire and forget)
-        if (memoryConfig && runtimeId && storage.saveMemory && storage.deleteMemory) {
-          const runMessages = await storage.getMessages(conversation_id)
-          const { extractMemoriesPostRun } = await import('./memory/extraction.ts')
-          extractMemoriesPostRun({
-            runtime_id: runtimeId,
-            agent_id: agentId,
-            caller_id: caller.user_id,
-            messages: runMessages.slice(-6),
-            existing_memories: loadedMemories,
-            config: memoryConfig,
-            model,
-            storage,
-          }).catch(() => {})
-
-          // Post-run persona extraction (fire and forget)
-          if (storage.saveMemory !== undefined) {
-            const { extractPersonaPostRun } = await import('./memory/persona-extraction.ts')
-            extractPersonaPostRun({
-              runtime_id: runtimeId,
-              agent_id: agentId,
-              messages: runMessages.slice(-6),
-              model,
-              storage,
-            }).catch(() => {})
-          }
-        }
+        // Note: LLM extraction removed (Plan 15 decision).
+        // Memory is saved explicitly via agent tool calls (memory_core_append, etc.)
+        // This avoids duplicate memories and saves token costs.
       },
 
       onError: (err: unknown) => {

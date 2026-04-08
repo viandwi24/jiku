@@ -36,6 +36,17 @@ export const agents = pgTable('agents', {
   task_allowed_agents:  text('task_allowed_agents').array().default(null),
   /** Whether this agent can be used as the target of cron tasks. */
   cron_task_enabled:    boolean('cron_task_enabled').notNull().default(true),
+  /**
+   * Queue mode for handling messages while agent is busy.
+   * 'off'       = reject/drop (current behavior)
+   * 'queue'     = buffer silently, process FIFO
+   * 'ack_queue' = buffer + send ack message to sender
+   */
+  queue_mode:           varchar('queue_mode', { length: 20 }).notNull().default('off'),
+  /** Auto-reply rules evaluated before agent invocation. JSON array of AutoReplyRule. */
+  auto_replies:         jsonb('auto_replies').notNull().default([]),
+  /** Availability schedule — agent is "offline" outside these hours. */
+  availability_schedule: jsonb('availability_schedule').default(null),
   /** How to deliver chat attachments to the model. 'base64' = inline data URI. 'proxy_url' = server proxy URL. Default base64 (dev-friendly). */
   file_delivery:        varchar('file_delivery', { length: 20 }).notNull().default('base64'),
   /** Scope for chat attachments uploaded by users. 'per_user' or 'shared'. */

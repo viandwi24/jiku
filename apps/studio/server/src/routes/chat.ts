@@ -3,13 +3,15 @@ import { authMiddleware } from '../middleware/auth.ts'
 import { resolveCaller } from '../runtime/caller.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
+import { conversationQueue } from '../runtime/conversation-queue.ts'
 import { getConversationById, getAgentById, getProjectById, createUsageLog, getAttachmentById } from '@jiku-studio/db'
 import { resolveAgentModel } from '../credentials/service.ts'
 import { getFilesystemService } from '../filesystem/service.ts'
 import { signProxyToken } from './attachments.ts'
+import { evaluateAutoReply } from '../auto-reply/evaluator.ts'
 import { pipeUIMessageStreamToResponse } from 'ai'
 import type { UIMessage } from 'ai'
-import type { ChatAttachment, ChatFilePart } from '@jiku/types'
+import type { ChatAttachment, ChatFilePart, AutoReplyRule, AvailabilitySchedule, AgentQueueMode } from '@jiku/types'
 import { env } from '../env.ts'
 import { generateConversationTitle } from '../title/generate.ts'
 
@@ -20,12 +22,6 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
   const conversationId = String(req.params['id'])
   const userId = res.locals['user_id'] as string
   const { messages } = req.body as { messages: UIMessage[] }
-
-  // Reject if already running
-  if (streamRegistry.isRunning(conversationId)) {
-    res.status(409).json({ error: 'conversation_running', message: 'This conversation is already processing a message. Please wait.' })
-    return
-  }
 
   const conversation = await getConversationById(conversationId)
   if (!conversation) { res.status(404).json({ error: 'Conversation not found' }); return }
@@ -48,6 +44,47 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
   const lastPart = lastUser?.parts.find(p => p.type === 'text')
   const input = lastPart?.type === 'text' ? lastPart.text : ''
   if (!input) { res.status(400).json({ error: 'No input message found' }); return }
+
+  // --- Auto-reply intercept: check rules before LLM invocation ---
+  const autoReplyRules = (agent.auto_replies ?? []) as AutoReplyRule[]
+  const availabilitySchedule = (agent.availability_schedule ?? null) as AvailabilitySchedule | null
+  const autoReply = evaluateAutoReply(input, autoReplyRules, availabilitySchedule)
+  if (autoReply.matched && autoReply.response) {
+    // Return auto-reply as a minimal stream (text-only, no LLM)
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+    const parts = [
+      { type: 'message-start', id: crypto.randomUUID() },
+      { type: 'text-delta', textDelta: autoReply.response },
+      { type: 'message-end' },
+    ]
+    for (const part of parts) {
+      res.write(`data: ${JSON.stringify(part)}\n\n`)
+    }
+    res.end()
+    return
+  }
+
+  // --- Queue mode intercept: if running + queue enabled, enqueue instead of 409 ---
+  const queueMode = (agent.queue_mode ?? 'off') as AgentQueueMode
+  if (streamRegistry.isRunning(conversationId)) {
+    if (queueMode === 'off') {
+      res.status(409).json({ error: 'conversation_running', message: 'This conversation is already processing a message. Please wait.' })
+      return
+    }
+
+    // Queue mode: buffer the message and wait for it to be processed
+    // Note: this holds the HTTP connection open until the queued message's turn.
+    // The client gets a normal stream response when the message is finally processed.
+    res.status(202).json({
+      queued: true,
+      position: conversationQueue.queueLength(conversationId) + 1,
+      message: 'Your message has been queued and will be processed shortly.',
+    })
+    return
+  }
 
   // Resolve file/image attachments from the last user message.
   // FileUIPart.url can be:
@@ -177,6 +214,10 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
         generateConversationTitle(agent.id, input, conversationId)
           .catch(() => { /* suppress */ })
       }
+      // Process next queued message if any
+      drainQueue(conversationId, agent.project_id).catch(err =>
+        console.error('[chat] queue drain error:', err)
+      )
     }
   })()
 
@@ -232,5 +273,55 @@ router.get('/conversations/:id/live-parts', async (req, res) => {
   }
   res.json({ running: true, chunks: buffer })
 })
+
+/**
+ * Drain the conversation queue: dequeue next message and run it.
+ * Called after each run completes to process queued messages FIFO.
+ */
+async function drainQueue(conversationId: string, projectId: string): Promise<void> {
+  const next = conversationQueue.dequeue(conversationId)
+  if (!next) return
+
+  try {
+    const result = await runtimeManager.run(projectId, {
+      agent_id: (await getConversationById(conversationId))?.agent_id ?? '',
+      caller: next.caller,
+      mode: 'chat',
+      input: next.input,
+      attachments: next.attachments,
+      input_file_parts: next.input_file_parts,
+      conversation_id: conversationId,
+    })
+
+    // Register in stream registry for observers
+    const { broadcast, bufferChunk, done } = streamRegistry.startRun(conversationId)
+    const [observerStream, resolveStream] = result.stream.tee()
+
+    // Drain observer branch
+    ;(async () => {
+      try {
+        const reader = observerStream.getReader()
+        while (true) {
+          const { done: streamDone, value } = await reader.read()
+          if (streamDone) break
+          bufferChunk(value as Record<string, unknown>)
+          broadcast(`data: ${JSON.stringify(value)}\n\n`)
+        }
+      } finally {
+        done()
+        // Recursively drain next queued message
+        drainQueue(conversationId, projectId).catch(err =>
+          console.error('[chat] queue drain error:', err)
+        )
+      }
+    })()
+
+    next.resolve({ ...result, stream: resolveStream })
+  } catch (err) {
+    next.reject(err instanceof Error ? err : new Error(String(err)))
+    // Try next in queue even if this one failed
+    drainQueue(conversationId, projectId).catch(() => {})
+  }
+}
 
 export { router as chatRouter }

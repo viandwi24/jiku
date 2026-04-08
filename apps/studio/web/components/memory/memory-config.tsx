@@ -387,8 +387,8 @@ function EmbeddingCredentialPicker({ projectId, adapterId, value, onChange }: {
   projectId: string; adapterId: string; value: string | null; onChange: (credId: string | null) => void
 }) {
   const { data } = useQuery({
-    queryKey: ['credentials', projectId],
-    queryFn: () => api.credentials.listProject(projectId),
+    queryKey: ['credentials-available', projectId],
+    queryFn: () => api.credentials.available(projectId),
     enabled: !!projectId,
   })
 
@@ -399,7 +399,7 @@ function EmbeddingCredentialPicker({ projectId, adapterId, value, onChange }: {
   if (filtered.length === 0) {
     return (
       <p className="text-xs text-amber-600">
-        No {adapterId} credential found. Add one in Project Settings &rarr; Credentials.
+        No {adapterId} credential found. Add one in Company or Project Settings &rarr; Credentials.
       </p>
     )
   }

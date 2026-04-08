@@ -102,9 +102,10 @@ async function resolveApiKey(
     }
   }
 
-  // Fallback: find any credential for this provider in the project
-  const { getProjectCredentials } = await import('@jiku-studio/db')
-  const creds = await getProjectCredentials(projectId)
+  // Fallback: find any credential for this provider (project + company level)
+  const { getProjectById, getAvailableCredentials } = await import('@jiku-studio/db')
+  const project = await getProjectById(projectId)
+  const creds = await getAvailableCredentials(project?.company_id ?? '', projectId)
   const match = creds.find(c => c.adapter_id === provider)
   if (match?.fields_encrypted) {
     const fields = decryptFields(match.fields_encrypted)

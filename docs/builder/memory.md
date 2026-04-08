@@ -1,5 +1,40 @@
 # Memory
 
+## Credential inheritance: always use getAvailableCredentials, not getProjectCredentials
+
+`getProjectCredentials(projectId)` returns only project-scoped credentials. When you need to resolve credentials that may live at company level (e.g. a shared OpenAI key defined once for all projects), always use `getAvailableCredentials(companyId, projectId)` — it returns a union. You need to look up `companyId` from the project first (`getProjectById`).
+
+Frontend: `api.credentials.available(projectId)` hits `/api/projects/:pid/credentials/available` which already calls `getAvailableCredentials` internally.
+
+This gotcha affects any feature that resolves credentials at runtime — e.g. embedding, LLM provider selection.
+
+## Semantic memory embedding config
+
+Embedding config lives in `projects.memory_config.embedding` (JSONB). Fields: `enabled`, `provider`, `model`, `credential_id`, `dimensions`. The `embedding.ts` service reads this at runtime and caches per-project for 5 minutes. Clear cache with `clearEmbeddingCache(projectId)` — called automatically on `PATCH /memory-config`.
+
+If `embedding.enabled = false` (default), `createEmbeddingService()` returns `null` and semantic search is silently skipped. Enable via Memory → Config → Semantic Search tab.
+
+## LLM extraction removed (Plan 15 decision)
+
+`extractMemoriesPostRun()` and `extractPersonaPostRun()` were removed from the run lifecycle. Reason: caused duplicate memories when tool-saved memories hadn't yet committed before extraction read stale data. The agent's built-in memory tools (`memory_core_append`, `memory_extended_insert`, etc.) are sufficient — explicit tool calls are more controllable than auto-extraction. The `extraction` block in `ResolvedMemoryConfig` still exists in types but is no longer used.
+
+## Connector tools: always call connector_list first
+
+Connector tools (`connector_send`, `connector_list_actions`, `connector_run_action`) require a valid `connector_id` (UUID). **Never hardcode display_name into agent prompts.** Instead:
+
+1. Agent calls `connector_list()` (no params needed) → returns all connectors with IDs
+2. Agent finds the connector by `display_name` or `plugin_id`
+3. Agent uses the returned UUID in subsequent connector tool calls
+
+Example flow:
+```
+builtin_connector_list
+→ { connectors: [{ id: "uuid-123", display_name: "Telegram Jiku Agent", plugin_id: "jiku.telegram", status: "active" }] }
+→ Use id: "uuid-123" in connector_send({ connector_id: "uuid-123", ... })
+```
+
+This pattern works because `connector_list` is stateless and returns fresh data each time.
+
 ## Cron Task System conventions
 
 **Cron expression library split:**

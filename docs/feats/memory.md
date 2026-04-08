@@ -41,7 +41,7 @@ resolveMemoryConfig(projectConfig, agentConfig?) → ResolvedMemoryConfig
 3. **Format** — `formatMemorySection()` renders markdown grouped by scope
 4. **Inject** — memory section added to system prompt via `buildSystemPrompt({ memory_section })`
 5. **Touch** — `touchMemories(ids)` increments `access_count` + sets `last_accessed`
-6. **Extract** — `extractMemoriesPostRun()` runs as fire-and-forget after stream completes
+6. ~~**Extract**~~ — LLM extraction removed (Plan 15). Agent must explicitly call memory tools.
 
 ## Built-in Memory Tools (9 of 9)
 
@@ -145,7 +145,41 @@ interface ResolvedMemoryConfig {
 
 `deleteExpiredMemories()` in `apps/studio/db/src/queries/memory.ts` — deletes rows where `expires_at IS NOT NULL AND expires_at < NOW()`. Called at server boot and every 24h via `setInterval` in `apps/studio/server/src/index.ts`.
 
+## Semantic Search (Plan 15.7)
+
+Vector embedding search via Qdrant. When enabled, memories are embedded on save and scored by cosine similarity at retrieval time.
+
+**Config** (`projects.memory_config.embedding`):
+- `enabled: boolean` — default false; enable via Memory → Config → Semantic Search tab
+- `provider: 'openai' | 'openrouter'`
+- `model: string` — e.g. `text-embedding-3-small`
+- `credential_id: string | null` — specific credential; fallback: auto-find by provider
+- `dimensions: number` — default 1536
+
+**Credential resolution:** Uses `getAvailableCredentials(companyId, projectId)` — includes both company-level and project-level credentials. Company credentials (defined once) are visible to all projects.
+
+**Runtime flow:**
+1. `saveMemory()` in `storage.ts` → fire-and-forget `upsertEmbedding()`
+2. `deleteMemory()` → fire-and-forget Qdrant delete
+3. `manager.run()` → queries Qdrant for semantic scores → merged into relevance scoring
+
+**Qdrant collection:** Named `memories_<projectId>`. Created automatically on first embed. Vectors are `1536`-dim (or configured `dimensions`).
+
+**Credential picker:** `EmbeddingCredentialPicker` in `memory-config.tsx` uses `api.credentials.available(projectId)` to show both company and project credentials.
+
+## Related Files (updated for Plan 15)
+
+- `apps/studio/server/src/memory/embedding.ts` — `createEmbeddingService()`, `clearEmbeddingCache()`
+- `apps/studio/server/src/memory/qdrant.ts` — `QdrantVectorStore` class
+- `apps/studio/server/src/runtime/storage.ts` — `upsertEmbedding()`, wired in `saveMemory()`/`deleteMemory()`
+- `apps/studio/server/src/runtime/manager.ts` — semantic scores passed to runner in `run()`
+- `apps/studio/server/src/routes/memory.ts` — `clearEmbeddingCache()` called after config save
+- `packages/core/src/memory/builder.ts` — accepts `semanticScores?: Map<string, number>` parameter
+- `apps/studio/web/components/memory/memory-config.tsx` — 4-tab config UI with Semantic Search tab + method cards
+
 ## Known Limitations
 
-- No vector/embedding search — uses keyword + recency scoring only
+- Qdrant must be running (`docker compose up qdrant`) — semantic search silently disabled if down
+- Embedding is fire-and-forget; new memories may not be immediately searchable
 - DB migration for `agent_memories` requires `bun run db:push`
+- LLM auto-extraction removed — agents must explicitly call memory tools to persist facts

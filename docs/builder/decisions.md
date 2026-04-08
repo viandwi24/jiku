@@ -1,5 +1,25 @@
 # Decisions
 
+## ADR-033 — Credential resolution always uses getAvailableCredentials (company + project union)
+
+**Context:** Features that resolve credentials at runtime (embedding API key, LLM provider, etc.) were using `getProjectCredentials(projectId)` which only returns credentials scoped to the project. Users creating credentials at company level (a common pattern for shared API keys like OpenAI) got "no credential found" errors.
+
+**Decision:** Any runtime credential resolution must use `getAvailableCredentials(companyId, projectId)` which returns a union of company-level and project-level credentials. `companyId` is looked up from the project row. Frontend pickers must use `api.credentials.available(projectId)` (hits `/api/projects/:pid/credentials/available`) instead of `api.credentials.listProject`.
+
+**Consequences:** Company credentials (defined once per company) are now visible to all their projects. No more "add credential to every project" workaround. This is the correct inheritance model — applies to embedding, future LLM key resolution, and any other credential-dependent feature.
+
+---
+
+## ADR-032 — LLM memory extraction removed; explicit tool calls only
+
+**Context:** `extractMemoriesPostRun()` ran a small LLM call after each conversation to auto-extract facts into memory. It caused duplicate memories because the extraction ran before tool-saved memories from the same run had committed in the DB (stale read window). Also: OpenClaw doesn't use auto-extraction; explicit tool calls are the correct model.
+
+**Decision:** Remove `extractMemoriesPostRun()` and `extractPersonaPostRun()` from the run lifecycle entirely. Agents must explicitly call `memory_core_append`, `memory_extended_insert`, etc. to persist facts. The `extraction` block in `ResolvedMemoryConfig` is kept in types for future opt-in use but is not evaluated.
+
+**Consequences:** No more silent duplicate memories. Agent behavior is fully deterministic and auditable via tool calls. Agents need to be prompted explicitly to use memory tools when persistence matters.
+
+---
+
 ## ADR-031 — Browser automation: CLI bridge to agent-browser instead of OpenClaw port
 
 **Context:** Plan 13 ported OpenClaw browser engine (~9000 lines, ~80 files) directly into `apps/studio/server`. It failed because Playwright spawned a headless process instead of connecting to the visible Chromium in the Docker container. CDP attach mode silently fell back to headless, so users saw no browser activity in noVNC.

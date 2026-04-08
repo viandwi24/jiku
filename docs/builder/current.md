@@ -1,8 +1,10 @@
 ## Phase
-Plan 15 — OpenClaw-Inspired Agentic Improvements. ALL 4 SPRINTS COMPLETE. 9/9 active features implemented.
+Plan 15 — OpenClaw-Inspired Agentic Improvements. ALL 4 SPRINTS COMPLETE. Post-launch connector tools enhancement.
 
 ## Currently Working On
-- Plan 15 FULLY IMPLEMENTED (backend + UI for all features with UI components)
+- Plan 15 FULLY IMPLEMENTED + post-launch improvements
+- **FIXED (2026-04-08):** Credential inheritance bug — company-level credentials now visible in memory semantic search credential picker and resolved at runtime
+- **ADDED (2026-04-08):** `connector_list` tool — agent can now discover connector IDs before calling `connector_send`, etc.
 - Pending migrations: `0005`, `0006`, `0007` — run `bun run db:push`
 - Qdrant needs `docker compose up qdrant` to start
 - MCP SDK installed (`@modelcontextprotocol/sdk@1.29.0`)
@@ -34,7 +36,13 @@ Plan 15 — OpenClaw-Inspired Agentic Improvements. ALL 4 SPRINTS COMPLETE. 9/9 
 
 ## Relevant Files (Most Recently Worked On)
 
-### Conversation Management (this session)
+### Connector Tools Enhancement (this session - 2026-04-08)
+- `apps/studio/server/src/connectors/tools.ts` — Added `connector_list` tool for agent to discover connector IDs
+  - Lists all connectors in project with status, returns: `{ id, plugin_id, display_name, status }`
+  - Agent workflow: call `connector_list()` → find connector by display_name → use UUID in `connector_send()`
+- `docs/builder/memory.md` — Added gotcha: "Connector tools: always call connector_list first"
+
+### Conversation Management (previous session)
 - `apps/studio/server/src/title/generate.ts` — Auto-generates conversation title using agent's LLM (max 50 chars, fire-and-forget)
 - `apps/studio/server/src/routes/chat.ts` — Hook to trigger title generation after first message
 - `apps/studio/server/src/routes/conversations.ts` — Added `PATCH /conversations/:id/title` for manual title updates, `DELETE /conversations/:id` for soft delete

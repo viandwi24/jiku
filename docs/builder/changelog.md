@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-04-08 — Add: connector_list tool for agent discovery
+
+**Added:** Agent tool `connector_list` to discover connector IDs before calling connector tools.
+
+**Context:** Connector tools (`connector_send`, `connector_run_action`, etc.) require a valid `connector_id` (UUID), not display_name. Agents could not easily map display_name → UUID.
+
+**Solution:** New tool `builtin_connector_list` (no parameters) returns array of connectors with `{ id, plugin_id, display_name, status }`. Agent workflow:
+1. Call `connector_list()` 
+2. Find connector by matching `display_name` or `plugin_id`
+3. Use returned `id` in subsequent connector tool calls
+
+**Files touched:**
+- `apps/studio/server/src/connectors/tools.ts` — added `connector_list` tool definition
+- `docs/builder/memory.md` — added gotcha documentation
+
+---
+
+## 2026-04-08 — Fix: Credential inheritance for semantic memory embedding
+
+**Changed:** Company-level credentials were invisible to the semantic memory embedding picker and runtime resolver. Two fixes applied:
+1. `EmbeddingCredentialPicker` (frontend) now calls `api.credentials.available(projectId)` which hits `/api/projects/:pid/credentials/available` — returns both company-level and project-level credentials, instead of the old `api.credentials.listProject` which was project-only.
+2. `resolveApiKey()` (backend, `embedding.ts`) fallback now uses `getAvailableCredentials(company_id, projectId)` instead of `getProjectCredentials(projectId)` — looks up `company_id` from project first, then calls the union query.
+
+**Files touched:**
+- `apps/studio/web/components/memory/memory-config.tsx` — `EmbeddingCredentialPicker` query key + fn changed
+- `apps/studio/server/src/memory/embedding.ts` — `resolveApiKey()` fallback uses `getAvailableCredentials`
+
+---
+
 ## 2026-04-08 — @jiku/browser: Browser Automation Package (replaces Plan 13)
 
 **Changed:** Built `@jiku/browser` package from scratch — HTTP bridge to Vercel agent-browser CLI via CDP. Replaces failed Plan 13 OpenClaw port (~9000 lines) with clean ~600 line implementation.

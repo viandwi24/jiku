@@ -1,6 +1,7 @@
 import { defineTool } from '@jiku/kit'
 import { z } from 'zod'
 import {
+  getConnectors,
   getConnectorEvents,
   getConnectorMessages,
   updateBinding,
@@ -17,6 +18,35 @@ import { connectorRegistry } from './registry.ts'
  */
 export function buildConnectorTools(projectId: string) {
   return [
+
+    // ── List available connectors ────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_list',
+        name: 'List Connectors',
+        description: 'List all connectors in the project. Use this to find connector IDs before calling other connector tools.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        status: z.enum(['active', 'inactive', 'error']).optional().describe('Filter by connector status'),
+      }),
+      execute: async (args) => {
+        const { status } = args as { status?: 'active' | 'inactive' | 'error' }
+        const allConnectors = await getConnectors(projectId)
+        const filtered = status ? allConnectors.filter(c => c.status === status) : allConnectors
+        return {
+          connectors: filtered.map(c => ({
+            id: c.id,
+            plugin_id: c.plugin_id,
+            display_name: c.display_name,
+            status: c.status,
+          })),
+        }
+      },
+    }),
 
     // ── Query events on a message ────────────────────────────────────
 

@@ -269,10 +269,6 @@ The virtual disk file manager page lives at `/disk` (not `/files`). The settings
 
 Files ≤ 50,000 bytes store content in `project_files.content_cache`. This avoids S3 round-trips for small text files. `fs_read` returns `content_cache` if set, otherwise downloads from S3. Always sync cache on write.
 
-## Browser engine is OpenClaw port — don't modify core files
-
-`apps/studio/server/src/browser/browser/` contains ~60 files ported verbatim from OpenClaw. Only import paths were changed. Do not refactor these files. New glue code lives in `apps/studio/server/src/browser/` (top-level only): `index.ts`, `tool-schema.ts`, `node-server-entry.ts`.
-
 ## Attachments vs project_files: different concepts
 
 - `project_attachments` — ephemeral chat images uploaded alongside messages. Accessible via `/api/attachments/:id`. Agents see them as image parts in message history.
@@ -309,9 +305,21 @@ Check is enforced server-side in `checkTaskDelegationPermission()` in `apps/stud
 
 `apps/studio/web/app/.../agents/[agent]/memory/page.tsx` uses `useEffect(() => { ... }, [resolvedData])` to sync form state from server data. Do NOT use the `initialized` flag + if-inside-render pattern — it causes desync because `invalidateQueries` is async and stale data triggers a premature re-init before fresh data arrives.
 
-## Browser automation (Plan 13) is FAILED — to be removed at MVP
+## Browser automation: @jiku/browser (replaces Plan 13)
 
-The browser tool code exists but is marked failed. It controls a headless Playwright process, NOT the visible Chromium in noVNC. Remote CDP attach silently falls back to headless because `chromium-cdp.sh` does not run in the LinuxServer container. Do not invest any debugging effort — remove the entire feature before MVP release (see ADR-026, backlog task "[PRE-MVP CLEANUP]").
+Plan 13 (OpenClaw port) is replaced by `packages/browser/`. Key conventions:
+
+**Pre-connect pattern:** `agent-browser connect <endpoint>` must run once before `--cdp` flag works. `ensureConnected()` in `spawner.ts` handles this with an in-memory `Set<string>` cache.
+
+**ws:// → http:// conversion:** `resolveCdpEndpoint()` converts `ws://localhost:9222` to `http://localhost:9222`. agent-browser `--cdp` accepts `http://` URLs or port numbers, NOT `ws://` URLs (except full `wss://` paths for remote services).
+
+**Docker CDP proxy:** Chrome HTTP `/json/version` API is not accessible from outside the container natively. `socat` in the container forwards `0.0.0.0:9222 → 127.0.0.1:19222` (Chrome's internal port). Both HTTP and WebSocket traffic go through socat.
+
+**Screenshot returns base64:** `execBrowserCommand` for screenshot: CLI saves to temp file → read → base64 encode → delete temp file. Response: `{ base64: "...", format: "png" }`. Client handles saving if needed.
+
+**Non-root Chromium:** Docker container runs Chromium as user `browser` (not root). No `--no-sandbox` flag needed, no warning banner in noVNC.
+
+**Tool definition in studio, not in package:** `@jiku/browser` is a library. Tool definitions for AI agents go in `apps/studio/server`, using `execBrowserCommand()` directly. The package does NOT define AI tools.
 
 ## ToolOutput renders content[] arrays with image support
 

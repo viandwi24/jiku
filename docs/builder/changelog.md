@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-08 — @jiku/browser: Browser Automation Package (replaces Plan 13)
+
+**Changed:** Built `@jiku/browser` package from scratch — HTTP bridge to Vercel agent-browser CLI via CDP. Replaces failed Plan 13 OpenClaw port (~9000 lines) with clean ~600 line implementation.
+
+- `packages/browser/` — new package with Express server, CLI spawner, parsed responses, AI error hints
+- 30+ browser commands: navigation, interaction (click/fill/type/drag/upload), observation (snapshot/screenshot/pdf), tabs, cookies, storage, eval, batch
+- Docker container: Chromium + Xvfb + noVNC + socat CDP proxy (non-root user, no `--no-sandbox`)
+- Screenshot returns base64 (not file path) — client handles persistence
+- `BrowserResult<T>` response with `hint` field for AI recovery suggestions (10 error patterns)
+- `ensureConnected()` — auto-runs `agent-browser connect` once per CDP endpoint
+- `resolveCdpEndpoint()` — converts `ws://` to `http://` format for agent-browser
+- 52 unit tests (profile manager, spawner/buildArgs, parser/hints, server API)
+
+**Files touched:**
+- `packages/browser/src/types.ts`, `server.ts`, `spawner.ts`, `parser.ts`, `profile-manager.ts`, `main.ts`, `index.ts`
+- `packages/browser/src/examples/cdp.ts`
+- `packages/browser/src/tests/*.test.ts` (4 files)
+- `packages/browser/docker/Dockerfile`, `docker/entrypoint.sh`, `docker-compose.yml`
+- `packages/browser/README.md`, `SKILL.md`
+- `docs/feats/browser.md` — rewritten for new architecture
+
 ## 2026-04-08 — Plan 15 Sprint 4: Inter-Agent + Tool Streaming + Progress
 
 - **15.4 Enhanced Inter-Agent Calling:**

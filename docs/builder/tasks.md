@@ -10,7 +10,8 @@
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
 - [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
-- [ ] **[PRE-MVP CLEANUP]** Remove browser automation feature — marked FAILED, does not meet planning requirements. Code exists at `apps/studio/server/src/browser/`, `apps/studio/web/app/.../browser/page.tsx`, and browser tool injection in `runtime/manager.ts`. Remove all of it before MVP release.
+- [ ] **[PRE-MVP CLEANUP]** Remove OLD browser automation code (Plan 13 OpenClaw port) — `apps/studio/server/src/browser/`, `apps/studio/web/app/.../browser/page.tsx`, browser tool injection in `runtime/manager.ts`. Replaced by `@jiku/browser` package.
+- [ ] Integrate `@jiku/browser` into `apps/studio/server` — create browser tool definition using `execBrowserCommand()`, register in RuntimeManager, add browser settings UI
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done

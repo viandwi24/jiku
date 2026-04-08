@@ -1,5 +1,20 @@
 # Decisions
 
+## ADR-031 — Browser automation: CLI bridge to agent-browser instead of OpenClaw port
+
+**Context:** Plan 13 ported OpenClaw browser engine (~9000 lines, ~80 files) directly into `apps/studio/server`. It failed because Playwright spawned a headless process instead of connecting to the visible Chromium in the Docker container. CDP attach mode silently fell back to headless, so users saw no browser activity in noVNC.
+
+**Decision:** Replace with `@jiku/browser` package — a thin CLI bridge to [Vercel agent-browser](https://github.com/vercel-labs/agent-browser) (Rust binary). Each command spawns `agent-browser --cdp <endpoint> --json <action>`. CDP connection goes through a socat proxy in Docker to make Chrome's HTTP `/json/version` API accessible from outside the container. Pre-connect pattern used (`agent-browser connect <endpoint>` once per endpoint) because `--cdp` alone fails on first use. Screenshots return base64 instead of file paths — client handles persistence.
+
+**Consequences:**
+- ~600 lines vs ~9000 — massively simpler, testable (52 tests)
+- Stateless per command — no persistent page state between calls (console logs, network requests lost)
+- Depends on agent-browser binary (Rust, installed via npm)
+- Single active tab constraint — concurrent users on same profile will conflict
+- Tool definition lives in `apps/studio/server`, not in the package (clean separation)
+
+---
+
 ## ADR-030 — Cron task permissions: caller context snapshotted at creation
 
 **Context:** Cron tasks run periodically on behalf of the original creator. If the creator's role later changes (e.g. demoted from superadmin to member), should the cron task still have access to previous permissions?

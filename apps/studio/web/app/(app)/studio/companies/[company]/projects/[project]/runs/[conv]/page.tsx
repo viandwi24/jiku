@@ -5,8 +5,8 @@ import { useQuery } from '@tanstack/react-query'
 import type { UIMessage } from 'ai'
 import { api } from '@/lib/api'
 import { dbMessageToUIMessage } from '@/lib/messages'
-import { Button, Badge } from '@jiku/ui'
-import { ArrowLeft, AlertCircle } from 'lucide-react'
+import { Button, Badge, cn } from '@jiku/ui'
+import { ArrowLeft, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 import { ConversationViewer } from '@/components/chat/conversation-viewer'
 
@@ -70,6 +70,8 @@ export default function RunDetailPage({ params }: PageProps) {
   const meta = conv.metadata ?? {}
   const goal = meta.goal as string | undefined
   const output = meta.output as string | undefined
+  const progressLog = (meta.progress_log ?? []) as Array<{ message: string; percent?: number; details?: string; at: string }>
+  const currentProgress = meta.current_progress as { step?: string; percentage?: number } | undefined
   const type = conv.type ?? 'chat'
   const runStatus = conv.run_status ?? conv.status
 
@@ -117,6 +119,44 @@ export default function RunDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {/* Progress timeline (Plan 15.8) */}
+      {progressLog.length > 0 && (
+        <div className="border-b px-4 py-3 shrink-0 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold">Progress</p>
+            {currentProgress?.percentage != null && (
+              <div className="flex items-center gap-2">
+                <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary rounded-full transition-all"
+                    style={{ width: `${currentProgress.percentage}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-mono text-muted-foreground">{currentProgress.percentage}%</span>
+              </div>
+            )}
+          </div>
+          <div className="space-y-1">
+            {progressLog.map((entry, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs">
+                {i === progressLog.length - 1 && runStatus === 'running' ? (
+                  <Loader2 className="h-3 w-3 mt-0.5 shrink-0 text-primary animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0 text-green-500" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <span className="text-foreground">{entry.message}</span>
+                  {entry.details && <span className="text-muted-foreground ml-1">— {entry.details}</span>}
+                </div>
+                <span className="text-[10px] text-muted-foreground shrink-0 font-mono">
+                  {new Date(entry.at).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Full conversation viewer in readonly mode */}
       <div className="flex-1 min-h-0">

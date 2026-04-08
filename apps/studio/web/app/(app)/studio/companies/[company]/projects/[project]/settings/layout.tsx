@@ -20,6 +20,7 @@ export default function ProjectSettingsLayout({ children, params }: LayoutProps)
     { value: 'credentials', label: 'Credentials', href: `${base}/credentials` },
     { value: 'permissions', label: 'Permissions', href: `${base}/permissions` },
     { value: 'policies', label: 'Policies', href: `${base}/policies` },
+    { value: 'mcp', label: 'MCP Servers', href: `${base}/mcp` },
   ]
 
   const activeTab = tabs.find(t => pathname.startsWith(t.href))?.value ?? 'general'

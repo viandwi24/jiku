@@ -1,104 +1,130 @@
-# Feature: Browser Automation (Plan 13)
+# Feature: Browser Automation — @jiku/browser
 
-> ⚠️ **STATUS: FAILED — Scheduled for removal before MVP release.** See ADR-026.
->
-> The feature code exists and is partially functional, but it does NOT meet planning requirements. The AI controls a headless Playwright process, not the visible browser in the noVNC container. Users cannot observe AI browser activity in real time. Will be deleted before MVP.
+> **STATUS: REBUILT** — Plan 13 (failed OpenClaw port) replaced with `@jiku/browser` package.
+> New architecture: CLI bridge to [Vercel agent-browser](https://github.com/vercel-labs/agent-browser) via CDP.
 
-## What it does (intended)
+## What it does
 
-Per-project browser automation. Agents can control a Chromium browser via a single `browser` tool. Supports navigation, snapshots, screenshots, element interaction (click/type/hover/drag), tab management, console logs, PDF export, file upload, and dialog handling.
+Per-project browser automation. `@jiku/browser` is a library package (`packages/browser/`) that provides:
 
-Enabled per-project via settings. When `browser_enabled = true`, a dedicated browser server (HTTP control server backed by Playwright) starts at `wakeUp()` and is injected as a `built_in_tool` on all agents.
+1. **BrowserAgentServer** — Express HTTP API for profile management + 30+ browser commands
+2. **execBrowserCommand()** — Direct function call to execute browser commands (no HTTP server needed)
+3. **Docker container** — Chromium + Xvfb + noVNC + socat for visual browser with CDP access
+4. **Parsed responses** — AI-friendly `BrowserResult<T>` with structured data + error hints
+
+Tool definitions for AI agents are created in `apps/studio/server`, not in this package.
 
 ## Architecture
 
 ```
-RuntimeManager.wakeUp()
-  ↓ check project.browser_enabled
-  ↓ startBrowserServer(projectId, config)
-      → Express server on 127.0.0.1:{port}
-      → stored in projectBrowserServers Map
-  ↓ buildBrowserTools(handle.baseUrl)
-      → returns single 'browser' ToolDefinition
-  ↓ injected as built_in_tools on all agents
+apps/studio/server (tool definition)
+    |
+    v
+@jiku/browser — execBrowserCommand()
+    |
+    v
+agent-browser CLI (Rust binary, spawned per command)
+    |  --cdp flag + pre-connect
+    v
+Chrome/Chromium (via CDP)
+    |
+    v
+Docker container (Chromium + Xvfb + noVNC + socat proxy)
+  - Port 9222: CDP (socat → internal 19222)
+  - Port 6080: noVNC web viewer
 ```
 
-Engine is an adapted port of OpenClaw browser engine (`~80 files`) living in:
-```
-apps/studio/server/src/browser/
-  browser/           ← ported OpenClaw engine (don't modify)
-  config/            ← OpenClaw config types
-  gateway/           ← net helpers
-  infra/             ← port/ws utilities
-  security/          ← external-content wrapper
-  tool-schema.ts     ← Zod schema for browser tool input
-  node-server-entry.ts  ← entry for startBrowserControlServer()
-```
+### Key Design Decisions
 
-## Public API (Tool)
+- **CLI bridge** — agent-browser is a Rust binary, not a Node library. We spawn it per command.
+- **Pre-connect** — `agent-browser connect <endpoint>` runs once per endpoint (cached in-memory Set). Required before `--cdp` flag works.
+- **socat proxy** — Chrome HTTP `/json/version` not accessible from outside container natively. socat forwards 0.0.0.0:9222 → 127.0.0.1:19222.
+- **ws:// → http:// conversion** — `resolveCdpEndpoint()` converts `ws://localhost:9222` to `http://localhost:9222` (the format agent-browser expects).
+- **Screenshot as base64** — agent-browser saves to temp file, we read it, base64-encode, delete temp file. Client handles saving if needed.
+- **Non-root Chromium** — Container runs Chromium as `browser` user (no `--no-sandbox` needed, no warning banner).
 
-Single tool: `browser` with `action` field:
+## Commands (30+)
 
-| Action | Description |
-|--------|-------------|
-| `status` | Check browser server + active sessions |
-| `start` | Launch a browser profile |
-| `stop` | Close a browser profile |
-| `profiles` | List available profiles |
-| `tabs` | List open tabs |
-| `open` | Open new tab at URL |
-| `focus` | Focus a tab |
-| `close` | Close tab or browser |
-| `navigate` | Navigate current tab to URL |
-| `snapshot` | Read page DOM/ARIA structure |
-| `screenshot` | Capture screenshot (PNG/JPEG) |
-| `console` | Get console log messages |
-| `pdf` | Export page as PDF |
-| `upload` | Trigger file chooser |
-| `dialog` | Handle browser dialogs |
-| `act` | Perform UI interactions (click/type/press/hover/drag/fill/etc.) |
+### Navigation (5)
+`open`, `back`, `forward`, `reload`, `close`
 
-## Configuration (DB)
+### Observation (4)
+`snapshot` (with interactive/compact/depth/selector), `screenshot` (returns base64), `pdf`, `get` (text/html/value/attr/title/url/count/box/styles)
 
-`projects.browser_enabled boolean` + `projects.browser_config jsonb`:
+### Interaction (15)
+`click`, `dblclick`, `fill`, `type`, `press`, `hover`, `focus`, `check`, `uncheck`, `select`, `drag`, `upload`, `scroll`, `scrollintoview`
+
+### Wait (1)
+`wait` (ref/text/url/ms)
+
+### Tabs (4)
+`tab list`, `tab new`, `tab close`, `tab switch`
+
+### JavaScript (1)
+`eval`
+
+### Cookies & Storage (3)
+`cookies` (get/set/clear), `storage` (local/session)
+
+### Batch (1)
+`batch`
+
+## Response Format
 
 ```typescript
-type BrowserProjectConfig = {
-  headless?: boolean          // default: true
-  executable_path?: string
-  control_port?: number       // default: 8399
-  timeout_ms?: number         // default: 30000
-  no_sandbox?: boolean        // for Docker/Linux
-  evaluate_enabled?: boolean
+interface BrowserResult<T> {
+  success: boolean;
+  data: T | null;
+  error: string | null;
+  hint: string | null;  // AI-friendly recovery suggestion
 }
 ```
 
-## API Routes
+Error hints cover: stale refs, timeouts, not interactable, CDP failures, file not found, frame detached, dialog blocking.
 
-```
-GET  /api/projects/:pid/browser         → config + running status
-PATCH /api/projects/:pid/browser/enabled → toggle (restarts runtime)
-PATCH /api/projects/:pid/browser/config  → update config
-```
+## Profile Management
 
-## Web UI
+In-memory store. Each profile = `{ id, type: "cdp", config: { endpoint } }`.
 
-- `apps/studio/web/app/.../browser/page.tsx` — settings page with enable toggle, status badge, config form
-- Sidebar: "Browser" nav item in project sidebar
+- One profile per project (1 project = 1 browser = 1 CDP endpoint)
+- CRUD via HTTP API or `ProfileManager` class directly
 
-## Known Limitations / Why It Failed
+## Multi-User / Tab Isolation
 
-- **Critical**: Browser tool always falls back to headless Playwright — it does NOT control the visible Chromium in the noVNC/LinuxServer container (localhost:4000)
-- **Critical**: Remote CDP attach mode fails silently — `chromium-cdp.sh` init script does not execute in the LinuxServer container, so no CDP endpoint is available on port 9222. System falls back to launching a new headless process with no warning.
-- Users see NO browser activity in the noVNC viewer when the AI is "browsing"
-- Host mode only (Playwright on server) — Chrome extension relay (profile=chrome) not yet supported
-- One browser server per project; port allocation is sequential offset from `control_port`
-- Requires Playwright: `bun x playwright install chromium` on server host
-- No browser session persistence across project sleep/wake cycles
+- agent-browser operates on the **active tab only**
+- Two users on the same profile will conflict (shared active tab state)
+- Tab management (`tab list/new/close/switch`) available but no concurrent tab isolation
+- For true multi-user: separate browser container per user (future)
 
 ## Related Files
 
-- `apps/studio/server/src/browser/` — engine
-- `apps/studio/server/src/routes/browser.ts` — routes
-- `apps/studio/server/src/runtime/manager.ts` — lifecycle integration
-- `apps/studio/db/src/schema/projects.ts` — browser_enabled + browser_config columns
+```
+packages/browser/
+├── src/
+│   ├── index.ts              # Public exports
+│   ├── types.ts              # BrowserCommand (30+ actions), BrowserResult, Profile
+│   ├── server.ts             # BrowserAgentServer (Express, cmdHandler factory)
+│   ├── spawner.ts            # execCommand, execBrowserCommand, resolveCdpEndpoint, ensureConnected
+│   ├── parser.ts             # parseCommandResult + AI error hint generation (10 patterns)
+│   ├── profile-manager.ts    # In-memory profile CRUD
+│   ├── main.ts               # Standalone server entry point
+│   ├── examples/cdp.ts       # Full example: navigate → snapshot → fill → search → screenshot
+│   └── tests/                # 52 tests (profile, spawner, parser, server)
+├── docker/
+│   ├── Dockerfile            # Debian + Chromium + Xvfb + noVNC + socat
+│   └── entrypoint.sh         # Startup: Xvfb → Fluxbox → Chromium (non-root) → socat → VNC → noVNC
+├── docker-compose.yml        # Ports: 9222 (CDP), 6080 (noVNC)
+├── SKILL.md                  # Detailed command reference + patterns
+└── README.md                 # Quick start + API docs
+```
+
+## vs Old Plan 13 (OpenClaw Port)
+
+| Aspect | Plan 13 (old) | @jiku/browser (new) |
+|--------|---------------|---------------------|
+| Engine | Ported OpenClaw (~80 files) | agent-browser CLI (Rust binary) |
+| Connection | Playwright + CDP (broken) | CLI spawn + CDP via socat proxy |
+| Visibility | Headless only (failed) | Visible in noVNC |
+| Package | Inside apps/studio/server | Standalone packages/browser |
+| Code size | ~9000 lines | ~600 lines |
+| Tests | None | 52 tests |

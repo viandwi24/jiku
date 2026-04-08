@@ -63,7 +63,7 @@ export class CronTaskScheduler {
     const conv = await createTaskConversation({
       agent_id: task.agent_id,
       project_id: task.project_id,
-      type: 'cron',
+      type: 'task',
       caller_id: task.caller_id ?? null,
       parent_conversation_id: null,
       metadata: {

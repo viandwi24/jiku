@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-09 — Fix: Cron task conversation type should be 'task' not 'cron'
+
+**Fixed:** `CronTaskScheduler.triggerTask()` was creating conversations with `type: 'cron'`, which is not a valid conversation type. Valid types are: `chat`, `task`, `heartbeat`.
+
+**Changed:**
+- `type: 'cron'` → `type: 'task'` in `scheduler.ts` line 66
+- Trigger source still tracked via `metadata.trigger: 'cron'` and `metadata.cron_task_id` for audit trails
+
+**Files touched:**
+- `apps/studio/server/src/cron/scheduler.ts` — fixed conversation type in `triggerTask()`
+- `docs/builder/memory.md` — documented conversation type convention
+
+---
+
 ## 2026-04-08 — Add: connector_list tool for agent discovery
 
 **Added:** Agent tool `connector_list` to discover connector IDs before calling connector tools.

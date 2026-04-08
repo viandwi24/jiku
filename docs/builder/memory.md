@@ -37,6 +37,13 @@ This pattern works because `connector_list` is stateless and returns fresh data 
 
 ## Cron Task System conventions
 
+**Conversation type & trigger tracking:**
+- Cron task conversations have `type: 'task'` (not a separate 'cron' type — only 3 types exist: chat, task, heartbeat)
+- Trigger source tracked via `metadata.trigger: 'cron'` and `metadata.cron_task_id`
+- `mode: 'task'` is passed to runtime; agent gets access to task-only tools (run_task, progress_report, etc.)
+
+## Cron Task System conventions
+
 **Cron expression library split:**
 - Server (scheduling): `croner@10.0.1` — parses and schedules CRON syntax, no UI needed
 - Frontend (display): `cronstrue@3.14.0` — converts expressions to English phrases (e.g. "Every Monday at 9 AM")

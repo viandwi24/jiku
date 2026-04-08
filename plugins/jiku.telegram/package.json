@@ -9,6 +9,7 @@
     "@jiku/plugin-connector": "workspace:*",
     "@jiku/kit": "workspace:*",
     "@jiku/types": "workspace:*",
+    "@jiku-studio/db": "workspace:*",
     "grammy": "^1.36.1",
     "telegramify-markdown": "^1.3.2",
     "zod": "3.25.76"

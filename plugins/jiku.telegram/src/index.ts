@@ -3,6 +3,8 @@ import { definePlugin, ConnectorAdapter } from '@jiku/kit'
 import type { ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
 import ConnectorPlugin from '@jiku/plugin-connector'
+import type { Bot } from 'grammy'
+import { getFileByPath } from '@jiku-studio/db'
 
 const TELEGRAM_MAX_LENGTH = 4000
 
@@ -36,7 +38,7 @@ class TelegramAdapter extends ConnectorAdapter {
   })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private bot: any = null
+  private bot: Bot|null = null
   private projectId: string | null = null
 
   // ─── Actions registry ───────────────────────────────────────────────
@@ -131,7 +133,7 @@ class TelegramAdapter extends ConnectorAdapter {
     switch (actionId) {
       case 'send_reaction': {
         const { chat_id, message_id, emoji } = params as { chat_id: string; message_id: string; emoji: string }
-        await this.bot.api.setMessageReaction(chat_id, Number(message_id), [{ type: 'emoji', emoji }])
+        await this.bot.api.setMessageReaction(chat_id, Number(message_id), [{ type: 'emoji', emoji: emoji as any }])
         return { success: true }
       }
 
@@ -161,7 +163,7 @@ class TelegramAdapter extends ConnectorAdapter {
       case 'unpin_message': {
         const { chat_id, message_id } = params as { chat_id: string; message_id?: string }
         if (message_id) {
-          await this.bot.api.unpinChatMessage(chat_id, { message_id: Number(message_id) })
+          await this.bot.api.unpinChatMessage(chat_id, Number(message_id))
         } else {
           await this.bot.api.unpinAllChatMessages(chat_id)
         }
@@ -186,7 +188,6 @@ class TelegramAdapter extends ConnectorAdapter {
 
         // Download file content from S3 adapter as buffer
         const adapter = fs.getAdapter()
-        const { getFileByPath } = await import('@jiku-studio/db')
         const fileRecord = await getFileByPath(this.projectId, file_path)
         if (!fileRecord) throw new Error(`File not found in filesystem: ${file_path}`)
 
@@ -294,7 +295,7 @@ class TelegramAdapter extends ConnectorAdapter {
       await ctx.onEvent(event)
     })
 
-    this.bot.start({ drop_pending_updates: false }).catch((err: unknown) => {
+    this.bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
       console.error('[telegram] polling error:', err)
     })
 
@@ -348,7 +349,7 @@ class TelegramAdapter extends ConnectorAdapter {
       for (let i = 0; i < chunks.length; i++) {
         lastSent = await this.bot.api.sendMessage(
           chatId,
-          chunks[i],
+          chunks[i] || '-',
           {
             parse_mode: content.markdown ? 'MarkdownV2' : undefined,
             reply_parameters: i === 0 && replyToId ? { message_id: Number(replyToId) } : undefined,
@@ -373,7 +374,7 @@ class TelegramAdapter extends ConnectorAdapter {
     const chatId = target.ref_keys['chat_id']
     const messageId = target.ref_keys['message_id']
     if (!chatId || !messageId) return
-    await this.bot.api.setMessageReaction(chatId, Number(messageId), [{ type: 'emoji', emoji }])
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [{ type: 'emoji', emoji: emoji as any }])
       .catch((err: unknown) => console.warn('[telegram] sendReaction error:', err))
   }
 

@@ -313,6 +313,7 @@
     "plugins/jiku.telegram": {
       "name": "@jiku/plugin-telegram",
       "dependencies": {
+        "@jiku-studio/db": "workspace:*",
         "@jiku/kit": "workspace:*",
         "@jiku/plugin-connector": "workspace:*",
         "@jiku/types": "workspace:*",

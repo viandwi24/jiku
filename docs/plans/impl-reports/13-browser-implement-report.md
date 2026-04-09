@@ -356,6 +356,50 @@ non-root user.
 **Diagnosis path:** the user shared full container logs. The smoking gun
 was on line 1: `ERROR:zygote_host_impl_linux.cc:128] No usable sandbox!`.
 
+### Bug 3: `Host header is specified and is not an IP address or localhost` from another docker service
+
+**Symptom:** the chrome container worked perfectly when accessed from
+`localhost` (locally and from inside the container itself) but failed in
+production Dokploy deployments where the Studio app reaches the chrome
+service via its compose alias (`bitorex-...-chrome-1`):
+
+```
+$ curl http://bitorex-...-chrome-1:9222/json/version
+Host header is specified and is not an IP address or localhost.
+```
+
+The Studio /preview endpoint and the agent browser tool both surfaced as
+"connection failed" with no useful detail.
+
+**Root cause:** chromium's DevTools HTTP handler enforces a DNS rebinding
+protection — every `/json/*` request whose `Host` header is not `localhost`,
+`127.0.0.1`, or an IP literal gets rejected. The previous entrypoint
+forwarded public port 9222 → internal port 19222 with
+`socat TCP-LISTEN:9222 ... TCP:127.0.0.1:19222`. socat is purely TCP-level
+and passed the Host header through unchanged. Local calls happened to use
+`localhost:9222` (Host header `localhost`) and worked; production calls
+used the docker service hostname and chromium refused.
+
+**Fix:** replaced `socat` with `nginx-light` as the public CDP listener.
+nginx forwards to `127.0.0.1:19222` and unconditionally rewrites the Host
+header via `proxy_set_header Host "localhost"`. WebSocket upgrades for the
+CDP socket are passed through with `proxy_set_header Upgrade $http_upgrade`.
+The entrypoint runs a follow-up `curl` readiness check after starting nginx
+and fails fast with the nginx error log on failure.
+
+**Diagnosis path:** the user shared the exact chromium error message
+(`Host header is specified...`) plus a side-by-side curl from inside vs
+outside the chrome container. The inside-localhost vs outside-hostname
+pattern is the canonical signature of chromium's rebinding check. nginx with
+header rewriting is the well-known fix.
+
+**Lesson:** "TCP forward" is not "HTTP forward". When fronting an HTTP
+service that has security checks on inbound headers (Host, Origin, etc.),
+use an HTTP-aware proxy. socat / iptables / kernel TCP forwarding will pass
+the headers through unchanged and silently break.
+
+---
+
 ### Bug 2: `Invalid schema for function 'builtin_browser': ... got 'type: "None"'`
 
 **Symptom:** any chat in a browser-enabled project failed at the LLM

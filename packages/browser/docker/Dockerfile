@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     dbus \
     dbus-x11 \
-    socat \
+    nginx-light \
     curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -33,10 +33,14 @@ ENV CDP_PORT=9222
 RUN mkdir -p /data/chrome-data /var/log/jiku-browser
 
 # Expose ports
-# 9222 = CDP
+# 9222 = CDP (via nginx HTTP proxy that rewrites Host header)
 # 6080 = noVNC (web-based VNC viewer)
 EXPOSE ${CDP_PORT} ${NOVNC_PORT}
 
+# nginx config that rewrites the inbound Host header to "localhost" so
+# chromium's DNS rebinding protection accepts the request when called from
+# another docker service. See entrypoint.sh comments for the full story.
+COPY nginx.conf /etc/jiku/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

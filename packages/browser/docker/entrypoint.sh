@@ -8,7 +8,9 @@
 #   3. Fluxbox  — minimal WM so Chromium has decorations
 #   4. Chromium — headful with --remote-debugging-port (loopback only)
 #   5. wait     — block until Chromium's CDP port is reachable
-#   6. socat    — expose CDP to 0.0.0.0:$CDP_PORT
+#   6. nginx    — HTTP proxy on 0.0.0.0:$CDP_PORT → 127.0.0.1:19222
+#                 (rewrites Host header to "localhost" so chromium's DNS
+#                  rebinding protection accepts cross-container requests)
 #   7. x11vnc   — VNC server bound to the Xvfb display
 #   8. exec websockify — noVNC, runs as PID 1 so SIGTERM propagates
 #
@@ -86,12 +88,38 @@ if ! curl -fsS -o /dev/null "http://127.0.0.1:${CHROME_INTERNAL_PORT}/json/versi
   exit 1
 fi
 
-# ─── 6. socat CDP proxy ───────────────────────────────────────────────────
-# Forward public ${CDP_PORT} (0.0.0.0) → internal chromium (127.0.0.1).
-# Both /json/* HTTP and the WebSocket upgrade traverse this same TCP forward.
-socat "TCP-LISTEN:${CDP_PORT},fork,reuseaddr,bind=0.0.0.0" \
-      "TCP:127.0.0.1:${CHROME_INTERNAL_PORT}" \
-  >"$LOG_DIR/socat.log" 2>&1 &
+# ─── 6. nginx CDP proxy ────────────────────────────────────────────────────
+# nginx sits in front of chromium's internal debug port and rewrites the
+# inbound Host header to "localhost". Without this, chromium's DNS rebinding
+# protection rejects every /json/* request whose Host header is not
+# localhost / 127.0.0.1 / an IP — which is exactly what happens when this
+# container is reached from another docker service by its compose alias
+# (e.g. `bitorex-...-chrome-1`). The chrome's reply is:
+#
+#   "Host header is specified and is not an IP address or localhost."
+#
+# nginx also handles the WebSocket upgrade for the CDP connection that
+# agent-browser opens after fetching /json/version.
+#
+# A previous version used `socat` here. socat is purely TCP and lets the
+# Host header through unchanged, so it worked from the same machine but
+# silently failed across docker services in production deployments.
+mkdir -p /run /var/log/nginx
+nginx -c /etc/jiku/nginx.conf
+
+# Verify the proxy actually started. Chromium is already up at this point,
+# so the proxied request should succeed immediately. If not, dump the nginx
+# error log so the failure is visible in `docker compose logs`.
+sleep 0.3
+if ! curl -fsS -o /dev/null "http://127.0.0.1:${CDP_PORT}/json/version"; then
+  echo "[entrypoint] FATAL: nginx CDP proxy did not come up on ${CDP_PORT}" >&2
+  if [ -f "$LOG_DIR/nginx-error.log" ]; then
+    echo "[entrypoint] tail of nginx-error.log:" >&2
+    tail -n 50 "$LOG_DIR/nginx-error.log" >&2
+  fi
+  exit 1
+fi
+echo "[entrypoint] nginx CDP proxy listening on 0.0.0.0:${CDP_PORT}"
 
 # ─── 7. x11vnc ────────────────────────────────────────────────────────────
 x11vnc -display "${DISPLAY}" -forever -nopw -shared \

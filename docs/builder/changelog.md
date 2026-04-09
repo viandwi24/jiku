@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-04-09 — Fix: cross-container CDP fails with "Host header is not an IP address or localhost"
+
+**Symptom:** the @jiku/browser docker container worked perfectly when accessed
+from `localhost` (`curl http://localhost:9222/json/version` from inside the
+container or from the host machine), but failed in production deployments
+where the chrome service is reached from another docker service by its
+compose alias (e.g. `bitorex-...-chrome-1`):
+
+```
+$ curl http://bitorex-...-chrome-1:9222/json/version
+Host header is specified and is not an IP address or localhost.
+```
+
+**Root cause:** chromium's DevTools HTTP handler enforces a DNS rebinding
+protection — `/json/*` requests are rejected when the inbound `Host` header
+is not `localhost`, `127.0.0.1`, or an IP. The previous entrypoint forwarded
+public port 9222 to internal port 19222 with `socat TCP-LISTEN ... TCP:`,
+which is purely TCP-level and passed the Host header through unchanged.
+Local calls happened to use `localhost` and worked; production calls used
+the docker service hostname and failed.
+
+**Fix:** replaced `socat` with **nginx-light** as the public CDP proxy.
+nginx forwards to `127.0.0.1:19222` and unconditionally rewrites the Host
+header to `"localhost"` via `proxy_set_header Host "localhost"`. WebSocket
+upgrades for the CDP socket are passed through with `proxy_set_header
+Upgrade $http_upgrade`.
+
+**Files:**
+- `packages/browser/docker/Dockerfile` — added `nginx-light`, removed
+  `socat` from the apt list.
+- `packages/browser/docker/nginx.conf` — new minimal config (events + http
+  with the rewriting server block, ~50 LoC).
+- `packages/browser/docker/entrypoint.sh` — replaced the socat invocation
+  with `nginx -c /etc/jiku/nginx.conf` plus a follow-up curl readiness check
+  that fails fast with the nginx error log if the proxy doesn't come up.
+- `docs/builder/memory.md`, `docs/feats/browser.md`,
+  `docs/plans/impl-reports/13-browser-implement-report.md` — gotcha
+  documented across all the browser docs.
+
+**Pickup:** redeploy the chrome service in Dokploy (or wherever the
+production container lives) so the new image is built. After the new image
+is up, `curl http://<chrome-service-hostname>:9222/json/version` from
+another container should return the chromium JSON instead of the host
+header error.
+
+---
+
 ## 2026-04-09 — Browser concurrency model: per-project mutex + per-agent tab affinity
 
 **Added:** Studio now safely supports multiple agents per project sharing one

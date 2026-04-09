@@ -238,7 +238,8 @@ uses inline base64 instead and bypasses the attachment system).
 ## Docker container (`packages/browser/docker/`)
 
 `Dockerfile` (Debian bookworm) installs Chromium, Xvfb, Fluxbox, x11vnc,
-noVNC, websockify, dbus, socat, curl. Runs as root inside the container.
+noVNC, websockify, dbus, **nginx-light**, curl. Runs as root inside the
+container.
 
 `entrypoint.sh` order:
 
@@ -251,17 +252,26 @@ noVNC, websockify, dbus, socat, curl. Runs as root inside the container.
 5. **CDP readiness probe** — `curl http://127.0.0.1:19222/json/version`
    (60 attempts × 0.5s). On failure, prints the last 50 lines of
    `chromium.log` to stderr and `exit 1`.
-6. **socat** forwards `0.0.0.0:9222 → 127.0.0.1:19222` (both `/json/*` HTTP
-   and the WebSocket upgrade traverse this same TCP forward).
+6. **nginx CDP proxy** (`/etc/jiku/nginx.conf`) — listens on
+   `0.0.0.0:9222`, forwards to `127.0.0.1:19222`, **rewrites `Host` to
+   `localhost`**, passes through WebSocket upgrades. Without this rewrite,
+   chromium's DNS rebinding protection rejects every cross-container request
+   with `"Host header is specified and is not an IP address or localhost."`.
+   The script verifies the proxy is actually serving via a follow-up curl
+   and `exit 1`s with the nginx error log on failure.
 7. **x11vnc** on `:5900`.
 8. **`exec websockify`** as PID 1 — noVNC web client on `:6080`. `exec` is
    important so SIGTERM from Docker propagates and `docker compose down`
    shuts the container down cleanly.
 
 Per-process logs live in `/var/log/jiku-browser/{xvfb,fluxbox,chromium,
-socat,x11vnc}.log` inside the container. When debugging "blank wallpaper, no
-chromium", the fastest path is `docker exec <id> tail
-/var/log/jiku-browser/chromium.log`.
+nginx-error,x11vnc}.log` inside the container. When debugging:
+
+| Symptom | Look at |
+|---------|---------|
+| Blank wallpaper in noVNC, no chromium window | `chromium.log` (usually a sandbox / GPU issue) |
+| `Host header is specified and is not an IP address or localhost` from app side | `nginx-error.log` (nginx didn't start) — should never happen if `nginx-error.log` is empty, in which case the chrome service alias / firewall is the problem |
+| Container won't start | stdout of `docker compose logs chrome` — entrypoint dumps a `[entrypoint] FATAL: ...` line on every fatal path |
 
 ### Why `--no-sandbox`
 
@@ -272,6 +282,26 @@ was based on a wrong assumption and produced exactly that failure mode (only
 Fluxbox wallpaper visible in noVNC, socat spam "Connection refused"). We're
 already in an isolated container, so `--no-sandbox` is the standard pattern
 and safe in this context.
+
+### Why nginx instead of socat for the CDP proxy
+
+Chromium's DevTools HTTP handler enforces a DNS rebinding protection: every
+`/json/*` request whose `Host` header is not `localhost`, `127.0.0.1`, or an
+IP address is rejected with `"Host header is specified and is not an IP
+address or localhost."`. The previous design used `socat TCP-LISTEN:9222 ...
+TCP:127.0.0.1:19222` which is purely TCP and lets the Host header through
+unchanged. That worked locally (`curl http://localhost:9222/...`) but
+**silently failed in production** as soon as the chrome service was reached
+from another docker service via its compose alias (e.g.
+`bitorex-...-chrome-1`) — chromium saw `Host: bitorex-...-chrome-1` and
+refused.
+
+The fix is an HTTP-aware proxy that **rewrites the Host header** to
+`localhost` before forwarding. nginx with `proxy_set_header Host "localhost"`
+is ~10MB extra in the image, supports WebSocket upgrades natively (which
+agent-browser needs for the CDP socket), and lives entirely inside the
+chrome container so all clients (Studio app, manual `curl` from another
+host, future SDKs) get the fix for free.
 
 ---
 

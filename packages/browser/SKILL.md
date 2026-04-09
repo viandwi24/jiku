@@ -19,7 +19,7 @@ agent-browser CLI (Rust binary, spawned per command)
 Chrome/Chromium (via CDP - Chrome DevTools Protocol)
     |
     v
-Docker container (Chromium + Xvfb + noVNC + socat proxy)
+Docker container (Chromium + Xvfb + noVNC + nginx CDP proxy)
 ```
 
 ### Key Design Decisions
@@ -28,7 +28,7 @@ Docker container (Chromium + Xvfb + noVNC + socat proxy)
 - **CDP-only profiles** — each profile stores a CDP endpoint. Every command connects via `--cdp`, keeping things stateless per command.
 - **Pre-connect pattern** — agent-browser requires `connect <endpoint>` before `--cdp` works. We auto-run this once per endpoint (cached in-memory).
 - **Parsed responses** — raw CLI stdout is parsed into `BrowserResult<T>` with structured data + AI-friendly error hints.
-- **socat proxy in Docker** — Chrome's HTTP `/json/version` endpoint isn't accessible from outside the container natively. socat forwards public port 9222 to internal Chrome port 19222.
+- **nginx HTTP proxy in Docker** — Chromium's DevTools handler rejects `/json/*` requests whose `Host` header is not `localhost`/`127.0.0.1`/an IP (DNS rebinding protection). nginx listens on public port 9222, forwards to internal port 19222, and unconditionally rewrites the Host header to `localhost`. Required for any cross-container CDP access; passes through WebSocket upgrades for the CDP socket.
 
 ## Interaction Pattern for AI Agents
 
@@ -188,7 +188,8 @@ packages/browser/
 │       ├── parser.test.ts
 │       └── server.test.ts
 ├── docker/
-│   ├── Dockerfile            # Debian + Chromium + Xvfb + noVNC + socat
+│   ├── Dockerfile            # Debian + Chromium + Xvfb + noVNC + nginx
+│   ├── nginx.conf            # CDP HTTP proxy with Host rewrite + WS support
 │   └── entrypoint.sh         # Container startup script
 ├── docker-compose.yml        # Chrome container config
 └── package.json

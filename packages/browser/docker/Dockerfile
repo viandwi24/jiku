@@ -14,12 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     websockify \
     fluxbox \
     procps \
+    dbus \
     dbus-x11 \
     socat \
+    curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user so Chromium runs without --no-sandbox
-RUN groupadd -r browser && useradd -r -g browser -m -d /home/browser browser
 
 # Environment
 ENV DISPLAY=:99
@@ -29,6 +28,9 @@ ENV SCREEN_DEPTH=24
 ENV VNC_PORT=5900
 ENV NOVNC_PORT=6080
 ENV CDP_PORT=9222
+
+# Pre-create Chromium data + log directories
+RUN mkdir -p /data/chrome-data /var/log/jiku-browser
 
 # Expose ports
 # 9222 = CDP

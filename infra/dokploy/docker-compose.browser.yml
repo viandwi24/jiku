@@ -1,0 +1,32 @@
+services:
+  # ─────────────────────────────────────────────
+  # Headless Chrome (CDP + noVNC viewer)
+  # ─────────────────────────────────────────────
+  chrome:
+    build:
+      context: ../../packages/browser/docker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+      - SCREEN_DEPTH=24
+      - CDP_PORT=9222
+      - NOVNC_PORT=6080
+    shm_size: "2gb"
+    expose:
+      - "9222"   # CDP — reached internally by the app service
+      - "6080"   # noVNC web viewer — exposed via Traefik
+    networks:
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      # noVNC web viewer
+      - "traefik.http.routers.jiku-browser.rule=Host(`${BROWSER_DOMAIN}`)"
+      - "traefik.http.routers.jiku-browser.entrypoints=websecure"
+      - "traefik.http.routers.jiku-browser.tls.certresolver=letsencrypt"
+      - "traefik.http.services.jiku-browser.loadbalancer.server.port=6080"
+
+networks:
+  dokploy-network:
+    external: true

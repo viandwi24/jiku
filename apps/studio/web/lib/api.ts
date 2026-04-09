@@ -494,19 +494,23 @@ export const api = {
 
   browser: {
     get: (projectId: string) =>
-      request<{ enabled: boolean; config: BrowserProjectConfig; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser`),
+      request<{ enabled: boolean; config: BrowserProjectConfig }>(`/api/projects/${projectId}/browser`),
     setEnabled: (projectId: string, enabled: boolean) =>
-      request<{ ok: boolean; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser/enabled`, {
+      request<{ ok: boolean }>(`/api/projects/${projectId}/browser/enabled`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled }),
       }),
     updateConfig: (projectId: string, config: BrowserProjectConfig) =>
-      request<{ ok: boolean; config: BrowserProjectConfig; status: { running: boolean; port?: number } }>(`/api/projects/${projectId}/browser/config`, {
+      request<{ ok: boolean; config: BrowserProjectConfig }>(`/api/projects/${projectId}/browser/config`, {
         method: 'PATCH',
         body: JSON.stringify(config),
       }),
     ping: (projectId: string) =>
-      request<{ ok: boolean; error?: string; latency_ms?: number; cdp_latency_ms?: number; browser?: string; cdp_url?: string; port?: number }>(`/api/projects/${projectId}/browser/ping`, {
+      request<BrowserPingResult>(`/api/projects/${projectId}/browser/ping`, {
+        method: 'POST',
+      }),
+    preview: (projectId: string) =>
+      request<BrowserPreviewResult>(`/api/projects/${projectId}/browser/preview`, {
         method: 'POST',
       }),
   },
@@ -712,15 +716,39 @@ export interface FilesystemFileEntry {
 
 export type FilesystemEntry = FilesystemFolderEntry | FilesystemFileEntry
 
+/**
+ * Browser config — CDP-only since Plan 33 (`@jiku/browser` migration).
+ * Mirrors `BrowserProjectConfig` in `apps/studio/db/src/queries/browser.ts`.
+ */
 export interface BrowserProjectConfig {
-  mode?: 'managed' | 'remote'
+  /** CDP endpoint, e.g. "ws://localhost:9222" or "http://localhost:9222". */
   cdp_url?: string
-  headless?: boolean
-  executable_path?: string
-  control_port?: number
+  /** Default per-command timeout in milliseconds (default: 30000). */
   timeout_ms?: number
-  no_sandbox?: boolean
+  /** Allow agents to call `eval` (run arbitrary JS in the page). */
   evaluate_enabled?: boolean
+  /** If true (default), screenshots persist as attachments instead of inline base64. */
+  screenshot_as_attachment?: boolean
+}
+
+export interface BrowserPingResult {
+  ok: boolean
+  error?: string
+  latency_ms?: number
+  cdp_url?: string
+  browser?: string
+}
+
+export interface BrowserPreviewResult {
+  ok: boolean
+  data?: {
+    base64: string
+    format: 'png' | 'jpeg'
+    title: string | null
+    url: string | null
+  }
+  error?: string
+  hint?: string | null
 }
 
 export interface PluginItem {

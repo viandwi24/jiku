@@ -1,6 +1,0 @@
-FROM lscr.io/linuxserver/chromium:latest
-
-# Copy the CDP init script so Chromium starts with --remote-debugging-port=9222
-# and the Origin-injecting proxy runs on :9223
-COPY apps/studio/server/browser-init/chromium-cdp.sh /custom-cont-init.d/chromium-cdp.sh
-RUN chmod +x /custom-cont-init.d/chromium-cdp.sh

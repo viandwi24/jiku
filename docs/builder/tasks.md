@@ -10,8 +10,6 @@
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
 - [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
-- [ ] **[PRE-MVP CLEANUP]** Remove OLD browser automation code (Plan 13 OpenClaw port) — `apps/studio/server/src/browser/`, `apps/studio/web/app/.../browser/page.tsx`, browser tool injection in `runtime/manager.ts`. Replaced by `@jiku/browser` package.
-- [ ] Integrate `@jiku/browser` into `apps/studio/server` — create browser tool definition using `execBrowserCommand()`, register in RuntimeManager, add browser settings UI
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
@@ -65,5 +63,6 @@
 - [x] `get_datetime` system tool — returns iso/timezone/local/unix; injected into all agents — completed 2026-04-06
 - [x] Telegram user timezone context — language_code → timezone map injected into connector context string — completed 2026-04-06
 - [x] Plan 13 — Browser Automation: OpenClaw engine ported, browser tools injected at wakeUp(), settings UI — completed 2026-04-06 ⚠️ MARKED FAILED — does not meet planning requirements (see ADR-026)
+- [x] Plan 33 — Browser rebuild via `@jiku/browser` (CDP bridge to agent-browser CLI), unified attachment persistence, CDP-only config, hardened Docker container (--no-sandbox + readiness probe), settings page rewrite with Live Preview box, OpenAI-safe flat z.object tool schema — completed 2026-04-09. See `docs/plans/impl-reports/13-browser-implement-report.md`.
 - [x] Plan 14 — Filesystem: S3/RustFS adapter, virtual path DB, agent tools (fs_list/read/write/move/delete/search), file manager UI (/disk), settings page — completed 2026-04-06
 - [x] Chat image attachments: upload + serve endpoint (/api/attachments), project_attachments DB table, image rendering in chat, ImageGallery fullscreen preview component — completed 2026-04-06

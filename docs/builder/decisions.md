@@ -1,5 +1,25 @@
 # Decisions
 
+## ADR-035 — Browser automation rebuilt as @jiku/browser CLI bridge (Plan 33)
+
+**Context:** Plan 13 (ADR-026) failed: ~80 files of OpenClaw engine code ported into `apps/studio/server`, headless-only, untestable, schema enum drift. Needed a clean replacement that's actually visible in noVNC, has tests, and is decoupled from Studio internals.
+
+**Decision:** Build a standalone `packages/browser/` package as a CLI bridge to Vercel `agent-browser` (Rust binary) over CDP. Studio integration lives in `apps/studio/server/src/browser/` and only contains the tool definition + dispatch + screenshot persistence — no engine code. The Docker container is owned by the package, not by Studio. Three rules locked in by experience:
+
+1. **CDP-only project config.** A single `cdp_url` per project. No managed mode, no headless toggle, no executable path. Plan 13's config sprawl is gone.
+2. **Tool input schema is a flat `z.object`.** OpenAI's function calling API rejects schemas without `type: "object"` at the JSON Schema root. A `z.discriminatedUnion` serializes to `anyOf` and breaks this. Per-action requirements are validated at runtime by a `need()` helper, with a `never`-typed default branch for compile-time exhaustiveness over `BrowserAction`.
+3. **Chromium in Docker uses `--no-sandbox`.** Docker Desktop on macOS/Windows doesn't expose unprivileged user namespaces, so the zygote dies without it. The container itself is the isolation boundary, so this is safe and standard.
+
+Screenshots are persisted via the unified `persistContentToAttachment()` from ADR-034 and returned as `{ type: 'image', attachment_id, storage_key, mime_type }`. The settings page has a Live Preview box (one-shot screenshot, optional 3s auto-refresh) so users get visual confirmation without opening noVNC separately.
+
+**Consequences:**
+- Browser feature is genuinely production-grade end-to-end: backend, API, UI, container, docs.
+- ~9000 lines of OpenClaw port replaced by ~600 lines of package + ~400 lines of Studio integration. 52 tests in `packages/browser/src/tests`.
+- Future tool authors must use a flat `z.object` for OpenAI compatibility — documented in `docs/builder/memory.md` to prevent regression.
+- Single active tab limitation remains. True multi-user requires a container per user; deferred.
+
+---
+
 ## ADR-034 — Content references use attachment_id + storage_key, never URLs
 
 **Context:** Binary content (screenshots, generated files, tool outputs) were stored as inline base64 in tool output parts or as URLs in database records. URLs are fragile (domain changes, proxy endpoint changes break data). Inline base64 wastes 33% space and bloats LLM context window.
@@ -91,6 +111,12 @@
 ---
 
 ## ADR-026 — Browser automation (Plan 13) abandoned — to be removed at MVP
+
+> **STATUS: RESOLVED 2026-04-09 by Plan 33.** OpenClaw port was deleted, replaced
+> by `@jiku/browser` (CLI bridge to Vercel agent-browser) + hardened Docker
+> container + flat Zod tool schema. See ADR-035 for the design of the
+> replacement and `docs/plans/impl-reports/13-browser-implement-report.md`
+> for the full arc.
 
 **Context:** Plan 13 implemented browser automation using the ported OpenClaw engine. The goal was to let the AI control the visible Chromium browser running in the LinuxServer/noVNC container (visible at localhost:4000) so users can watch the AI browse in real time.
 

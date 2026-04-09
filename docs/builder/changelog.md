@@ -1,5 +1,134 @@
 # Changelog
 
+## 2026-04-09 — Browser migration cleanup (Plan 33 follow-up)
+
+**Fixed:** Plan 33 left several integration leaks between the new
+`@jiku/browser` backend and the Plan-13-era Studio surfaces. This pass closes
+them so the feature is genuinely production-grade end-to-end.
+
+**Symptoms before this pass:**
+- `tool-schema.ts` still listed legacy OpenClaw actions (`status`, `start`,
+  `stop`, `profiles`, `act`, `dialog`, `console`, ...). Most LLM-callable
+  actions like `click`, `fill`, `type`, `wait`, `eval`, `get` were not even
+  in the enum and would have been rejected by Zod at the boundary.
+- `execute.ts`'s `mapToBrowserCommand` referenced fields that did not exist on
+  the schema and used a dynamic `import()` for the persister (CLAUDE.md
+  violation). It also imported `resolveCdpEndpoint` without using it.
+- `tool.ts` used inline `import('./tool-schema.js').BrowserToolInput` type
+  expressions (CLAUDE.md violation) and still tried to strip a Plan-13
+  `profile` field from the args.
+- The DB and Web `BrowserProjectConfig` types still exposed `mode`,
+  `headless`, `executable_path`, `control_port`, `no_sandbox` — none of which
+  are honored by the new backend (the route Zod schema strips them on save).
+- The Browser settings page still showed Managed/Remote tabs, headless and
+  no_sandbox toggles, and gated the "Test connection" button on a
+  `status.running` field that the backend never returned. Result: the button
+  was permanently invisible and the status bar always showed "Stopped".
+
+**Changed:**
+- `apps/studio/server/src/browser/tool-schema.ts` — rewritten as a Zod
+  `discriminatedUnion` mirroring `BrowserCommand` from `@jiku/browser` 1:1.
+  Tab and cookies operations are flattened into top-level actions
+  (`tab_list`, `tab_new`, `tab_close`, `tab_switch`, `cookies_get`,
+  `cookies_set`, `cookies_clear`).
+- `apps/studio/server/src/browser/execute.ts` — exhaustive
+  `mapToBrowserCommand()` covering every action, with a `never`-typed default
+  branch so future drift is a compile error. Static `persistContentToAttachment`
+  import. Honors `timeout_ms` and `screenshot_as_attachment` from project
+  config. When `screenshot_as_attachment` is false, returns base64 inline
+  instead of persisting.
+- `apps/studio/server/src/browser/tool.ts` — static type imports, dropped
+  Plan-13 `profile` strip, gates `eval` behind `evaluate_enabled`, expanded
+  the tool description to list the real supported action set, propagates
+  `timeoutMs` + `screenshotAsAttachment` to `executeBrowserAction`.
+- `apps/studio/db/src/queries/browser.ts` — `BrowserProjectConfig` trimmed to
+  `cdp_url`, `timeout_ms`, `evaluate_enabled`, `screenshot_as_attachment`.
+  `BrowserMode` export removed.
+- `apps/studio/web/lib/api.ts` — `BrowserProjectConfig` mirrored from DB type,
+  fake `status: { running, port }` removed from `api.browser.*` response
+  types, new `BrowserPingResult` interface aligned with the backend ping
+  payload (latency_ms / cdp_url / browser).
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx` —
+  rewritten as a CDP-only page. Status bar derives tone from the most recent
+  ping result. Test connection button is always visible while enabled.
+  Defaults align with the backend (`ws://localhost:9222`). New "Persist
+  screenshots as attachments" toggle.
+- `apps/studio/server/src/runtime/manager.ts` — stale comments updated; tool
+  import switched to `.ts` extension to match the rest of the server.
+- `docs/builder/memory.md` — added two memories: "Browser tool input schema
+  must mirror `BrowserCommand`" and "Browser config is CDP-only".
+
+**Files touched:**
+- `apps/studio/server/src/browser/tool-schema.ts`
+- `apps/studio/server/src/browser/execute.ts`
+- `apps/studio/server/src/browser/tool.ts`
+- `apps/studio/server/src/runtime/manager.ts`
+- `apps/studio/db/src/queries/browser.ts`
+- `apps/studio/web/lib/api.ts`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+- `docs/builder/memory.md`, `docs/builder/current.md`, `docs/feats/browser.md`
+
+**Deleted (Plan 13 docker artifacts):**
+- `apps/studio/server/docker-compose.browser.yml` — old `linuxserver/chromium` compose, replaced by `packages/browser/docker-compose.yml`
+- `apps/studio/server/browser-init/chromium-cdp.sh` — Plan 13 CDP init script that never actually ran
+- `apps/studio/server/browser-init/` — directory removed
+- `infra/dokploy/Dockerfile.browser` — orphaned, never referenced from `infra/dokploy/docker-compose.yml`
+
+**Fixed — `Invalid schema for function 'builtin_browser'` from OpenAI:**
+- Symptom: starting any chat in a project with the browser tool enabled
+  failed with `Invalid schema for function 'builtin_browser': schema must be a
+  JSON Schema of 'type: "object"', got 'type: "None"'.`
+- Root cause: the cleanup pass earlier today rewrote `tool-schema.ts` as a
+  `z.discriminatedUnion` over `action`. `zod-to-json-schema` (used by AI SDK's
+  `zodSchema()`) converts a discriminated union to `{ "anyOf": [...] }` at the
+  root, with no top-level `type`. OpenAI's function calling API rejects that.
+- Fix: rewrote `tool-schema.ts` as a flat `z.object` with `action` as a
+  required enum and every other field optional. Per-action requirements moved
+  to a `need()` helper in `execute.ts`'s `mapToBrowserCommand` (still
+  exhaustive over `BrowserAction` via the `never` default branch). New
+  `BROWSER_ACTIONS` const is the single source of truth for the enum.
+- Files: `apps/studio/server/src/browser/tool-schema.ts`,
+  `apps/studio/server/src/browser/execute.ts`, `docs/builder/memory.md`.
+
+---
+
+**Fixed — Chromium fails to start in @jiku/browser docker container:**
+- Symptom: noVNC shows only the Fluxbox wallpaper + taskbar, no chromium
+  window. socat spams `Connection refused` to `127.0.0.1:19222` forever.
+- Root cause #1: chromium zygote aborts with `No usable sandbox!` because
+  Docker Desktop on macOS/Windows does not expose unprivileged user
+  namespaces to containers, and the previous entrypoint relied on running
+  chromium as a non-root `browser` user without `--no-sandbox`.
+- Root cause #2: `su browser -c "..."` was unreliable because the system user
+  created via `useradd -r` may end up with a `nologin` shell, in which case
+  `su -c` exits silently without launching chromium.
+- Root cause #3: `socat` was started 2 seconds after chromium with no
+  readiness check, so even if chromium *had* started slowly the proxy would
+  still have raced.
+- Fix: rewrote `packages/browser/docker/{Dockerfile,entrypoint.sh}`:
+  - drop the non-root user, run as root inside the container
+  - add `--no-sandbox` to chromium (standard for headful chromium in Docker)
+  - add a CDP readiness probe via `curl http://127.0.0.1:19222/json/version`
+    that waits up to 30s and exits with a tail of the chromium log on failure
+  - start `dbus` before chromium to silence noisy warnings
+  - log every sub-process to `/var/log/jiku-browser/*.log` inside the container
+  - `exec websockify` as the foreground process so SIGTERM propagates and
+    `docker compose down` shuts the container down cleanly
+- Pickup: `cd packages/browser && docker compose down && docker compose up -d --build`
+
+**Added — live browser preview in settings page:**
+- New endpoint `POST /api/projects/:pid/browser/preview` — captures one-shot
+  screenshot via `execBrowserCommand` and returns it inline as base64. Best
+  effort `title` and `url` via parallel `get` calls. Never persisted.
+- New API method `api.browser.preview()` + `BrowserPreviewResult` type.
+- Browser settings page now shows a 16:9 "Live Preview" box (only when
+  enabled) with manual Refresh button + 3s auto-refresh toggle. Title/URL
+  overlay on the screenshot. Empty/loading/error states handled. Concurrent
+  request guard via `previewInFlight` ref so a slow screenshot doesn't pile up
+  requests when auto-refresh is on.
+
+---
+
 ## 2026-04-09 — Plan 33: Browser rebuild + unified attachment system
 
 **Shipped:** Plan 33 replaces the failed Plan 13 (OpenClaw port). Browser automation now works via `@jiku/browser` (CLI bridge to Vercel `agent-browser` over CDP), and all tool outputs (starting with screenshots) persist to S3 via a single reusable `persistContentToAttachment()` service.

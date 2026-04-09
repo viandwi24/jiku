@@ -363,6 +363,14 @@ Plan 13 (OpenClaw port) is replaced by `packages/browser/`. Key conventions:
 
 **Tool definition in studio, not in package:** `@jiku/browser` is a library. Tool definitions for AI agents go in `apps/studio/server`, using `execBrowserCommand()` directly. The package does NOT define AI tools.
 
+**Browser tool input schema must be a flat `z.object`:** `apps/studio/server/src/browser/tool-schema.ts` is a flat `z.object` (NOT a `z.discriminatedUnion`) where `action` is a required enum and every other field is optional. This is mandatory because OpenAI's function calling API rejects schemas without `type: "object"` at the root, and `z.discriminatedUnion` serializes via `zod-to-json-schema` to `anyOf` at the root — which OpenAI parses as `type: None` and refuses with `"Invalid schema for function ...: schema must be a JSON Schema of 'type: \"object\"'"`. Per-action field requirements are enforced at runtime by the `need()` helper in `execute.ts`'s `mapToBrowserCommand`. The mapper still has a `never`-typed default branch over `BrowserAction` for compile-time exhaustiveness. The `BROWSER_ACTIONS` const is the single source of truth for the action enum — schema and mapper both reference it.
+
+**Browser config is CDP-only:** `BrowserProjectConfig` (in `@jiku-studio/db`) only contains `cdp_url`, `timeout_ms`, `evaluate_enabled`, `screenshot_as_attachment`. Legacy Plan 13 fields (`mode`, `headless`, `executable_path`, `control_port`, `no_sandbox`) were dropped. The route Zod schema (`apps/studio/server/src/routes/browser.ts`) strips anything else on save.
+
+**Chromium in Docker MUST use `--no-sandbox`:** `packages/browser/docker/entrypoint.sh` runs chromium with `--no-sandbox` because Docker Desktop on macOS/Windows does not expose unprivileged user namespaces to containers. Without it, chromium's zygote dies at startup with `ERROR:zygote_host_impl_linux.cc:128] No usable sandbox!` and only fluxbox/noVNC's blank wallpaper is visible. The entrypoint also waits for chromium's CDP HTTP endpoint to become reachable on `127.0.0.1:19222` before starting socat — without this readiness probe, socat would race and emit "Connection refused" forever if chromium is slow.
+
+**Browser container logs:** `packages/browser/docker/entrypoint.sh` writes per-process logs into `/var/log/jiku-browser/{xvfb,fluxbox,chromium,socat,x11vnc}.log` inside the container. When debugging "Chromium doesn't appear in noVNC", `docker exec <id> tail /var/log/jiku-browser/chromium.log` is the fastest path to the actual error.
+
 ## ToolOutput renders content[] arrays with image support
 
 `packages/ui/src/components/ai-elements/tool.tsx` `ToolOutput` component handles tool output that is `{ content: ContentPart[] }`. Image parts (`type: 'image'`, `data`, `mimeType`) render as `<img src="data:...">`. Text parts render as CodeBlock. Single-image-only responses render without wrapper div. This pattern is used by the browser screenshot tool.

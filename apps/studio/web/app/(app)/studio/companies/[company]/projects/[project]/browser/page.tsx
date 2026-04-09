@@ -1,25 +1,15 @@
 'use client'
 
-import { use, useState, useEffect } from 'react'
+import { use, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { BrowserProjectConfig } from '@/lib/api'
+import type { BrowserProjectConfig, BrowserPingResult, BrowserPreviewResult } from '@/lib/api'
 import { Button, Input, Label, Separator, Switch } from '@jiku/ui'
 import { toast } from 'sonner'
-import { Globe, Monitor, Activity, CheckCircle2, XCircle, Loader2, Wifi } from 'lucide-react'
+import { Activity, CheckCircle2, XCircle, Loader2, Wifi, Globe, RefreshCw, Monitor, ImageOff } from 'lucide-react'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
-}
-
-type PingResult = {
-  ok: boolean
-  error?: string
-  latency_ms?: number
-  cdp_latency_ms?: number
-  browser?: string
-  cdp_url?: string
-  port?: number
 }
 
 function ProjectBrowserPage({ params }: PageProps) {
@@ -44,13 +34,15 @@ function ProjectBrowserPage({ params }: PageProps) {
     queryKey: ['project-browser', projectId],
     queryFn: () => api.browser.get(projectId),
     enabled: !!projectId,
-    refetchInterval: 5000,
   })
 
   const [enabled, setEnabled] = useState(false)
   const [cfg, setCfg] = useState<BrowserProjectConfig>({})
   const [initialized, setInitialized] = useState(false)
-  const [pingResult, setPingResult] = useState<PingResult | null>(null)
+  const [pingResult, setPingResult] = useState<BrowserPingResult | null>(null)
+  const [preview, setPreview] = useState<BrowserPreviewResult | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const previewInFlight = useRef(false)
 
   useEffect(() => {
     if (data && !initialized) {
@@ -62,7 +54,7 @@ function ProjectBrowserPage({ params }: PageProps) {
 
   const enableMutation = useMutation({
     mutationFn: (val: boolean) => api.browser.setEnabled(projectId, val),
-    onSuccess: (res, val) => {
+    onSuccess: (_res, val) => {
       setEnabled(val)
       setPingResult(null)
       qc.invalidateQueries({ queryKey: ['project-browser', projectId] })
@@ -89,45 +81,105 @@ function ProjectBrowserPage({ params }: PageProps) {
     onError: (err) => setPingResult({ ok: false, error: err instanceof Error ? err.message : 'Request failed' }),
   })
 
+  const previewMutation = useMutation({
+    mutationFn: async () => {
+      // Guard against overlapping requests when auto-refresh fires faster
+      // than the screenshot can complete.
+      if (previewInFlight.current) {
+        throw new Error('preview already in flight')
+      }
+      previewInFlight.current = true
+      try {
+        return await api.browser.preview(projectId)
+      } finally {
+        previewInFlight.current = false
+      }
+    },
+    onSuccess: (res) => setPreview(res),
+    onError: (err) => {
+      if (err instanceof Error && err.message === 'preview already in flight') return
+      setPreview({ ok: false, error: err instanceof Error ? err.message : 'Request failed' })
+    },
+  })
+
+  // Auto-refresh loop. Polls every 3s while enabled and the toggle is on.
+  // Cleared when the page unmounts, the feature is disabled, or the toggle
+  // turns off.
+  useEffect(() => {
+    if (!enabled || !autoRefresh || !projectId) return
+    const id = setInterval(() => {
+      if (!previewInFlight.current) previewMutation.mutate()
+    }, 3000)
+    return () => clearInterval(id)
+    // We intentionally exclude `previewMutation` from deps — its identity
+    // changes on every render and we don't want to reset the interval.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, autoRefresh, projectId])
+
+  // Reset preview state when the project or feature toggle changes.
+  useEffect(() => {
+    setPreview(null)
+    setAutoRefresh(false)
+  }, [projectId, enabled])
+
   if (isLoading) {
     return <div className="text-sm text-muted-foreground py-4">Loading...</div>
   }
 
-  const status = data?.status
-  const mode = cfg.mode ?? 'managed'
+  // Status bar reflects the most recent ping result. If we haven't pinged yet,
+  // we only know whether the feature is enabled — not whether the CDP endpoint
+  // is reachable.
+  const statusTone =
+    !enabled
+      ? 'idle'
+      : pingResult == null
+        ? 'unknown'
+        : pingResult.ok
+          ? 'ok'
+          : 'error'
+
+  const statusLabel =
+    statusTone === 'idle'
+      ? 'Browser disabled'
+      : statusTone === 'unknown'
+        ? 'Enabled — click "Test connection" to check the CDP endpoint'
+        : statusTone === 'ok'
+          ? `Connected · ${pingResult?.browser ?? 'unknown'}${pingResult?.latency_ms !== undefined ? ` · ${pingResult.latency_ms}ms` : ''}`
+          : `Cannot reach CDP — ${pingResult?.error ?? 'unknown error'}`
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-6 space-y-8">
       <div>
         <h1 className="text-xl font-semibold">Browser</h1>
-        <p className="text-sm text-muted-foreground mt-1">Configure browser automation for agents in this project.</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure browser automation for agents in this project. Powered by{' '}
+          <code className="text-xs bg-muted px-1 rounded">@jiku/browser</code> over CDP.
+        </p>
       </div>
 
       {/* Status bar */}
       <div className="flex items-center gap-3">
-        <div className={`flex items-center gap-2 flex-1 px-4 py-2.5 rounded-md border text-sm ${
-          !enabled
-            ? 'bg-muted border-border text-muted-foreground'
-            : status?.running
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-              : 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
-        }`}>
+        <div
+          className={`flex items-center gap-2 flex-1 px-4 py-2.5 rounded-md border text-sm ${
+            statusTone === 'idle'
+              ? 'bg-muted border-border text-muted-foreground'
+              : statusTone === 'ok'
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                : statusTone === 'error'
+                  ? 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
+                  : 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
+          }`}
+        >
           <Activity className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            {!enabled
-              ? 'Browser disabled'
-              : status?.running
-                ? `Running${status.port ? ` · port ${status.port}` : ''}`
-                : 'Stopped — enable and save to start'}
-          </span>
+          <span className="truncate">{statusLabel}</span>
         </div>
 
-        {enabled && status?.running && (
+        {enabled && (
           <Button
             variant="outline"
             size="sm"
             onClick={() => pingMutation.mutate()}
-            disabled={pingMutation.isPending}
+            disabled={pingMutation.isPending || !projectId}
             className="shrink-0 gap-1.5"
           >
             {pingMutation.isPending
@@ -138,32 +190,31 @@ function ProjectBrowserPage({ params }: PageProps) {
         )}
       </div>
 
-      {/* Ping result */}
+      {/* Ping detail */}
       {pingResult && (
-        <div className={`flex items-start gap-3 px-4 py-3 rounded-md border text-sm ${
-          pingResult.ok
-            ? 'bg-emerald-500/10 border-emerald-500/20'
-            : 'bg-red-500/10 border-red-500/20'
-        }`}>
+        <div
+          className={`flex items-start gap-3 px-4 py-3 rounded-md border text-sm ${
+            pingResult.ok
+              ? 'bg-emerald-500/10 border-emerald-500/20'
+              : 'bg-red-500/10 border-red-500/20'
+          }`}
+        >
           {pingResult.ok
             ? <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
             : <XCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />}
           <div className="space-y-1 min-w-0">
             {pingResult.ok ? (
               <>
-                <p className="font-medium text-emerald-600 dark:text-emerald-400">Connection successful</p>
+                <p className="font-medium text-emerald-600 dark:text-emerald-400">CDP reachable</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-                  {pingResult.latency_ms !== undefined && (
-                    <span>Control server: <span className="tabular-nums font-medium">{pingResult.latency_ms}ms</span></span>
-                  )}
-                  {pingResult.cdp_latency_ms !== undefined && (
-                    <span>CDP: <span className="tabular-nums font-medium">{pingResult.cdp_latency_ms}ms</span></span>
+                  {pingResult.cdp_url && (
+                    <span>Endpoint: <code className="font-mono">{pingResult.cdp_url}</code></span>
                   )}
                   {pingResult.browser && (
                     <span>Browser: <span className="font-medium">{pingResult.browser}</span></span>
                   )}
-                  {pingResult.port && (
-                    <span>Port: <span className="tabular-nums font-medium">{pingResult.port}</span></span>
+                  {pingResult.latency_ms !== undefined && (
+                    <span>Latency: <span className="tabular-nums font-medium">{pingResult.latency_ms}ms</span></span>
                   )}
                 </div>
               </>
@@ -175,6 +226,95 @@ function ProjectBrowserPage({ params }: PageProps) {
             )}
           </div>
         </div>
+      )}
+
+      {/* Live preview */}
+      {enabled && (
+        <section className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-2">
+                <Monitor className="w-4 h-4" /> Live Preview
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                One-shot screenshot of the current browser state. Useful to confirm what your agents are looking at.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="browser-auto-refresh" className="text-xs text-muted-foreground">Auto refresh</Label>
+                <Switch
+                  id="browser-auto-refresh"
+                  checked={autoRefresh}
+                  onCheckedChange={(v) => {
+                    setAutoRefresh(v)
+                    if (v && !preview && !previewMutation.isPending) previewMutation.mutate()
+                  }}
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => previewMutation.mutate()}
+                disabled={previewMutation.isPending}
+                className="gap-1.5"
+              >
+                {previewMutation.isPending
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <RefreshCw className="w-3.5 h-3.5" />}
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          {/* Preview viewport — 16:9 box with the latest screenshot */}
+          <div className="relative aspect-video w-full overflow-hidden rounded-md border bg-muted/30">
+            {preview?.ok && preview.data ? (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`data:image/${preview.data.format};base64,${preview.data.base64}`}
+                  alt="Browser preview"
+                  className="absolute inset-0 h-full w-full object-contain"
+                />
+                {(preview.data.title || preview.data.url) && (
+                  <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent px-3 py-2 text-xs text-white">
+                    {preview.data.title && (
+                      <span className="truncate font-medium">{preview.data.title}</span>
+                    )}
+                    {preview.data.url && (
+                      <span className="truncate font-mono text-white/70">{preview.data.url}</span>
+                    )}
+                  </div>
+                )}
+                {previewMutation.isPending && (
+                  <div className="absolute right-2 top-2 rounded-full bg-black/60 p-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin text-white" />
+                  </div>
+                )}
+              </>
+            ) : preview && !preview.ok ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center">
+                <ImageOff className="h-6 w-6 text-red-500" />
+                <p className="text-sm font-medium text-red-600 dark:text-red-400">Preview failed</p>
+                <p className="text-xs text-muted-foreground max-w-sm">{preview.error ?? 'Unknown error'}</p>
+                {preview.hint && (
+                  <p className="text-xs text-muted-foreground italic max-w-sm">Hint: {preview.hint}</p>
+                )}
+              </div>
+            ) : previewMutation.isPending ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <p className="text-xs text-muted-foreground">Capturing screenshot...</p>
+              </div>
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center">
+                <Monitor className="h-6 w-6 text-muted-foreground" />
+                <p className="text-xs text-muted-foreground">Click <span className="font-medium">Refresh</span> to capture the current browser state.</p>
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
       {/* Enable toggle */}
@@ -190,12 +330,12 @@ function ProjectBrowserPage({ params }: PageProps) {
           <div>
             <Label className="text-sm font-medium">Enable browser tools</Label>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Starts a browser control server and makes it available to all agents.
+              When enabled, all agents in this project receive the <code className="text-xs bg-muted px-1 rounded">browser</code> tool.
             </p>
           </div>
           <Switch
             checked={enabled}
-            disabled={enableMutation.isPending}
+            disabled={enableMutation.isPending || !projectId}
             onCheckedChange={(v) => enableMutation.mutate(v)}
           />
         </div>
@@ -203,115 +343,35 @@ function ProjectBrowserPage({ params }: PageProps) {
 
       <Separator />
 
-      {/* Mode selection */}
+      {/* CDP endpoint */}
       <section className="space-y-4">
         <div>
-          <h2 className="text-sm font-semibold">Connection Mode</h2>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Globe className="w-4 h-4" /> CDP Endpoint
+          </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Choose between a locally managed Playwright browser or a remote browser via CDP.
+            Chrome DevTools Protocol endpoint. Run the bundled container with{' '}
+            <code className="text-xs bg-muted px-1 rounded">docker compose up -d</code> in{' '}
+            <code className="text-xs bg-muted px-1 rounded">packages/browser</code>, or point to any other CDP-enabled Chromium.
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => setCfg(p => ({ ...p, mode: 'managed' }))}
-            className={`flex flex-col gap-1.5 p-4 rounded-lg border text-left transition-colors ${
-              mode === 'managed'
-                ? 'border-primary bg-primary/5'
-                : 'border-border hover:border-muted-foreground/40'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Monitor className="w-4 h-4" />
-              <span className="text-sm font-medium">Managed</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Jiku starts and manages a local Playwright browser instance.
-            </p>
-          </button>
-
-          <button
-            onClick={() => setCfg(p => ({ ...p, mode: 'remote' }))}
-            className={`flex flex-col gap-1.5 p-4 rounded-lg border text-left transition-colors ${
-              mode === 'remote'
-                ? 'border-primary bg-primary/5'
-                : 'border-border hover:border-muted-foreground/40'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4" />
-              <span className="text-sm font-medium">Remote</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Connect to an existing browser via CDP (e.g. a Docker container).
-            </p>
-          </button>
+        <div className="space-y-1.5">
+          <Label className="text-sm font-medium">CDP URL</Label>
+          <Input
+            placeholder="ws://localhost:9222"
+            value={cfg.cdp_url ?? ''}
+            onChange={(e) => setCfg(p => ({ ...p, cdp_url: e.target.value || undefined }))}
+            className="font-mono text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Defaults to <code className="text-xs bg-muted px-1 rounded">ws://localhost:9222</code> if left blank.
+            Both <code className="text-xs bg-muted px-1 rounded">ws://</code> and{' '}
+            <code className="text-xs bg-muted px-1 rounded">http://</code> are accepted —{' '}
+            <code className="text-xs bg-muted px-1 rounded">@jiku/browser</code> normalizes to <code>http://</code>.
+          </p>
         </div>
-
-        {mode === 'remote' && (
-          <div className="space-y-1.5">
-            <Label className="text-sm font-medium">CDP URL</Label>
-            <p className="text-xs text-muted-foreground">
-              Chrome DevTools Protocol endpoint. For{' '}
-              <code className="text-xs bg-muted px-1 rounded">linuxserver/chromium</code>, use{' '}
-              <code className="text-xs bg-muted px-1 rounded">http://localhost:9222</code>.
-            </p>
-            <Input
-              placeholder="http://localhost:9223"
-              value={cfg.cdp_url ?? ''}
-              onChange={(e) => setCfg(p => ({ ...p, cdp_url: e.target.value }))}
-              className="font-mono text-sm"
-            />
-          </div>
-        )}
       </section>
-
-      {mode === 'managed' && (
-        <>
-          <Separator />
-          <section className="space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold">Local Browser Options</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Settings for the locally managed Playwright browser.</p>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <Label className="text-sm font-medium">Headless mode</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">Run browser without a display. Recommended for server environments.</p>
-                </div>
-                <Switch
-                  checked={cfg.headless ?? true}
-                  onCheckedChange={(v) => setCfg(p => ({ ...p, headless: v }))}
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <Label className="text-sm font-medium">No sandbox</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">Disable Chrome sandbox. Required in some Docker/Linux environments.</p>
-                </div>
-                <Switch
-                  checked={cfg.no_sandbox ?? false}
-                  onCheckedChange={(v) => setCfg(p => ({ ...p, no_sandbox: v }))}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">Executable path</Label>
-                <p className="text-xs text-muted-foreground">Path to Chrome/Chromium binary. Leave blank to use the bundled Playwright browser.</p>
-                <Input
-                  placeholder="/usr/bin/google-chrome"
-                  value={cfg.executable_path ?? ''}
-                  onChange={(e) => setCfg(p => ({ ...p, executable_path: e.target.value || undefined }))}
-                  className="font-mono text-sm"
-                />
-              </div>
-            </div>
-          </section>
-        </>
-      )}
 
       <Separator />
 
@@ -322,38 +382,41 @@ function ProjectBrowserPage({ params }: PageProps) {
         </div>
 
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label className="text-sm font-medium">Allow evaluate</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Permit agents to execute arbitrary JavaScript in the browser context.</p>
-            </div>
-            <Switch
-              checked={cfg.evaluate_enabled ?? false}
-              onCheckedChange={(v) => setCfg(p => ({ ...p, evaluate_enabled: v }))}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label className="text-sm font-medium">Control port</Label>
-            <p className="text-xs text-muted-foreground">Port for the browser control server. Leave blank for auto-assign.</p>
-            <Input
-              type="number"
-              placeholder="auto"
-              value={cfg.control_port ?? ''}
-              onChange={(e) => setCfg(p => ({ ...p, control_port: e.target.value ? Number(e.target.value) : undefined }))}
-              className="w-36 font-mono text-sm"
-            />
-          </div>
-
           <div className="space-y-1.5">
             <Label className="text-sm font-medium">Timeout (ms)</Label>
-            <p className="text-xs text-muted-foreground">Default timeout for browser actions. Leave blank for default (30000ms).</p>
+            <p className="text-xs text-muted-foreground">Per-command timeout for the agent-browser CLI. Default: 30000.</p>
             <Input
               type="number"
               placeholder="30000"
               value={cfg.timeout_ms ?? ''}
               onChange={(e) => setCfg(p => ({ ...p, timeout_ms: e.target.value ? Number(e.target.value) : undefined }))}
               className="w-36 font-mono text-sm"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label className="text-sm font-medium">Persist screenshots as attachments</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                If enabled (default), screenshots are uploaded to the project filesystem and returned as attachment references. If disabled, they are returned inline as base64.
+              </p>
+            </div>
+            <Switch
+              checked={cfg.screenshot_as_attachment ?? true}
+              onCheckedChange={(v) => setCfg(p => ({ ...p, screenshot_as_attachment: v }))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label className="text-sm font-medium">Allow eval</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Permit agents to execute arbitrary JavaScript in the page context. Off by default — only enable for trusted agents.
+              </p>
+            </div>
+            <Switch
+              checked={cfg.evaluate_enabled ?? false}
+              onCheckedChange={(v) => setCfg(p => ({ ...p, evaluate_enabled: v }))}
             />
           </div>
         </div>

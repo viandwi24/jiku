@@ -1,47 +1,51 @@
 ## Phase
-Plan 33 — Unified Content Attachment System & Browser Engine Integration. Replacing failed Plan 13 (OpenClaw browser) with new `@jiku/browser` engine.
+Idle / next backlog item. Plan 33 (Browser rebuild + unified attachment system)
+fully shipped on 2026-04-09 — see the impl report at
+`docs/plans/impl-reports/13-browser-implement-report.md`.
 
-## Currently Working On (2026-04-09)
-- **Phase 1 COMPLETE:** Database schema + types
-  - ✅ Added `source_type` + `metadata` columns to `project_attachments` table (schema + migration)
-  - ✅ Created `ContentPersistResult`, `ContentPersistOptions`, `ToolContentPart` types in `@jiku/types`
-  - ✅ Created migration `0008_add_attachment_source_tracking.sql`
-  
-- **Phase 2 COMPLETE:** Content persistence layer
-  - ✅ Created `apps/studio/server/src/content/persister.ts` — `persistContentToAttachment()` function
-  - ✅ Updated browser screenshot tool to use new persister (returns `attachment_id` + `storage_key`, no URL)
-  - ✅ Deleted all 80+ OpenClaw browser engine files (marked as failed Plan 13)
-  - ✅ Rewrote `config.ts` to remove server management (now just `resolveCdpEndpoint()`)
-  - ✅ Rewrote `index.ts` to track CDP endpoints only (no Node child process singleton)
-  - ✅ Rewrote `execute.ts` to use `@jiku/browser` CLI bridge via `execBrowserCommand()`
-  - ✅ Updated `tool.ts` signature to accept `config` instead of `serverBaseUrl`
-  - ✅ Removed all `startBrowserServer`, `stopBrowserServer` calls from `runtime/manager.ts`
-  
-- **Phase 3 COMPLETE:** UI rendering + LLM delivery
-  - ✅ `GET /api/attachments/:id/inline` endpoint exists (auth-gated with JWT token)
-  - ✅ Updated `ToolOutput` component to render attachment references (`attachment_id` + `storage_key` format)
-  - ✅ Created `useAttachmentUrl()` hook for JWT token injection in `<img src>`
-  - ✅ Chat route already handles attachment resolution (converts to proxy_url or base64 per agent settings)
-  
-- **Phase 4-7 TODO:** Connector integration, testing, documentation
-  - [ ] Add content persistence to connector action outputs
-  - [ ] Test screenshot persistence end-to-end
-  - [ ] Update memory.md with attachment persistence pattern
-  - [ ] Verify browser screenshot workflow end-to-end: open → snapshot → screenshot → attachment persisted → rendered in UI
+## Currently Working On
+- _(nothing active)_ — Plan 33 closed end-to-end. Pick the next item from
+  `docs/builder/tasks.md`.
 
-- ✅ Migrations applied: `bun run db:push` successful
-- Qdrant needs `docker compose up qdrant` to start
-- MCP SDK installed (`@modelcontextprotocol/sdk@1.29.0`)
-- Qdrant client installed (`@qdrant/js-client-rest@1.17.0`)
+## Plan 33 — Browser Rebuild — DONE (2026-04-09)
 
-## Plan 33 Implementation Summary (this session)
-- ✅ **Phase 1-2**: Database schema + content persister + OpenClaw removal
-- ✅ **Phase 3-5**: Attachment serving + UI rendering + LLM integration
-  - Endpoints: `GET /api/attachments/:id/inline?token=JWT` (existing)
-  - UI hook: `useAttachmentUrl()` for authenticated image URLs
-  - Component: Updated `ToolOutput` to render attachment references
-  - Workflow: attachment_id → inline URL with JWT → image rendered in chat
-  - Chat route: Resolves attachments per agent settings (proxy_url or base64) before LLM
+Final state of the browser feature after the full session arc:
+
+- **Engine:** `packages/browser/` — CLI bridge to Vercel `agent-browser` over
+  CDP, plus Docker container (Chromium + Xvfb + Fluxbox + noVNC + socat).
+  Container entrypoint hardened with `--no-sandbox`, dbus, CDP readiness
+  probe, per-process logs in `/var/log/jiku-browser/*.log`, and `exec
+  websockify` as PID 1 for clean SIGTERM propagation.
+- **Studio integration:** `apps/studio/server/src/browser/` — flat `z.object`
+  tool schema (33 actions: navigation/observation/interaction/wait/tabs/eval/
+  cookies/storage/batch). The mapper in `execute.ts` validates per-action
+  field requirements via `need()` and rebuilds nested `tab`/`cookies`
+  operations before calling `execBrowserCommand`. Screenshots persist via
+  `persistContentToAttachment()` (Plan 33 unified attachments) by default,
+  configurable via `screenshot_as_attachment` per project.
+- **Config:** CDP-only — `cdp_url`, `timeout_ms`, `evaluate_enabled`,
+  `screenshot_as_attachment`. All Plan 13 fields (`mode`, `headless`,
+  `executable_path`, `control_port`, `no_sandbox`) dropped from DB + web
+  types + UI.
+- **REST API:** `GET/PATCH /projects/:pid/browser`, `PATCH .../enabled`,
+  `PATCH .../config`, `POST .../ping`, `POST .../preview`. The `preview`
+  endpoint takes a one-shot screenshot (+ best-effort title/url) and returns
+  it inline, never persisted — used by the Live Preview box in the UI.
+- **Settings page:** rewritten as a single CDP-only page with a Live Preview
+  box (16:9, manual Refresh + 3s auto-refresh toggle, title/url overlay,
+  loading/empty/error states, concurrent-request guard).
+- **Critical fix during the session:** the schema was first rewritten as a
+  `z.discriminatedUnion`, which serializes to `anyOf` at the JSON Schema root
+  and broke OpenAI function calling with `Invalid schema for function
+  'builtin_browser': ... got 'type: "None"'`. Replaced with a flat `z.object`
+  + runtime `need()` validation. Memory updated to prevent regression.
+- **Plan 13 cleanup:** deleted `apps/studio/server/docker-compose.browser.yml`,
+  `apps/studio/server/browser-init/chromium-cdp.sh`, and
+  `infra/dokploy/Dockerfile.browser`. All ~80 OpenClaw engine files removed
+  earlier in the session.
+
+See `docs/plans/impl-reports/13-browser-implement-report.md` for the full
+breakdown.
 
 ## Relevant Files (Most Recently Worked On)
 

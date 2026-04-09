@@ -2,17 +2,25 @@ import { eq } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { projects } from '../schema/index.ts'
 
-export type BrowserMode = 'managed' | 'remote'
-
+/**
+ * Browser config — CDP-only since Plan 33 (`@jiku/browser` migration).
+ *
+ * Legacy fields (`mode`, `headless`, `executable_path`, `control_port`,
+ * `no_sandbox`) were removed when the OpenClaw port was deleted. Stored
+ * configs that still contain them will simply ignore those keys.
+ */
 export type BrowserProjectConfig = {
-  mode?: BrowserMode            // 'managed' (local Playwright) | 'remote' (CDP URL)
-  cdp_url?: string              // for mode=remote: e.g. "http://browser:9223"
-  headless?: boolean            // default: true (managed only)
-  executable_path?: string      // default: auto-detect (managed only)
-  control_port?: number         // default: 18791 (managed only)
-  timeout_ms?: number           // default: 30000
-  no_sandbox?: boolean          // default: false (managed only, for Docker)
-  evaluate_enabled?: boolean    // default: true
+  /** CDP endpoint, e.g. "ws://localhost:9222" or "http://localhost:9222". */
+  cdp_url?: string
+  /** Default per-command timeout in milliseconds (default: 30_000). */
+  timeout_ms?: number
+  /** Allow agents to call `eval` (run arbitrary JS in the page). */
+  evaluate_enabled?: boolean
+  /**
+   * If true (default), screenshots are persisted to S3 and returned as
+   * attachment references. If false, they are returned inline as base64.
+   */
+  screenshot_as_attachment?: boolean
 }
 
 export async function getProjectBrowserConfig(projectId: string): Promise<{

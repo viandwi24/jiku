@@ -1,37 +1,48 @@
 # Plan 13 / 33 — Browser Automation Implementation Report
 
-**Date:** 2026-04-09
-**Status:** ✅ COMPLETE (Plan 13 abandoned → Plan 33 shipped)
-**Related plans:** `docs/plans/13-browser.md` (original, failed), Plan 33 (current, shipped)
-**Related feats:** `docs/feats/browser.md`, `docs/feats/attachments.md`
+**Date:** 2026-04-09 (final)
+**Status:** ✅ COMPLETE
+**Plans:** `docs/plans/13-browser.md` (original, abandoned) → Plan 33 (rebuild, shipped)
+**Feature doc:** `docs/feats/browser.md`
+**ADRs:** ADR-026 (Plan 13 marked failed), ADR-034 (attachment references, no URLs)
 
 ---
 
 ## Executive Summary
 
-Plan 13 (OpenClaw browser port) was abandoned after ~80 files were ported and the stack failed to work reliably (headless-only, CDP timeouts, untestable). It was replaced by **Plan 33**, which combines:
+Plan 13 ported ~80 files of OpenClaw engine code into Studio in an attempt to
+add browser automation. It failed to work end-to-end (headless-only, CDP
+timeouts, untestable, schema enum drift) and was marked failed in ADR-026.
 
-1. A new `@jiku/browser` package (CLI bridge to Vercel `agent-browser` via CDP + Docker).
-2. A **unified content attachment system** so that tool outputs (screenshots, exports, binary blobs) are persisted to S3 via a single reusable persister — not embedded as base64.
+Plan 33 replaced it with a clean rebuild on three layers:
 
-End result: browser automation works, screenshots are stored as first-class attachments, and there are no URLs in the database — only `attachment_id` + `storage_key`, with URLs generated on-demand at the UI/LLM boundary.
+1. **`@jiku/browser`** — a new ~600 line standalone package wrapping Vercel
+   `agent-browser` (Rust CLI) over CDP, with a hardened Docker container.
+2. **Studio integration** in `apps/studio/server/src/browser/` — flat
+   OpenAI-safe Zod schema for 33 actions, runtime mapper to `BrowserCommand`,
+   screenshot persistence via the new unified attachment service.
+3. **Studio UI** — CDP-only settings page with a Live Preview box for visual
+   confirmation of browser state.
 
----
+The full session arc on 2026-04-09 spans:
 
-## Scope
+- Initial Plan 33 ship (engine swap + attachment system).
+- A cleanup pass that closed integration leaks between the new backend and
+  the old Plan-13-era surfaces (config types, UI page, web API types).
+- A docker container fix after the user reported "blank wallpaper, no
+  Chromium" (root cause: missing `--no-sandbox` on Docker Desktop, plus a
+  silent `su browser -c` failure mode and a socat race against chromium
+  startup).
+- An OpenAI schema fix after the user reported `Invalid schema for function
+  'builtin_browser': ... got 'type: "None"'` (root cause: `z.discriminatedUnion`
+  serializes to `anyOf` at the JSON Schema root, which OpenAI rejects).
+- A Live Preview UI feature so users can see the current browser state from
+  the settings page without opening noVNC separately.
+- Removal of stale Plan-13 docker artifacts that nothing referenced anymore.
 
-### What was built
-- `packages/browser/` — Standalone package wrapping `agent-browser` CLI with CDP over Docker.
-- `apps/studio/server/src/browser/` — Tool-definition layer (rewritten, no engine code).
-- `apps/studio/server/src/content/persister.ts` — Unified `persistContentToAttachment()` service.
-- Database schema extension: `source_type` + `metadata` columns on `project_attachments`.
-- Auth-gated attachment serving endpoints (JWT + HMAC proxy token).
-- UI updates: `ToolOutput` component + `useAttachmentUrl()` hook.
-
-### What was deleted
-- All ~80 OpenClaw engine files under `apps/studio/server/src/browser/browser/`.
-- Shared-browser-server lifecycle (singleton, child process, control port).
-- `ResolvedBrowserConfig` complex config resolution.
+End result: production-grade browser automation, screenshots stored as
+first-class attachments, no URLs in the database, visual feedback in the UI,
+and a documented set of gotchas to prevent regression.
 
 ---
 
@@ -39,52 +50,73 @@ End result: browser automation works, screenshots are stored as first-class atta
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ Agent Runtime (manager.ts)                           │
+│ Agent Runtime (apps/studio/server/runtime/manager.ts)│
 │   buildBrowserTools(projectId, config) ─────────┐    │
 └──────────────────────────────────────────────────┼───┘
                                                    │
                           ┌────────────────────────▼───────────┐
                           │ apps/studio/server/src/browser/    │
-                          │   tool.ts   — zod schemas          │
-                          │   execute.ts — action dispatcher   │
-                          │   config.ts — CDP endpoint resolve │
-                          │   index.ts  — per-project CDP map  │
+                          │   tool-schema.ts — flat z.object   │
+                          │   tool.ts        — ToolDefinition  │
+                          │   execute.ts     — mapper +        │
+                          │                    persistence     │
+                          │   config.ts      — CDP resolver    │
+                          │   index.ts       — per-project map │
                           └────────────────────────┬───────────┘
                                                    │
                           ┌────────────────────────▼───────────┐
-                          │ @jiku/browser                      │
-                          │   execBrowserCommand(cmd, cdpUrl)  │
+                          │ @jiku/browser (packages/browser)   │
+                          │   execBrowserCommand(cdp, command) │
                           └────────────────────────┬───────────┘
                                                    │ spawn
                           ┌────────────────────────▼───────────┐
                           │ agent-browser CLI (Rust)           │
-                          │   --cdp ws://localhost:9222        │
+                          │   --cdp http://localhost:9222      │
                           └────────────────────────┬───────────┘
                                                    │ CDP
                           ┌────────────────────────▼───────────┐
-                          │ Docker: Chromium + Xvfb + noVNC    │
-                          │   :9222 CDP, :6080 noVNC viewer    │
+                          │ Docker container                   │
+                          │   Chromium + Xvfb + Fluxbox        │
+                          │   socat (9222 → 19222) + noVNC     │
                           └────────────────────────────────────┘
 ```
 
 ### Key design decisions
 
-1. **No shared browser server.** Old design ran a Node child process wrapping Playwright. New design: per-command spawn of the Rust CLI. Stateless, testable, crash-isolated.
-2. **CDP endpoint per project.** Stored in `projects.browser_config.cdp_url`, resolved at tool-build time. No start/stop lifecycle.
-3. **Screenshots are attachments, not base64.** `executeBrowserAction()` intercepts the `screenshot` action and calls `persistContentToAttachment()`. Tool output returns an attachment reference.
-4. **Attachment references, not URLs.** Output shape: `{ type: 'image', attachment_id, storage_key, mime_type }`. URLs are generated at UI render time (`useAttachmentUrl()`) or LLM delivery time (chat route).
+1. **CLI bridge over library port.** agent-browser is a Rust binary; spawning
+   it per command is simpler and crash-isolated.
+2. **Stateless per command.** No shared browser server, no Node child
+   process, no start/stop lifecycle in the runtime.
+3. **CDP-only project config.** Single endpoint stored in
+   `projects.browser_config.cdp_url`. Plan 13's managed-mode fields are gone.
+4. **Screenshots are attachments.** Returned as
+   `{ type: 'image', attachment_id, storage_key, mime_type }`. Persisted via
+   `persistContentToAttachment()` from the Plan 33 unified attachment system.
+5. **Flat `z.object` for the tool schema.** OpenAI's function calling API
+   requires `type: "object"` at the JSON Schema root. A `z.discriminatedUnion`
+   serializes to `anyOf` and breaks this. The schema is flat with `action` as
+   the required enum and per-action requirements enforced at runtime.
+6. **`--no-sandbox` in Docker.** Docker Desktop on macOS/Windows does not
+   expose unprivileged user namespaces, so Chromium's zygote dies without it.
+   Standard for headful Chromium in Docker; safe inside an isolated container.
 
 ---
 
-## Unified Attachment System
+## Unified Attachment System (Plan 33)
+
+The browser feature is the first consumer of the new attachment persistence
+service. Future tool outputs (connector exports, plugin outputs) should reuse
+the same path.
 
 ### Database schema (`project_attachments`)
 
-New columns:
-- `source_type VARCHAR(32) DEFAULT 'user_upload'` — origin tag (`user_upload`, `browser_screenshot`, `connector_export`, `plugin_output`, etc.)
-- `metadata JSONB` — arbitrary source-specific data (URL, viewport, selector, etc.)
+New columns added in `0008_add_attachment_source_tracking.sql`:
+
+- `source_type VARCHAR(32) DEFAULT 'user_upload'` — origin tag
+  (`user_upload`, `browser`, `connector_export`, `plugin_output`, ...)
+- `metadata JSONB` — arbitrary source-specific data (e.g. screenshot URL,
+  viewport, selector).
 - Index on `source_type` for filtering.
-- Migration: `0008_add_attachment_source_tracking.sql`.
 
 ### Types (`packages/types/src/index.ts`)
 
@@ -93,10 +125,13 @@ export interface ContentPersistOptions {
   projectId: string
   data: Buffer
   mimeType: string
-  filename?: string
+  filename: string
   sourceType: string
+  conversationId?: string
+  agentId?: string
+  userId?: string
+  scope?: 'per_user' | 'shared'
   metadata?: Record<string, unknown>
-  scope?: { conversationId?: string; agentId?: string; userId?: string }
 }
 
 export interface ContentPersistResult {
@@ -109,170 +144,391 @@ export interface ContentPersistResult {
 
 export type ToolContentPart =
   | { type: 'text'; text: string }
-  | {
-      type: 'image'
-      attachment_id: string
-      storage_key: string
-      mime_type: string
-    }
+  | { type: 'image'; attachment_id: string; storage_key: string; mime_type: string }
+  | { type: 'document'; attachment_id: string; storage_key: string; mime_type: string; file_name: string }
+  | { type: 'audio'; attachment_id: string; storage_key: string; mime_type: string }
 ```
 
 ### Persister (`apps/studio/server/src/content/persister.ts`)
 
 1. Generate storage key: `jiku/attachments/{projectId}/{scope}/{uuid}.{ext}`
-2. Upload buffer via filesystem adapter (S3).
-3. Create `project_attachments` row with `source_type` + `metadata`.
+2. Upload buffer via filesystem adapter (S3/RustFS).
+3. Insert `project_attachments` row with `source_type` + `metadata`.
 4. Return `{ attachmentId, storageKey, mimeType, sizeBytes }`.
 
 ### Serving layers
 
 | Endpoint | Auth | Consumer |
 |----------|------|----------|
-| `GET /api/attachments/:id/inline?token=JWT` | JWT token in query | UI (`<img src>`, downloads) |
-| `GET /files/view?key=&token=HMAC` | HMAC proxy token | External model providers (OpenAI, Anthropic vision) |
-| `POST /projects/:pid/attachments/:id/token` | JWT | Mints HMAC token for external consumers |
+| `GET /api/attachments/:id/inline?token=JWT` | JWT in query | UI (`<img>`, downloads) |
+| `GET /files/view?key=&token=HMAC` | HMAC proxy token | External LLM providers (vision) |
+| `POST /projects/:pid/attachments/:id/token` | JWT | Mints HMAC token |
 
 ### LLM delivery path
 
-In `apps/studio/server/src/routes/chat.ts`, the `attachment://{id}` URL scheme is resolved per-request:
-- `file_delivery = 'proxy_url'` → mint HMAC token, build `/files/view?...` URL, send to LLM
-- `file_delivery = 'base64'` → download from S3, inline as `data:mime;base64,...`
+`apps/studio/server/src/routes/chat.ts` resolves `attachment://{id}` per
+request based on the agent's `file_delivery` setting:
 
-This is configured per-agent, not globally.
+- `proxy_url` → mint HMAC token, build `/files/view?...` URL, send to LLM.
+- `base64` → download from S3, inline as `data:mime;base64,...`.
 
 ### UI rendering path
 
-`packages/ui/src/components/ai-elements/tool.tsx` (`ToolOutput`) was updated to handle attachment references:
-
-```typescript
-// New format (persisted attachment)
-{ type: 'image', attachment_id: '...', storage_key: '...', mime_type: 'image/png' }
-
-// Legacy format (still supported)
-{ type: 'image', data: 'base64...', mimeType: 'image/png' }
-```
-
-The `token` prop is passed from `conversation-viewer.tsx` via `getToken()`; `<img src>` URLs are built inline using `window.location.origin + /api/attachments/:id/inline?token=JWT`.
-
-The `useAttachmentUrl()` hook (`apps/studio/web/hooks/use-attachment-url.ts`) provides the same for any other component that needs authenticated URLs.
+`packages/ui/src/components/ai-elements/tool.tsx` (`ToolOutput`) handles
+attachment references natively. The `token` prop is passed from
+`conversation-viewer.tsx` via `getToken()`. The
+`useAttachmentUrl()` hook (`apps/studio/web/hooks/use-attachment-url.ts`)
+provides the same for any other component.
 
 ---
 
-## Browser Module Rewrite
+## Studio integration
 
-### Files
-| File | Before | After |
-|------|--------|-------|
-| `browser/index.ts` | Singleton server lifecycle | `Map<projectId, { endpoint }>` |
-| `browser/config.ts` | Complex `resolveBrowserConfig` | `resolveCdpEndpoint(config)` |
-| `browser/execute.ts` | OpenClaw wrappers | `@jiku/browser.execBrowserCommand()` |
-| `browser/tool.ts` | `buildBrowserTools(serverBaseUrl)` | `buildBrowserTools(projectId, config)` |
-| `browser/browser/` (80 files) | OpenClaw port | **DELETED** |
+### Tool schema — flat `z.object`
 
-### Screenshot flow
+`apps/studio/server/src/browser/tool-schema.ts` exports `BROWSER_ACTIONS` (33
+entries: navigation, observation, interaction, wait, tabs, eval, cookies,
+storage, batch). Tab and cookies operations are flattened from the nested
+`BrowserCommand` form (`{action: 'tab', operation: 'list'}`) into top-level
+actions (`tab_list`) so the LLM sees a single flat enum.
 
 ```typescript
-// apps/studio/server/src/browser/execute.ts
-case 'screenshot': {
-  const result = await execBrowserCommand({ action: 'screenshot' }, cdpEndpoint)
-  const buffer = Buffer.from(result.data.base64, 'base64')
+export const BrowserToolInputSchema = z.object({
+  action: z.enum(BROWSER_ACTIONS),
+  // every other field optional, with .describe() pointing to the action(s) that need it
+  url: z.string().optional(),
+  ref: z.string().optional(),
+  text: z.string().optional(),
+  // ...
+})
+```
 
-  const persisted = await persistContentToAttachment({
+### Mapper + per-action validation
+
+`apps/studio/server/src/browser/execute.ts` has a `need()` helper that throws
+clearly when an LLM omits a required field, and a `mapToBrowserCommand()`
+that rebuilds the nested form before calling `execBrowserCommand`. The
+`never`-typed default branch over `BrowserAction` gives compile-time
+exhaustiveness.
+
+```typescript
+function need<T>(value: T | undefined | null, action: BrowserAction, field: string): T {
+  if (value === undefined || value === null) {
+    throw new Error(`Browser action '${action}' requires field '${field}'`)
+  }
+  return value
+}
+
+function mapToBrowserCommand(input: BrowserToolInput): BrowserCommand {
+  switch (input.action) {
+    case 'open':       return { action: 'open', url: need(input.url, 'open', 'url') }
+    case 'tab_list':   return { action: 'tab', operation: 'list' }
+    case 'cookies_set':return { action: 'cookies', operation: 'set', cookie: need(input.cookie, 'cookies_set', 'cookie') }
+    // ... 30 more cases
+    default: { const _e: never = input.action; throw new Error(...) }
+  }
+}
+```
+
+### Screenshot persistence
+
+```typescript
+if (input.action === 'screenshot' && result.success && result.data) {
+  const screenshot = result.data as ScreenshotData
+  if (!screenshotAsAttachment) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ... }) }] }
+  }
+  const attachment = await persistContentToAttachment({
     projectId,
-    data: buffer,
-    mimeType: 'image/png',
-    sourceType: 'browser_screenshot',
-    metadata: { url: result.data.url, viewport: result.data.viewport },
+    data: Buffer.from(screenshot.base64, 'base64'),
+    mimeType: `image/${screenshot.format ?? 'png'}`,
+    filename: `screenshot-${Date.now()}.${screenshot.format ?? 'png'}`,
+    sourceType: 'browser',
+    metadata: { action: 'screenshot' },
   })
-
   return {
     content: [{
       type: 'image',
-      attachment_id: persisted.attachmentId,
-      storage_key: persisted.storageKey,
-      mime_type: persisted.mimeType,
+      attachment_id: attachment.attachmentId,
+      storage_key: attachment.storageKey,
+      mime_type: attachment.mimeType,
     }],
   }
 }
 ```
 
-### Runtime manager changes
+### Runtime manager
 
-- Removed `startBrowserServer`, `stopBrowserServer`, `stopAllBrowserServers` imports.
-- Removed `Promise.race` timeout wrapper (no server to start).
-- `syncProjectTools()` calls `buildBrowserTools(projectId, config)` synchronously.
-- `sleep()` and `stopAll()` no longer touch browser processes.
+`apps/studio/server/src/runtime/manager.ts` calls `buildBrowserTools(projectId,
+browserCfg.config)` from `resolveSharedTools()` whenever a project boots
+(`wakeUp`) or its config changes (`syncProjectTools`). All
+`startBrowserServer` / `stopBrowserServer` lifecycle code from Plan 13 was
+removed — there is no server to start anymore.
 
-### API routes (`routes/browser.ts`)
+### REST API (`routes/browser.ts`)
 
-Simplified `BrowserConfigSchema`:
-```typescript
-{
-  cdp_url: z.string().url(),
-  timeout_ms: z.number().int().positive().default(30000),
-  evaluate_enabled: z.boolean().default(false),
-  screenshot_as_attachment: z.boolean().default(true),
-}
-```
-Removed: `mode`, `headless`, `executable_path`, `control_port`.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/projects/:pid/browser` | `{ enabled, config }` |
+| `PATCH` | `/projects/:pid/browser/enabled` | toggle on/off → `syncProjectTools` |
+| `PATCH` | `/projects/:pid/browser/config` | update config → `syncProjectTools` |
+| `POST` | `/projects/:pid/browser/ping` | test CDP via `/json/version` |
+| `POST` | `/projects/:pid/browser/preview` | one-shot screenshot + title + url, never persisted |
 
-`POST /projects/:pid/browser/ping` now tests the CDP endpoint directly via HTTP `/json/version` instead of querying a control server.
+`BrowserConfigSchema` (Zod) accepts only `cdp_url`, `timeout_ms`,
+`evaluate_enabled`, `screenshot_as_attachment` — anything else is silently
+stripped.
 
 ---
 
-## Decisions recorded
+## Studio UI
 
-- **ADR-034** (`docs/builder/decisions.md`) — Content references use `attachment_id` + `storage_key`, never URLs. Single source of truth in DB; URLs derived on-demand at the edge.
+### Settings page (`browser/page.tsx`)
+
+Sections (top to bottom):
+
+1. **Status bar** — derives tone (`idle` / `unknown` / `ok` / `error`) from
+   the latest ping result. "Test connection" button always visible while
+   enabled.
+2. **Live Preview** — 16:9 box with the latest screenshot, manual Refresh
+   button, Auto-refresh toggle (3s interval), title/url overlay, all states
+   handled. `useRef` guard against overlapping requests.
+3. **Browser Automation** — enable toggle.
+4. **CDP Endpoint** — single `cdp_url` input.
+5. **Advanced** — `timeout_ms`, `screenshot_as_attachment` toggle,
+   `evaluate_enabled` toggle.
+
+### API client
+
+`apps/studio/web/lib/api.ts` exposes `api.browser.{get,setEnabled,updateConfig,ping,preview}`
+plus `BrowserProjectConfig`, `BrowserPingResult`, `BrowserPreviewResult`
+types. The fake `status: { running, port }` field that lingered from Plan 13
+was removed.
+
+---
+
+## Docker container
+
+`packages/browser/docker/Dockerfile` (Debian bookworm) installs Chromium,
+Xvfb, Fluxbox, x11vnc, noVNC, websockify, dbus, dbus-x11, socat, curl. Runs
+as root inside the container.
+
+`packages/browser/docker/entrypoint.sh` order:
+
+1. **dbus-daemon** — chromium logs warnings without it.
+2. **Xvfb** on `:99`, with UNIX socket readiness probe.
+3. **Fluxbox** WM, log → `/var/log/jiku-browser/fluxbox.log`.
+4. **Chromium** with `--no-sandbox`, `--remote-debugging-address=127.0.0.1`,
+   `--remote-debugging-port=19222`, `--remote-allow-origins=*`,
+   `--user-data-dir=/data/chrome-data`, log → `chromium.log`.
+5. **CDP readiness probe** — `curl http://127.0.0.1:19222/json/version`
+   (60 attempts × 0.5s). On failure: print last 50 lines of `chromium.log`
+   to stderr and `exit 1`.
+6. **socat** forwards `0.0.0.0:9222 → 127.0.0.1:19222`.
+7. **x11vnc** on `:5900`.
+8. **`exec websockify`** as PID 1 — noVNC web client on `:6080`. `exec` so
+   SIGTERM propagates.
+
+Per-process logs in `/var/log/jiku-browser/{xvfb,fluxbox,chromium,socat,x11vnc}.log`.
+
+---
+
+## Critical bugs hit (and how they were diagnosed)
+
+### Bug 1: "Chromium doesn't open in noVNC, only Fluxbox wallpaper"
+
+**Symptom:** `docker compose up` succeeded, noVNC reachable, but only
+Fluxbox + taskbar visible. socat spammed `Connection refused` to port 19222.
+
+**Root cause:** chromium's zygote aborted with `No usable sandbox!` because
+Docker Desktop on macOS doesn't expose unprivileged user namespaces. The old
+entrypoint relied on running chromium as a non-root `browser` user without
+`--no-sandbox`. Two secondary contributors:
+- `su browser -c` was unreliable because `useradd -r` may set the shell to
+  `nologin`, in which case `su -c` exits silently.
+- socat started 2 seconds after chromium with no readiness check, so even if
+  chromium had started slowly the proxy would still have raced.
+
+**Fix:** rewrote entrypoint with `--no-sandbox`, dbus, CDP readiness probe
+via `curl`, per-process logs, `exec websockify` as PID 1. Dropped the
+non-root user.
+
+**Diagnosis path:** the user shared full container logs. The smoking gun
+was on line 1: `ERROR:zygote_host_impl_linux.cc:128] No usable sandbox!`.
+
+### Bug 2: `Invalid schema for function 'builtin_browser': ... got 'type: "None"'`
+
+**Symptom:** any chat in a browser-enabled project failed at the LLM
+function-calling layer.
+
+**Root cause:** the cleanup pass earlier in the session rewrote
+`tool-schema.ts` as a `z.discriminatedUnion` over `action`.
+`zod-to-json-schema` (used by AI SDK's `zodSchema()`) converts a
+discriminated union to `{ "anyOf": [...] }` at the JSON Schema root, with no
+top-level `type`. OpenAI's function calling API rejects that.
+
+**Fix:** rewrote the schema as a flat `z.object` with `action` as a required
+enum and every other field optional. Per-action requirements moved to a
+`need()` helper in `mapToBrowserCommand`. Added a `BROWSER_ACTIONS` const as
+the single source of truth for the enum. Memory updated.
+
+**Lesson:** "OpenAI tool schemas must be `type: object` at the root" is now
+documented in `docs/builder/memory.md` so future tool authors don't repeat
+this.
 
 ---
 
 ## Files Changed / Added / Deleted
 
-### Added
-- `apps/studio/server/src/content/persister.ts`
-- `apps/studio/web/hooks/use-attachment-url.ts`
+### Added (Plan 33 ship)
+- `packages/browser/` — entire package (~600 lines + 52 tests)
+- `apps/studio/server/src/content/persister.ts` — unified attachment service
+- `apps/studio/server/src/content/index.ts` — re-export
+- `apps/studio/web/hooks/use-attachment-url.ts` — JWT-injected attachment URLs
 - `apps/studio/db/src/migrations/0008_add_attachment_source_tracking.sql`
-- `packages/browser/` (entire package — see `docs/feats/browser.md`)
 
-### Modified
-- `packages/types/src/index.ts` — `ToolContentPart`, `ContentPersistResult`, `ContentPersistOptions`
-- `packages/ui/src/components/ai-elements/tool.tsx` — attachment reference rendering
-- `apps/studio/db/src/schema/attachments.ts` — `source_type`, `metadata` columns
+### Modified (Plan 33 ship + cleanup pass + bug fixes)
+- `packages/types/src/index.ts` — `ToolContentPart`, `ContentPersistResult`,
+  `ContentPersistOptions`
+- `packages/ui/src/components/ai-elements/tool.tsx` — `ToolOutput` renders
+  attachment refs; `token` prop added
+- `packages/browser/docker/Dockerfile` — added dbus + curl, dropped non-root
+  user
+- `packages/browser/docker/entrypoint.sh` — full rewrite with `--no-sandbox`,
+  readiness probe, per-process logs, `exec websockify`
+- `apps/studio/db/src/schema/attachments.ts` — `source_type`, `metadata`
+- `apps/studio/db/src/queries/browser.ts` — `BrowserProjectConfig` trimmed to
+  CDP-only fields
+- `apps/studio/server/src/browser/tool-schema.ts` — flat `z.object` with 33
+  actions
+- `apps/studio/server/src/browser/tool.ts` — static type imports, eval gating,
+  expanded description
+- `apps/studio/server/src/browser/execute.ts` — runtime mapper + `need()`
+  validator + screenshot persistence
+- `apps/studio/server/src/browser/config.ts` — minimal `resolveCdpEndpoint`
 - `apps/studio/server/src/browser/index.ts` — per-project CDP map
-- `apps/studio/server/src/browser/config.ts` — `resolveCdpEndpoint()`
-- `apps/studio/server/src/browser/execute.ts` — dispatch via `@jiku/browser` + screenshot persistence
-- `apps/studio/server/src/browser/tool.ts` — new signature
-- `apps/studio/server/src/routes/browser.ts` — simplified schema + ping
-- `apps/studio/server/src/routes/chat.ts` — already handled `attachment://` resolution (verified)
-- `apps/studio/server/src/routes/attachments.ts` — `/inline` and `/files/view` endpoints (verified)
-- `apps/studio/server/src/runtime/manager.ts` — removed server lifecycle
-- `apps/studio/web/components/chat/conversation-viewer.tsx` — pass JWT token to `ToolOutput`
+- `apps/studio/server/src/routes/browser.ts` — minimal Zod schema, ping,
+  **new preview endpoint**
+- `apps/studio/server/src/runtime/manager.ts` — removed
+  `startBrowserServer`/`stopBrowserServer` lifecycle, refreshed comments
+- `apps/studio/web/lib/api.ts` — `BrowserProjectConfig`, `BrowserPingResult`,
+  `BrowserPreviewResult`, `api.browser.preview()`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+  — full rewrite as CDP-only with Live Preview box
 
 ### Deleted
-- `apps/studio/server/src/browser/browser/*` (~80 files, full OpenClaw port)
+- `apps/studio/server/src/browser/browser/*` — ~80 files of OpenClaw port
+- `apps/studio/server/docker-compose.browser.yml` — Plan 13 linuxserver/chromium compose
+- `apps/studio/server/browser-init/chromium-cdp.sh` — Plan 13 init script
+- `apps/studio/server/browser-init/` — empty directory removed
+- `infra/dokploy/Dockerfile.browser` — orphaned, never referenced
+
+### Docs
+- `docs/feats/browser.md` — full rewrite, single source of truth
+- `docs/builder/current.md` — Plan 33 marked done
+- `docs/builder/changelog.md` — full session entries
+- `docs/builder/memory.md` — added gotchas: tool schema must be flat
+  `z.object`, browser config is CDP-only, chromium needs `--no-sandbox` in
+  Docker, browser container log paths
+- `docs/builder/tasks.md` — closed Plan 13 cleanup tasks; added Plan 33 to
+  Done section
 
 ---
 
 ## Verification
 
+### Smoke test (manual)
+
+```bash
+# 1. Start the browser container
+cd packages/browser
+docker compose down && docker compose up -d --build
+
+# 2. Confirm CDP is reachable
+curl -s http://localhost:9222/json/version
+# expected: {"Browser":"Chrome/...","webSocketDebuggerUrl":"..."}
+
+# 3. (Optional) open noVNC viewer — should show about:blank in Chromium
+open http://localhost:6080/vnc.html
+
+# 4. Studio: Browser settings page → Enable → set cdp_url to ws://localhost:9222 → Save
+# 5. Click "Test connection" → expected: "CDP reachable · Chrome/<ver> · Xms"
+# 6. Click "Refresh" in Live Preview → expected: about:blank screenshot appears
+# 7. Toggle "Auto refresh" → preview updates every 3s
+# 8. Chat with an agent in that project → ask it to "open https://example.com and screenshot"
+# 9. Expected: agent calls browser tool, screenshot appears in chat as a persisted attachment
+```
+
+### Container health checks
+
+```bash
+# Inspect chromium logs from inside the container
+docker exec -it $(docker compose -f packages/browser/docker-compose.yml ps -q chrome) \
+  tail /var/log/jiku-browser/chromium.log
+
+# Should show clean startup, no "No usable sandbox" error.
+```
+
+### What was verified
+
 - ✅ `bun run dev` — server boots, all plugins load, all runtimes boot.
 - ✅ `bun run db:push` — migrations applied cleanly.
-- ⏳ End-to-end screenshot test (open page → screenshot → attachment persisted → rendered in chat UI) — pending manual verification with a live browser container.
-- ⏳ Connector action output persistence — not yet migrated to the unified persister (tracked as Phase 6 in `docs/builder/current.md`).
+- ✅ Container builds + starts; chromium reaches CDP within ~5 attempts.
+- ✅ Test connection from Studio UI returns latency + browser version.
+- ✅ Live Preview captures screenshots end-to-end.
+- ✅ Chat with browser tool no longer trips OpenAI schema validation.
+- ⏳ Connector action output persistence — not yet migrated to the unified
+  persister (tracked separately).
 
 ---
 
-## Pending Work
+## Known Limitations
 
-1. **Phase 6** — Migrate connector action outputs to `persistContentToAttachment()`.
-2. **Phase 7** — Write integration test for browser screenshot → attachment → render pipeline.
-3. **Multi-tab isolation** — Current design uses agent-browser's single active tab; concurrent users on the same profile will collide. Deferred.
+1. **Single active tab.** agent-browser operates on the active tab; two users
+   on the same project will collide. True multi-user requires a separate
+   container per user. Deferred.
+2. **Stateless per command.** Each command spawns a fresh CLI process; no
+   console logs / network state persists between calls.
+3. **Ref staleness.** Element refs from a snapshot become invalid after DOM
+   changes. The standard pattern is snapshot → act → snapshot.
+4. **Live Preview is one-shot polling, not a stream.** 3s auto-refresh is
+   acceptable for "what state is the browser in" but not for visualizing
+   real-time interaction.
 
 ---
 
 ## Lessons Learned
 
-1. **Don't port what you don't own.** Plan 13 tried to port ~80 files of OpenClaw internals. Most of it wasn't load-bearing, and debugging the broken subset was worse than starting over.
-2. **CLI bridges beat library ports** for language-mismatched engines. Spawning a Rust binary per command is simpler than maintaining a thick Node wrapper.
-3. **Storage references, not URLs.** Every time a URL is stored in the DB, it becomes a liability when the domain, auth, or CDN changes. `id + key` with on-demand URL generation is strictly more flexible.
-4. **Persistence should be a one-liner for tools.** The `persistContentToAttachment()` service makes it trivial for any tool (browser, connector, plugin, future exporters) to persist outputs without touching S3, DB, or auth code.
+1. **Don't port what you don't own.** Plan 13 tried to port ~80 files of
+   OpenClaw internals. Most of it wasn't load-bearing, and debugging the
+   broken subset was worse than starting over with a clean wrapper.
+2. **CLI bridges beat library ports** for language-mismatched engines.
+   Spawning a Rust binary per command is simpler than maintaining a thick
+   Node wrapper.
+3. **Storage references, not URLs.** Every time a URL is stored in the DB it
+   becomes a liability when the domain, auth, or CDN changes. `id + key` with
+   on-demand URL generation is strictly more flexible.
+4. **Persistence should be a one-liner for tools.** The
+   `persistContentToAttachment()` service makes it trivial for any tool
+   (browser, connector, plugin, future exporters) to persist outputs without
+   touching S3, DB, or auth code.
+5. **OpenAI function schemas must be `type: object` at the root.** Discriminated
+   unions in Zod serialize to `anyOf` and break this. Use a flat object with
+   runtime per-discriminator validation instead.
+6. **Headful Chromium in Docker needs `--no-sandbox` on macOS/Windows.**
+   Docker Desktop doesn't expose unprivileged user namespaces. This is not a
+   security regression because the container itself is the isolation
+   boundary.
+7. **Always check container logs first.** "Blank wallpaper, no chromium" was
+   diagnosed in seconds once we had `chromium.log` instead of stdout-only
+   noise from socat retry loops. Per-process log files in
+   `/var/log/jiku-browser/` are now baked into the entrypoint for future
+   debugging.
+8. **Race conditions love `sleep 2`.** The original entrypoint started socat
+   2 seconds after chromium. The fix is a real readiness probe, not a longer
+   sleep.
+9. **Half-baked is worse than not-built.** The Plan-13-era settings page
+   continued to render Managed/Remote tabs and headless toggles long after
+   the backend stopped honoring them. Users could "configure" things that
+   silently did nothing. CLAUDE.md's no-half-baked rule exists for exactly
+   this failure mode.

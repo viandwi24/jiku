@@ -1,41 +1,102 @@
 #!/bin/bash
+#
+# Entrypoint for the @jiku/browser Chromium container.
+#
+# Order of operations:
+#   1. dbus     — chromium logs warnings without it
+#   2. Xvfb     — virtual X server on $DISPLAY
+#   3. Fluxbox  — minimal WM so Chromium has decorations
+#   4. Chromium — headful with --remote-debugging-port (loopback only)
+#   5. wait     — block until Chromium's CDP port is reachable
+#   6. socat    — expose CDP to 0.0.0.0:$CDP_PORT
+#   7. x11vnc   — VNC server bound to the Xvfb display
+#   8. exec websockify — noVNC, runs as PID 1 so SIGTERM propagates
+#
 set -e
 
-# Internal port for Chromium CDP (not exposed directly)
 CHROME_INTERNAL_PORT=19222
+LOG_DIR=/var/log/jiku-browser
+mkdir -p "$LOG_DIR"
 
-# Start Xvfb (virtual framebuffer)
-Xvfb ${DISPLAY} -screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH} -ac &
-sleep 1
+# ─── 1. dbus ──────────────────────────────────────────────────────────────
+mkdir -p /var/run/dbus
+dbus-daemon --system --fork >/dev/null 2>&1 || true
 
-# Start Fluxbox (lightweight window manager)
-fluxbox -display ${DISPLAY} &
-sleep 1
+# ─── 2. Xvfb ──────────────────────────────────────────────────────────────
+Xvfb "${DISPLAY}" -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}" -ac \
+  >"$LOG_DIR/xvfb.log" 2>&1 &
 
-# Start Chromium as non-root user (no --no-sandbox needed, no warning banner)
-su browser -c "chromium \
+# Wait for Xvfb to come up by polling its UNIX socket
+for _ in $(seq 1 50); do
+  [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] && break
+  sleep 0.1
+done
+
+# ─── 3. Fluxbox ───────────────────────────────────────────────────────────
+fluxbox -display "${DISPLAY}" >"$LOG_DIR/fluxbox.log" 2>&1 &
+
+# ─── 4. Chromium ──────────────────────────────────────────────────────────
+# --no-sandbox is required because Docker Desktop on macOS/Windows does not
+# expose unprivileged user namespaces to containers, so chromium's zygote
+# fails with "No usable sandbox!" without it. We're already in an isolated
+# container, so this is the standard pattern for headful chromium in Docker.
+chromium \
+  --no-sandbox \
   --disable-gpu \
   --disable-dev-shm-usage \
   --disable-software-rasterizer \
   --remote-debugging-address=127.0.0.1 \
-  --remote-debugging-port=${CHROME_INTERNAL_PORT} \
-  --display=${DISPLAY} \
-  --window-size=${SCREEN_WIDTH},${SCREEN_HEIGHT} \
+  --remote-debugging-port="${CHROME_INTERNAL_PORT}" \
+  --remote-allow-origins=* \
+  --display="${DISPLAY}" \
+  --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
   --start-maximized \
   --no-first-run \
+  --no-default-browser-check \
   --disable-default-apps \
   --disable-extensions \
-  --user-data-dir=/home/browser/chrome-data \
-  about:blank" &
+  --disable-popup-blocking \
+  --disable-translate \
+  --disable-features=TranslateUI \
+  --user-data-dir=/data/chrome-data \
+  about:blank \
+  >"$LOG_DIR/chromium.log" 2>&1 &
+CHROMIUM_PID=$!
 
-sleep 2
+# ─── 5. Wait until CDP is reachable ───────────────────────────────────────
+echo "[entrypoint] waiting for chromium CDP on 127.0.0.1:${CHROME_INTERNAL_PORT}"
+for i in $(seq 1 60); do
+  if curl -fsS -o /dev/null "http://127.0.0.1:${CHROME_INTERNAL_PORT}/json/version"; then
+    echo "[entrypoint] chromium CDP is ready (after ${i} attempts)"
+    break
+  fi
+  if ! kill -0 "$CHROMIUM_PID" 2>/dev/null; then
+    echo "[entrypoint] FATAL: chromium exited before becoming ready" >&2
+    echo "[entrypoint] tail of $LOG_DIR/chromium.log:" >&2
+    tail -n 50 "$LOG_DIR/chromium.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.5
+done
 
-# Proxy: forward public CDP_PORT (0.0.0.0:9222) → internal Chromium (127.0.0.1:19222)
-# This makes both /json/* HTTP API and WebSocket CDP accessible from outside the container
-socat TCP-LISTEN:${CDP_PORT},fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:${CHROME_INTERNAL_PORT} &
+if ! curl -fsS -o /dev/null "http://127.0.0.1:${CHROME_INTERNAL_PORT}/json/version"; then
+  echo "[entrypoint] FATAL: chromium did not become ready in time" >&2
+  echo "[entrypoint] tail of $LOG_DIR/chromium.log:" >&2
+  tail -n 50 "$LOG_DIR/chromium.log" >&2 || true
+  exit 1
+fi
 
-# Start VNC server (passwordless for dev)
-x11vnc -display ${DISPLAY} -forever -nopw -shared -rfbport ${VNC_PORT} -bg
+# ─── 6. socat CDP proxy ───────────────────────────────────────────────────
+# Forward public ${CDP_PORT} (0.0.0.0) → internal chromium (127.0.0.1).
+# Both /json/* HTTP and the WebSocket upgrade traverse this same TCP forward.
+socat "TCP-LISTEN:${CDP_PORT},fork,reuseaddr,bind=0.0.0.0" \
+      "TCP:127.0.0.1:${CHROME_INTERNAL_PORT}" \
+  >"$LOG_DIR/socat.log" 2>&1 &
 
-# Start noVNC (web-based VNC client)
-websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:${VNC_PORT}
+# ─── 7. x11vnc ────────────────────────────────────────────────────────────
+x11vnc -display "${DISPLAY}" -forever -nopw -shared \
+       -rfbport "${VNC_PORT}" -bg \
+       -o "$LOG_DIR/x11vnc.log" >/dev/null 2>&1
+
+# ─── 8. noVNC (foreground / PID 1) ────────────────────────────────────────
+exec websockify --web=/usr/share/novnc "${NOVNC_PORT}" "localhost:${VNC_PORT}"

@@ -13,7 +13,7 @@ import { cronTaskScheduler } from '../cron/scheduler.ts'
 import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool } from '../cron/tools.ts'
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
-import { buildBrowserTools } from '../browser/tool.js'
+import { buildBrowserTools } from '../browser/tool.ts'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
@@ -68,7 +68,10 @@ export class JikuRuntimeManager {
   /**
    * Load project-level shared tools from DB (connector, browser, filesystem).
    * Updates the cache and returns the result.
-   * Does NOT restart the browser server — caller is responsible.
+   *
+   * Browser tools are stateless since the @jiku/browser migration — there is
+   * no long-running server to start or stop here, just a CDP endpoint that the
+   * tool spawns the agent-browser CLI against per command.
    */
   private async resolveSharedTools(projectId: string): Promise<ProjectSharedTools> {
     // Connector tools
@@ -161,7 +164,7 @@ export class JikuRuntimeManager {
     this.runtimes.set(projectId, runtime)
     this.storages.set(projectId, storage)
 
-    // Resolve and cache shared tools (browser server is started here)
+    // Resolve and cache shared tools (connector / browser / filesystem)
     const shared = await this.resolveSharedTools(projectId)
 
     // Plan 15.6: Load and connect MCP servers, collect tools

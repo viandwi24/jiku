@@ -513,6 +513,8 @@ export const api = {
       request<BrowserPreviewResult>(`/api/projects/${projectId}/browser/preview`, {
         method: 'POST',
       }),
+    status: (projectId: string) =>
+      request<BrowserStatus>(`/api/projects/${projectId}/browser/status`),
   },
 
   attachments: {
@@ -749,6 +751,23 @@ export interface BrowserPreviewResult {
   }
   error?: string
   hint?: string | null
+}
+
+export interface BrowserStatusTab {
+  index: number
+  agent_id: string | null
+  agent_name: string | null
+  kind: 'system' | 'agent'
+  last_used_at: number
+  idle_ms: number
+}
+
+export interface BrowserStatus {
+  enabled: boolean
+  mutex: { busy: boolean }
+  tabs: BrowserStatusTab[]
+  capacity: { used: number; agent_used: number; max: number }
+  idle_timeout_ms: number
 }
 
 export interface PluginItem {

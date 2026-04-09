@@ -1,5 +1,71 @@
 # Decisions
 
+## ADR-036 — Browser concurrency: per-project mutex + per-agent tab affinity
+
+**Context:** With Plan 33 shipped, the browser tool became usable end-to-end
+— but a project can have many agents, and agent-browser only operates on a
+single "active tab" per CDP endpoint. Two agents calling the browser tool
+concurrently would race on shared state with no warning: element refs from
+a snapshot would go stale, fills would overwrite each other, navigations
+would interleave. There was no lock, no queue, no isolation.
+
+We considered three approaches:
+
+- **A) Per-project queue + shared single tab.** Cheap. Single shared session.
+  Acceptable for collaborative agents but bad for "Agent A on Tokopedia,
+  Agent B on Shopee" — they tab-collide on every navigation.
+- **B) Per-project queue + per-agent tab affinity.** Each agent gets its own
+  chromium tab; the queue only serializes commands at the chromium level.
+  Same isolation a real multi-tab session gives, no throughput parallelism.
+- **C) Container pool — N chromium containers per project, agent assigned
+  to a container.** True parallelism. ~500 LoC pool manager + ~300MB RAM
+  per container. Overkill at current scale.
+
+**Decision:** Option B. Implementation in
+`apps/studio/server/src/browser/{concurrency,tab-manager}.ts`:
+
+1. **`KeyedAsyncMutex`** (~50 LoC, no dependencies) keyed by `projectId`.
+   Every browser command acquires the lock before talking to chromium;
+   different projects don't block each other. The `/preview` endpoint
+   acquires the same lock so it can't race with agent commands.
+2. **`BrowserTabManager`** tracks one tab per agent as an ordered list per
+   project (index 0 = system tab from container startup, index 1..N = agent
+   tabs). The mutex guarantees indexes stay coherent. Capacity hard-cap of
+   10 tabs per project; LRU eviction on overflow.
+3. **`tab_*` and `close` actions are reserved.** The dispatcher rejects
+   them so the LLM can't desync our index tracking. The actions still exist
+   in `BROWSER_ACTIONS` for parity with `BrowserCommand` but throw a clear
+   error at runtime.
+4. **Idle eviction.** `startBrowserTabCleanup()` runs every 60s and closes
+   tabs idle > 10 minutes inside the per-project mutex. The interval is
+   `unref()`'d so it doesn't pin the event loop.
+5. **Lifecycle hooks.** `runtimeManager.sleep(projectId)` and the browser
+   config PATCH routes call `browserTabManager.dropProject(projectId)` to
+   invalidate stale indexes when state could have changed underneath us.
+6. **Diagnostic endpoint.** `GET /browser/status` returns the mutex busy
+   flag, the tab table, and the capacity counters. The Browser settings
+   page renders a Debug panel that polls it every 2 seconds.
+
+**Consequences:**
+- Multiple agents in one project can use the browser tool without colliding,
+  even when their commands interleave. Element refs are guaranteed valid
+  for the next command in the same agent's sequence.
+- No throughput parallelism within a project — commands run one at a time.
+  Acceptable: most browser commands are I/O-bound (200ms-2s) and the
+  realistic concurrency level on a single project is low.
+- Two agents in different projects don't block each other (mutex is per-key).
+- In-memory mutex doesn't coordinate across multiple Studio server
+  instances. Current deployment is single-server, so not an issue.
+- Cookies are still shared at the chromium profile level (chromium
+  constraint, not Studio's). Two agents logging into different gmail
+  accounts on the same project will collide; workaround is to put them in
+  separate projects.
+- Migration path to container pool (Option C) is straightforward later: the
+  pool manager just owns N CDP endpoints + N mutex keys, the rest of the
+  logic is unchanged.
+
+---
+
 ## ADR-035 — Browser automation rebuilt as @jiku/browser CLI bridge (Plan 33)
 
 **Context:** Plan 13 (ADR-026) failed: ~80 files of OpenClaw engine code ported into `apps/studio/server`, headless-only, untestable, schema enum drift. Needed a clean replacement that's actually visible in noVNC, has tests, and is decoupled from Studio internals.

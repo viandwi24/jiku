@@ -482,18 +482,141 @@ docker exec -it $(docker compose -f packages/browser/docker-compose.yml ps -q ch
 
 ---
 
+## Concurrency model (post-Plan-33 follow-up — 2026-04-09)
+
+After the user asked "what happens when multiple agents share one browser?",
+we added a per-project async mutex + per-agent tab affinity. agent-browser
+itself only has one "active tab" per CDP endpoint, so without coordination
+two agents would race on the shared state. The fix has three parts:
+
+### 1. Per-project mutex (`concurrency.ts`)
+
+`KeyedAsyncMutex` is a hand-written promise-chain mutex (~50 LoC, no
+dependencies). `browserMutex.acquire(projectId, fn)` chains `fn` after the
+previous holder for that key. Calls for different projects do not block
+each other.
+
+Every browser command — agent-initiated via `executeBrowserAction` AND
+user-initiated via the `/preview` endpoint — acquires this lock before
+talking to chromium. Within a project, commands run strictly sequentially.
+
+### 2. Per-agent tab manager (`tab-manager.ts`)
+
+`BrowserTabManager` tracks one chromium tab per agent. State shape:
+
+```
+projectId → [
+  { agentId: null,    lastUsedAt }, // index 0 = system tab (about:blank from container start)
+  { agentId: "uuid1", lastUsedAt }, // index 1 = first agent's tab
+  ...
+]
+```
+
+The order MUST mirror chromium's actual tab order (which is the order
+returned by `tab_list` and the indices accepted by `tab_switch` /
+`tab_close`). The mutex guarantees indexes stay coherent because no two
+operations can mutate them concurrently.
+
+`executeBrowserAction` runs this preamble inside the mutex on every call:
+
+1. `ensureInitialized(projectId)` — record the system tab if not seen yet.
+2. Look up `getAgentTabIndex(projectId, agentId)`.
+3. If no tab: check `isAtCapacity()` → evict LRU agent tab if full → `tab_new`
+   → `appendTab` → `tab_switch` to the new index. Otherwise: `tab_switch` to
+   the existing index.
+4. Run the actual command.
+5. `touch(projectId, agentId)` so the LRU clock advances.
+
+### 3. Reserved actions
+
+`tab_new`, `tab_close`, `tab_switch`, `tab_list`, and `close` are reserved
+by Studio — `executeBrowserAction` rejects them with a clear error pointing
+the agent at the single-tab model. The actions still appear in the schema
+enum for `BrowserCommand` parity, but the dispatcher refuses them so the LLM
+can't desync our index tracking.
+
+### 4. Idle eviction + capacity
+
+- `MAX_TABS_PER_PROJECT = 10` (including the system tab). On the 11th
+  agent, the LRU agent tab is closed first.
+- `IDLE_TAB_TIMEOUT_MS = 10 minutes`.
+- `startBrowserTabCleanup()` (called from `index.ts` after the runtime
+  boots) runs every 60s. It walks every tracked project, picks idle tabs
+  via `pickIdleTabs()`, and closes them inside the per-project mutex. The
+  interval is `unref()`'d so it doesn't pin the event loop on shutdown.
+- `runtimeManager.sleep(projectId)` and the browser config PATCH routes
+  call `browserTabManager.dropProject(projectId)` so stale state from a
+  previous CDP endpoint doesn't survive a config change or a project
+  restart.
+
+### 5. Diagnostic endpoint + Debug panel
+
+- `GET /api/projects/:pid/browser/status` returns:
+  ```json
+  {
+    "enabled": true,
+    "mutex": { "busy": false },
+    "tabs": [
+      { "index": 0, "agent_id": null, "agent_name": null, "kind": "system", "last_used_at": ..., "idle_ms": ... },
+      { "index": 1, "agent_id": "uuid", "agent_name": "Researcher", "kind": "agent", "last_used_at": ..., "idle_ms": ... }
+    ],
+    "capacity": { "used": 2, "agent_used": 1, "max": 10 },
+    "idle_timeout_ms": 600000
+  }
+  ```
+- The Browser settings page has a new **Debug** section (visible when the
+  feature is enabled) showing the mutex badge (`busy` / `idle`), a capacity
+  bar, and a live tab table. Polls every 2 seconds via TanStack Query.
+  Stale tabs (idle past timeout) are highlighted amber so users can see
+  what the next cleanup tick will evict.
+
+### What this gives you
+
+- **Agent A and Agent B in the same project see independent browser state.**
+  Each navigates, fills, clicks on its own page. Cookies are still shared at
+  the chromium profile level (chromium constraint, not ours).
+- **No race conditions on element refs.** Within an agent's command sequence,
+  refs from a snapshot remain valid for the next command (unless a redirect
+  or async script changes the DOM, which is the agent's own problem).
+- **No throughput parallelism.** Commands within a project run one at a
+  time. For most workloads (200ms-2s of I/O per command) this is fine. For
+  genuine parallelism, point each project at its own CDP endpoint /
+  container — the mutex is per-project.
+- **Visible diagnostics.** When debugging "agent X is stuck" or "the browser
+  feels slow", the Debug panel shows whether X has a tab, whether the mutex
+  is held, and how stale each tab is.
+
+### What's NOT solved (and the workarounds)
+
+- **Multi-server Studio.** The mutex is in-memory. If you run multiple
+  Studio servers pointing at the same CDP endpoint, they don't coordinate.
+  Current deployment is single-server, so not an issue today.
+- **Tab indexes drift on chromium restart.** If you restart the browser
+  container without restarting Studio, tracked indexes become stale.
+  Recovery: toggle the browser feature off → on (which calls `dropProject`),
+  or restart the Studio runtime (`sleep` → `wakeUp`).
+- **Cookies are shared per chromium profile.** Two agents logging into
+  different gmail accounts on the same project will conflict. Workaround:
+  put them in separate projects (each with its own CDP endpoint).
+
+---
+
 ## Known Limitations
 
-1. **Single active tab.** agent-browser operates on the active tab; two users
-   on the same project will collide. True multi-user requires a separate
-   container per user. Deferred.
-2. **Stateless per command.** Each command spawns a fresh CLI process; no
+1. **Stateless per command.** Each command spawns a fresh CLI process; no
    console logs / network state persists between calls.
-3. **Ref staleness.** Element refs from a snapshot become invalid after DOM
+2. **Ref staleness.** Element refs from a snapshot become invalid after DOM
    changes. The standard pattern is snapshot → act → snapshot.
-4. **Live Preview is one-shot polling, not a stream.** 3s auto-refresh is
+3. **Live Preview is one-shot polling, not a stream.** 3s auto-refresh is
    acceptable for "what state is the browser in" but not for visualizing
    real-time interaction.
+4. **No throughput parallelism within a project.** The per-project mutex
+   serializes all browser commands. For genuine parallel browser usage,
+   split agents across projects or wait for the future container-pool
+   design (Plan 36-ish).
+5. **In-memory concurrency state.** Mutex + tab manager are per-server.
+   Multi-server Studio would need either pinning by project or a distributed
+   lock. Single-server deployment is fine.
 
 ---
 

@@ -1,5 +1,78 @@
 # Changelog
 
+## 2026-04-09 — Browser concurrency model: per-project mutex + per-agent tab affinity
+
+**Added:** Studio now safely supports multiple agents per project sharing one
+chromium instance. Previously two agents using the browser tool concurrently
+would race on the single "active tab" exposed by agent-browser, with no
+warning — element refs went stale, fills overwrote each other, navigations
+interleaved.
+
+**New files:**
+- `apps/studio/server/src/browser/concurrency.ts` — `KeyedAsyncMutex`
+  (~50 LoC, no deps), `browserMutex` singleton. Promise-chain mutex keyed by
+  `projectId`; calls for different projects do not block each other.
+- `apps/studio/server/src/browser/tab-manager.ts` — `BrowserTabManager`
+  tracks one chromium tab per agent (index 0 = system tab, index 1..N =
+  agent tabs). Methods: `ensureInitialized`, `getAgentTabIndex`, `appendTab`,
+  `touch`, `pickEvictionCandidate`, `removeTab`, `pickIdleTabs`, `dropProject`,
+  `snapshot`. Plus `startBrowserTabCleanup()` — a 60s idle eviction loop
+  that closes tabs idle longer than 10 minutes inside the per-project mutex.
+
+**Changed:**
+- `apps/studio/server/src/browser/execute.ts` — `executeBrowserAction` now
+  acquires the per-project mutex, runs `ensureAgentTabActive()` (which
+  creates/switches tabs as needed, evicting LRU on capacity), then runs the
+  command and `touch()`es the agent's tab. Reserved actions (`tab_new`,
+  `tab_close`, `tab_switch`, `tab_list`, `close`) throw a clear error so the
+  LLM can't desync the tab manager. New required option: `agentId` (sourced
+  from `ctx.runtime.agent.id`).
+- `apps/studio/server/src/browser/tool.ts` — pulls `agentId` from the
+  `ToolContext` and forwards to `executeBrowserAction`. Tool description
+  rewritten to emphasize "Studio manages tabs automatically — just use
+  open/snapshot/click/etc.".
+- `apps/studio/server/src/routes/browser.ts` — `/preview` now wraps the
+  screenshot+title+url calls in `browserMutex.acquire()` so it cannot race
+  with an in-flight agent command. PATCH `/enabled` and `/config` call
+  `browserTabManager.dropProject()` to invalidate stale tab indexes.
+  **New endpoint** `GET /browser/status` returns `{ enabled, mutex: {busy},
+  tabs[], capacity, idle_timeout_ms }` for the Debug panel.
+- `apps/studio/server/src/runtime/manager.ts` — `sleep(projectId)` calls
+  `browserTabManager.dropProject()` so the next `wakeUp` starts from clean
+  state.
+- `apps/studio/server/src/index.ts` — calls `startBrowserTabCleanup()` after
+  the runtime boots.
+- `apps/studio/web/lib/api.ts` — added `api.browser.status()` +
+  `BrowserStatus` / `BrowserStatusTab` types.
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+  — new **Debug** section under Live Preview showing the mutex badge,
+  capacity bar, and a tab table (index, owner, kind, idle duration). Polls
+  `GET /browser/status` every 2 seconds. Stale tabs (idle past timeout)
+  highlighted amber.
+
+**Capacity defaults:** 10 tabs per project (including system tab), 10 minute
+idle timeout. Both are constants in `tab-manager.ts`; can be lifted to
+`BrowserProjectConfig` later if requested.
+
+**What this gives you:** Agent A and Agent B can run browser sequences in
+the same project without colliding — each gets its own tab, commands are
+serialized, refs stay valid for the next command in the same agent's
+sequence. Throughput is one command at a time per project (chromium-bound).
+For genuine parallelism, point each project at its own CDP endpoint /
+container; the mutex is per-project and won't block across projects.
+
+**Files:**
+- `apps/studio/server/src/browser/{concurrency,tab-manager,execute,tool}.ts`
+- `apps/studio/server/src/routes/browser.ts`
+- `apps/studio/server/src/runtime/manager.ts`
+- `apps/studio/server/src/index.ts`
+- `apps/studio/web/lib/api.ts`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+- `docs/feats/browser.md`, `docs/builder/memory.md`, `docs/builder/decisions.md`,
+  `docs/plans/impl-reports/13-browser-implement-report.md`
+
+---
+
 ## 2026-04-09 — Browser migration cleanup (Plan 33 follow-up)
 
 **Fixed:** Plan 33 left several integration leaks between the new

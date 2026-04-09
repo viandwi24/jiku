@@ -3,6 +3,10 @@ Idle / next backlog item. Plan 33 (Browser rebuild + unified attachment system)
 fully shipped on 2026-04-09 — see the impl report at
 `docs/plans/impl-reports/13-browser-implement-report.md`.
 
+A follow-up concurrency pass also landed 2026-04-09: per-project mutex +
+per-agent tab affinity + Debug panel in the settings page (ADR-036, see
+impl report's "Concurrency model" section).
+
 ## Currently Working On
 - _(nothing active)_ — Plan 33 closed end-to-end. Pick the next item from
   `docs/builder/tasks.md`.

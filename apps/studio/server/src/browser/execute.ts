@@ -3,12 +3,16 @@ import type { BrowserCommand, BrowserResult, ScreenshotData } from '@jiku/browse
 import type { ToolContentPart } from '@jiku/types'
 import type { BrowserAction, BrowserToolInput } from './tool-schema.ts'
 import { persistContentToAttachment } from '../content/persister.ts'
+import { browserMutex } from './concurrency.ts'
+import { browserTabManager } from './tab-manager.ts'
 
 type ContentPart = ToolContentPart | { type: 'text'; text: string }
 
 export interface ExecuteBrowserOptions {
   cdpEndpoint: string
   projectId: string
+  /** ID of the agent making the call. Drives per-agent tab affinity. */
+  agentId: string
   timeoutMs?: number
   /**
    * If false, screenshots are returned inline as base64 data URLs in JSON
@@ -17,73 +21,170 @@ export interface ExecuteBrowserOptions {
   screenshotAsAttachment?: boolean
 }
 
+/**
+ * Actions that Studio's tab manager owns and the agent must NOT call
+ * directly. Each agent gets exactly one tab; multi-tab orchestration would
+ * conflict with our index tracking.
+ */
+const RESERVED_TAB_ACTIONS: ReadonlySet<BrowserAction> = new Set([
+  'tab_new',
+  'tab_close',
+  'tab_switch',
+  'tab_list',
+  // `close` would close the entire chromium session and wipe every other
+  // agent's tab. We expose `tab_close` for completeness in the schema docs
+  // but block it here.
+  'close',
+])
+
 export async function executeBrowserAction(
   input: BrowserToolInput,
   options: ExecuteBrowserOptions,
 ): Promise<{ content: ContentPart[] }> {
-  const { cdpEndpoint, projectId, timeoutMs, screenshotAsAttachment = true } = options
-  const command: BrowserCommand = mapToBrowserCommand(input)
+  const { cdpEndpoint, projectId, agentId, timeoutMs, screenshotAsAttachment = true } = options
 
-  let result: BrowserResult<unknown>
-  try {
-    result = await execBrowserCommand(cdpEndpoint, command, { timeoutMs })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Browser action '${input.action}' failed: ${message}`)
+  if (RESERVED_TAB_ACTIONS.has(input.action)) {
+    throw new Error(
+      `Browser action '${input.action}' is reserved by Studio. Each agent owns ` +
+      `exactly one tab; use the other actions (open, snapshot, click, ...) to ` +
+      `navigate and interact within it.`,
+    )
   }
 
-  // Screenshot — optionally persist to S3 and return attachment reference.
-  if (input.action === 'screenshot' && result.success && result.data) {
-    const screenshot = result.data as ScreenshotData
-    const base64 = screenshot.base64
-    const mimeType = `image/${screenshot.format ?? 'png'}`
+  // Everything below runs inside the per-project mutex so that two agents
+  // can never interleave commands on the same chromium instance. Element
+  // refs from a snapshot are guaranteed valid for the next command in the
+  // same agent's sequence.
+  return await browserMutex.acquire(projectId, async () => {
+    // 1. Make sure this agent has a tab and that it's currently the active
+    //    one in chromium. May open or evict tabs as a side effect.
+    await ensureAgentTabActive(cdpEndpoint, projectId, agentId, timeoutMs)
 
-    if (!screenshotAsAttachment) {
+    // 2. Run the requested command. The mutex guarantees no other agent
+    //    can change the active tab between the switch above and this call.
+    const command: BrowserCommand = mapToBrowserCommand(input)
+    let result: BrowserResult<unknown>
+    try {
+      result = await execBrowserCommand(cdpEndpoint, command, { timeoutMs })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Browser action '${input.action}' failed: ${message}`)
+    }
+
+    // 3. Mark this agent's tab as recently used (for idle eviction).
+    browserTabManager.touch(projectId, agentId)
+
+    // 4. Format the result. Screenshots get persisted as attachments.
+    if (input.action === 'screenshot' && result.success && result.data) {
+      const screenshot = result.data as ScreenshotData
+      const base64 = screenshot.base64
+      const mimeType = `image/${screenshot.format ?? 'png'}`
+
+      if (!screenshotAsAttachment) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                data: { base64, format: screenshot.format ?? 'png', mimeType },
+              }),
+            },
+          ],
+        }
+      }
+
+      const buffer = Buffer.from(base64, 'base64')
+      const ext = screenshot.format ?? 'png'
+      const attachment = await persistContentToAttachment({
+        projectId,
+        agentId,
+        data: buffer,
+        mimeType,
+        filename: `screenshot-${Date.now()}.${ext}`,
+        sourceType: 'browser',
+        metadata: { action: 'screenshot' },
+      })
+
       return {
         content: [
           {
-            type: 'text',
-            text: JSON.stringify({
-              success: true,
-              data: { base64, format: screenshot.format ?? 'png', mimeType },
-            }),
+            type: 'image',
+            attachment_id: attachment.attachmentId,
+            storage_key: attachment.storageKey,
+            mime_type: attachment.mimeType,
           },
         ],
       }
     }
 
-    const buffer = Buffer.from(base64, 'base64')
-    const ext = screenshot.format ?? 'png'
-    const attachment = await persistContentToAttachment({
-      projectId,
-      data: buffer,
-      mimeType,
-      filename: `screenshot-${Date.now()}.${ext}`,
-      sourceType: 'browser',
-      metadata: { action: 'screenshot' },
-    })
-
+    // Everything else — return the parsed BrowserResult as JSON text so the
+    // LLM sees both `success`, `data`, `error`, and `hint`.
     return {
       content: [
         {
-          type: 'image',
-          attachment_id: attachment.attachmentId,
-          storage_key: attachment.storageKey,
-          mime_type: attachment.mimeType,
+          type: 'text',
+          text: JSON.stringify(result),
         },
       ],
     }
+  })
+}
+
+/**
+ * Ensure the calling agent has its own chromium tab and that the tab is the
+ * currently-active one. Must be called from inside the project mutex —
+ * we mutate state and run sequential CLI commands here.
+ */
+async function ensureAgentTabActive(
+  cdpEndpoint: string,
+  projectId: string,
+  agentId: string,
+  timeoutMs?: number,
+): Promise<void> {
+  browserTabManager.ensureInitialized(projectId)
+
+  // Already have a tab? Just switch to it.
+  const existingIdx = browserTabManager.getAgentTabIndex(projectId, agentId)
+  if (existingIdx !== null) {
+    await runTabCommand(cdpEndpoint, { action: 'tab', operation: 'switch', index: existingIdx }, timeoutMs)
+    return
   }
 
-  // Everything else — return the parsed BrowserResult as JSON text so the
-  // LLM sees both `success`, `data`, `error`, and `hint`.
-  return {
-    content: [
-      {
-        type: 'text',
-        text: JSON.stringify(result),
-      },
-    ],
+  // No tab yet. Evict the LRU tab if we're at capacity.
+  if (browserTabManager.isAtCapacity(projectId)) {
+    const victim = browserTabManager.pickEvictionCandidate(projectId)
+    if (!victim) {
+      throw new Error(
+        `Browser project ${projectId} is at tab capacity but has no evictable agent tab.`,
+      )
+    }
+    await runTabCommand(cdpEndpoint, { action: 'tab', operation: 'close', index: victim.index }, timeoutMs)
+    browserTabManager.removeTab(projectId, victim.index)
+  }
+
+  // Open a fresh tab and record it. We don't trust agent-browser's
+  // auto-activate behavior — explicitly switch after creating.
+  await runTabCommand(cdpEndpoint, { action: 'tab', operation: 'new' }, timeoutMs)
+  const newIdx = browserTabManager.appendTab(projectId, agentId)
+  await runTabCommand(cdpEndpoint, { action: 'tab', operation: 'switch', index: newIdx }, timeoutMs)
+}
+
+/**
+ * Run a tab management command and throw a clear error if the CLI reports
+ * failure. Used for the implicit `tab_switch`/`tab_new`/`tab_close` calls
+ * that the manager makes on behalf of agents.
+ */
+async function runTabCommand(
+  cdpEndpoint: string,
+  command: BrowserCommand,
+  timeoutMs?: number,
+): Promise<void> {
+  const result = await execBrowserCommand(cdpEndpoint, command, { timeoutMs })
+  if (!result.success) {
+    throw new Error(
+      `Studio tab manager: '${command.action}' failed — ${result.error ?? 'unknown error'}`,
+    )
   }
 }
 
@@ -103,6 +204,10 @@ function need<T>(value: T | undefined | null, action: BrowserAction, field: stri
  * OpenAI's function-calling API accepts. Per-action requirements are
  * validated here at runtime via `need()`. The `never`-typed default branch
  * gives compile-time exhaustiveness over `BrowserAction`.
+ *
+ * Note: the `tab_*` and `close` actions are intercepted earlier in
+ * `executeBrowserAction`. They appear in the schema for parity with
+ * `@jiku/browser`'s `BrowserCommand`, but Studio reserves them.
  */
 function mapToBrowserCommand(input: BrowserToolInput): BrowserCommand {
   const a = input.action
@@ -200,7 +305,8 @@ function mapToBrowserCommand(input: BrowserToolInput): BrowserCommand {
         ...(input.ms !== undefined && { ms: input.ms }),
       }
 
-    // Tabs (flattened → nested operation)
+    // Tabs (flattened → nested operation). These are intercepted earlier;
+    // the cases exist only for compile-time exhaustiveness.
     case 'tab_list':
       return { action: 'tab', operation: 'list' }
     case 'tab_new':

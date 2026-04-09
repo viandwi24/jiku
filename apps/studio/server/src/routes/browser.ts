@@ -4,9 +4,20 @@ import { execBrowserCommand } from '@jiku/browser'
 import type { ScreenshotData } from '@jiku/browser'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission } from '../middleware/permission.ts'
-import { getProjectBrowserConfig, setProjectBrowserEnabled, setProjectBrowserConfig } from '@jiku-studio/db'
+import {
+  getProjectBrowserConfig,
+  setProjectBrowserEnabled,
+  setProjectBrowserConfig,
+  getAgentsByProjectId,
+} from '@jiku-studio/db'
 import { runtimeManager } from '../runtime/manager.ts'
 import { resolveCdpEndpoint } from '../browser/config.ts'
+import { browserMutex } from '../browser/concurrency.ts'
+import {
+  browserTabManager,
+  MAX_TABS_PER_PROJECT,
+  IDLE_TAB_TIMEOUT_MS,
+} from '../browser/tab-manager.ts'
 
 const router = Router()
 router.use(authMiddleware)
@@ -41,6 +52,8 @@ router.patch('/projects/:pid/browser/enabled', requirePermission('settings:write
 
     await setProjectBrowserEnabled(projectId, body.data.enabled)
     await runtimeManager.syncProjectTools(projectId)
+    // Drop tab tracking — config or wiring may have changed; next call rebuilds.
+    browserTabManager.dropProject(projectId)
 
     res.json({ ok: true })
   } catch (err) {
@@ -57,6 +70,8 @@ router.patch('/projects/:pid/browser/config', requirePermission('settings:write'
 
     await setProjectBrowserConfig(projectId, parsed.data)
     await runtimeManager.syncProjectTools(projectId)
+    // CDP endpoint may have changed — drop tracked tabs (they pointed at the old chromium).
+    browserTabManager.dropProject(projectId)
 
     res.json({ ok: true, config: parsed.data })
   } catch (err) {
@@ -110,6 +125,11 @@ router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), a
 // POST /projects/:pid/browser/preview — capture a one-shot screenshot of the
 // current browser state. Returned inline as base64; never persisted. Used by
 // the Browser settings page to show a live "viewer" of the project's browser.
+//
+// The preview acquires the same per-project mutex as the agent tools so it
+// cannot race with an in-flight agent command. It does NOT switch tabs —
+// it always shows whichever tab is currently active in chromium (typically
+// the most recently used agent's tab).
 router.post('/projects/:pid/browser/preview', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
@@ -123,40 +143,78 @@ router.post('/projects/:pid/browser/preview', requirePermission('settings:read')
     const cdpEndpoint = resolveCdpEndpoint(cfg.config)
     const timeoutMs = cfg.config.timeout_ms ?? 30_000
 
-    // Run screenshot, title, and url in sequence — we want to show the user
-    // what page they're looking at, not just an unlabeled image.
-    const screenshot = await execBrowserCommand<ScreenshotData>(
-      cdpEndpoint,
-      { action: 'screenshot' },
-      { timeoutMs },
-    )
+    const result = await browserMutex.acquire(projectId, async () => {
+      const screenshot = await execBrowserCommand<ScreenshotData>(
+        cdpEndpoint,
+        { action: 'screenshot' },
+        { timeoutMs },
+      )
+      if (!screenshot.success || !screenshot.data) {
+        return { ok: false as const, error: screenshot.error ?? 'Screenshot failed', hint: screenshot.hint ?? null }
+      }
 
-    if (!screenshot.success || !screenshot.data) {
-      res.json({
-        ok: false,
-        error: screenshot.error ?? 'Screenshot failed',
-        hint: screenshot.hint ?? null,
-      })
-      return
-    }
+      // Best-effort metadata; never fail the preview if these don't return.
+      const [titleResult, urlResult] = await Promise.all([
+        execBrowserCommand<{ title: string }>(cdpEndpoint, { action: 'get', subcommand: 'title' }, { timeoutMs }).catch(() => null),
+        execBrowserCommand<{ url: string }>(cdpEndpoint, { action: 'get', subcommand: 'url' }, { timeoutMs }).catch(() => null),
+      ])
 
-    // Best-effort metadata; never fail the preview if these don't return.
-    const [titleResult, urlResult] = await Promise.all([
-      execBrowserCommand<{ title: string }>(cdpEndpoint, { action: 'get', subcommand: 'title' }, { timeoutMs }).catch(() => null),
-      execBrowserCommand<{ url: string }>(cdpEndpoint, { action: 'get', subcommand: 'url' }, { timeoutMs }).catch(() => null),
-    ])
-
-    res.json({
-      ok: true,
-      data: {
-        base64: screenshot.data.base64,
-        format: screenshot.data.format ?? 'png',
-        title: titleResult?.success ? titleResult.data?.title ?? null : null,
-        url: urlResult?.success ? urlResult.data?.url ?? null : null,
-      },
+      return {
+        ok: true as const,
+        data: {
+          base64: screenshot.data.base64,
+          format: screenshot.data.format ?? 'png',
+          title: titleResult?.success ? titleResult.data?.title ?? null : null,
+          url: urlResult?.success ? urlResult.data?.url ?? null : null,
+        },
+      }
     })
+
+    res.json(result)
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' })
+  }
+})
+
+// GET /projects/:pid/browser/status — diagnostics for the settings page
+// debug panel. Returns the current state of the per-project tab manager and
+// the mutex (busy / idle). Names of agents are joined in so the UI can show
+// human-readable rows instead of UUIDs.
+router.get('/projects/:pid/browser/status', requirePermission('settings:read'), async (req, res) => {
+  try {
+    const projectId = req.params['pid']!
+    const cfg = await getProjectBrowserConfig(projectId)
+
+    // Build a UUID → name lookup so the UI doesn't have to do it.
+    const agents = await getAgentsByProjectId(projectId)
+    const agentNames = new Map(agents.map(a => [a.id, a.name]))
+
+    const now = Date.now()
+    const tabs = browserTabManager.snapshot(projectId).map((t, index) => ({
+      index,
+      agent_id: t.agentId,
+      agent_name: t.agentId ? agentNames.get(t.agentId) ?? null : null,
+      kind: t.agentId === null ? 'system' : 'agent',
+      last_used_at: t.lastUsedAt,
+      idle_ms: now - t.lastUsedAt,
+    }))
+
+    const totalTabs = tabs.length
+    const agentTabs = tabs.filter(t => t.kind === 'agent').length
+
+    res.json({
+      enabled: cfg.enabled,
+      mutex: { busy: browserMutex.isBusy(projectId) },
+      tabs,
+      capacity: {
+        used: totalTabs,
+        agent_used: agentTabs,
+        max: MAX_TABS_PER_PROJECT,
+      },
+      idle_timeout_ms: IDLE_TAB_TIMEOUT_MS,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 

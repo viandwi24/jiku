@@ -71,9 +71,10 @@ can confirm what state the browser is in without opening a separate noVNC tab.
 1. **CLI bridge, not library port.** agent-browser is a Rust binary. Spawning
    it per command is simpler than maintaining a Node wrapper, and it's
    crash-isolated.
-2. **Stateless per command.** No shared browser server, no Node child
-   process, no start/stop lifecycle. The runtime just resolves the CDP
-   endpoint at tool-build time and the rest is fire-and-forget per call.
+2. **Stateless per command at the spawner level**, but **serialized per
+   project at the dispatcher level** (see Concurrency model below). The
+   runtime resolves the CDP endpoint at tool-build time and every command
+   acquires a per-project mutex before talking to chromium.
 3. **CDP-only project config.** A single CDP endpoint per project, stored in
    `projects.browser_config.cdp_url`. No managed mode, no headless toggle, no
    executable path. The route Zod schema strips anything else on save.
@@ -87,6 +88,11 @@ can confirm what state the browser is in without opening a separate noVNC tab.
    the schema is flat with `action` as the required enum and every other
    field optional; per-action requirements are enforced at runtime by the
    `need()` helper in `mapToBrowserCommand`.
+6. **Per-agent tab affinity.** Each agent in a project gets its own chromium
+   tab. Studio's tab manager creates the tab on first use and `tab_switch`es
+   to it before every command. Tab indexes are tracked in memory and stay
+   coherent because the per-project mutex serializes all chromium-mutating
+   ops. See Concurrency model below.
 
 ---
 
@@ -95,8 +101,10 @@ can confirm what state the browser is in without opening a separate noVNC tab.
 | File | Purpose |
 |------|---------|
 | `tool-schema.ts` | Flat `z.object` schema. Exports `BROWSER_ACTIONS`, `BrowserToolInputSchema`, `BrowserToolInput`, `BrowserAction`. |
-| `tool.ts` | `buildBrowserTools(projectId, config)` — emits a single `ToolDefinition` (`id: 'browser'`, `group: 'browser'`). Eval is gated behind `evaluate_enabled`. |
-| `execute.ts` | `executeBrowserAction(input, options)` — runs the action via `execBrowserCommand`. Maps the flat input to `BrowserCommand` (rebuilding nested `tab`/`cookies` operations). For screenshots, persists to attachments unless `screenshot_as_attachment === false`, in which case it returns base64 inline. |
+| `tool.ts` | `buildBrowserTools(projectId, config)` — emits a single `ToolDefinition` (`id: 'browser'`, `group: 'browser'`). Eval is gated behind `evaluate_enabled`. Pulls `agentId` from `ctx.runtime.agent.id` and forwards to `executeBrowserAction`. |
+| `execute.ts` | `executeBrowserAction(input, options)` — acquires the per-project mutex, ensures the agent owns a chromium tab and that it's currently active, runs the action via `execBrowserCommand`, formats the result. Reserved actions (`tab_*`, `close`) are rejected with a clear error. |
+| `concurrency.ts` | `KeyedAsyncMutex` (~50 lines, no deps) and the `browserMutex` singleton — per-key promise chain that serializes all browser commands within a project. |
+| `tab-manager.ts` | `BrowserTabManager` — per-project tab affinity tracker. State: ordered list of `TrackedTab` per project, where index 0 is the system tab and index 1..N are agent-owned. Methods: `ensureInitialized`, `getAgentTabIndex`, `appendTab`, `touch`, `pickEvictionCandidate`, `removeTab`, `pickIdleTabs`, `dropProject`, `snapshot`. Also exports `startBrowserTabCleanup()` (idle eviction loop). |
 | `config.ts` | `resolveCdpEndpoint(config)` — defaults to `ws://localhost:9222`. |
 | `index.ts` | `registerBrowserCdp` / `unregisterBrowserCdp` / `getCdpEndpoint` — per-project CDP map (used internally; tools currently resolve directly from config). |
 
@@ -178,13 +186,14 @@ entirely.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`   | `/api/projects/:pid/browser` | Returns `{ enabled, config }`. |
-| `PATCH` | `/api/projects/:pid/browser/enabled` | Toggle the feature on/off. Calls `runtimeManager.syncProjectTools()`. |
-| `PATCH` | `/api/projects/:pid/browser/config` | Update config. Strips unknown fields via Zod. Calls `syncProjectTools()`. |
+| `PATCH` | `/api/projects/:pid/browser/enabled` | Toggle the feature on/off. Calls `syncProjectTools()` and `browserTabManager.dropProject()` so stale tab indexes don't survive a re-enable. |
+| `PATCH` | `/api/projects/:pid/browser/config` | Update config. Strips unknown fields via Zod. Calls `syncProjectTools()` and `dropProject()` (CDP endpoint may have changed). |
 | `POST`  | `/api/projects/:pid/browser/ping` | Tests CDP reachability via `GET /json/version`. Returns `{ ok, latency_ms?, browser?, cdp_url?, error? }`. |
-| `POST`  | `/api/projects/:pid/browser/preview` | One-shot screenshot via `execBrowserCommand`, plus best-effort `get title` / `get url`. Returns `{ ok, data?: { base64, format, title, url }, error?, hint? }`. **Never persisted.** |
+| `POST`  | `/api/projects/:pid/browser/preview` | One-shot screenshot via `execBrowserCommand`, plus best-effort `get title` / `get url`. **Acquires the per-project mutex** so it cannot race with an in-flight agent command. Does NOT switch tabs — shows whichever tab is currently active. Returns `{ ok, data?: { base64, format, title, url }, error?, hint? }`. Never persisted. |
+| `GET`   | `/api/projects/:pid/browser/status` | Diagnostic snapshot of the per-project tab manager + mutex. Returns `{ enabled, mutex: { busy }, tabs: [...], capacity: { used, agent_used, max }, idle_timeout_ms }`. Polled by the Debug panel in the settings page. |
 
-All routes require `settings:read` (GET / ping / preview) or `settings:write`
-(enabled / config) via `requirePermission`.
+All routes require `settings:read` (GET / ping / preview / status) or
+`settings:write` (enabled / config) via `requirePermission`.
 
 ---
 
@@ -202,17 +211,27 @@ Sections (top to bottom):
    interval). Title + URL overlay on the screenshot. Loading / empty / error
    states all handled. Uses a `useRef` (`previewInFlight`) to drop overlapping
    requests when auto-refresh ticks faster than a screenshot completes.
-3. **Browser Automation** — enable toggle.
-4. **CDP Endpoint** — single `cdp_url` input (placeholder
+3. **Debug** _(only when enabled)_ — diagnostics for the concurrency model:
+   - **Mutex badge** (`busy` / `idle`)
+   - **Capacity bar** + count chip (`N / 10 tabs`, red when full)
+   - **Tab table** with `index`, owner (agent name or `system`), `kind`,
+     and idle duration. Stale tabs (idle past timeout) are highlighted amber.
+   - Footer text explains the rules ("idle tabs evicted after 10m, LRU on
+     overflow")
+   - Polls `GET /browser/status` every 2 seconds via TanStack Query.
+4. **Browser Automation** — enable toggle.
+5. **CDP Endpoint** — single `cdp_url` input (placeholder
    `ws://localhost:9222`).
-5. **Advanced** — `timeout_ms`, `screenshot_as_attachment` toggle,
+6. **Advanced** — `timeout_ms`, `screenshot_as_attachment` toggle,
    `evaluate_enabled` toggle.
 
 API client lives in `apps/studio/web/lib/api.ts` under `api.browser.*`:
-`get`, `setEnabled`, `updateConfig`, `ping`, `preview`. The `useAttachmentUrl`
-hook (`apps/studio/web/hooks/use-attachment-url.ts`) handles authenticated
-URLs for any persisted screenshot displayed elsewhere in the app (the live
-preview box uses inline base64 instead and bypasses the attachment system).
+`get`, `setEnabled`, `updateConfig`, `ping`, `preview`, `status`. Types:
+`BrowserProjectConfig`, `BrowserPingResult`, `BrowserPreviewResult`,
+`BrowserStatus`, `BrowserStatusTab`. The `useAttachmentUrl` hook
+(`apps/studio/web/hooks/use-attachment-url.ts`) handles authenticated URLs for
+any persisted screenshot displayed elsewhere in the app (the live preview box
+uses inline base64 instead and bypasses the attachment system).
 
 ---
 
@@ -275,13 +294,116 @@ self-correct (e.g. "snapshot again to refresh refs").
 
 ---
 
-## Multi-user / tab isolation
+## Concurrency model
 
-- agent-browser operates on the **active tab only**.
-- Two users on the same project profile will collide (shared active tab
-  state). Tab management commands exist (`tab_*`) but there is no concurrent
-  tab isolation.
-- For true multi-user: separate browser container per user. Deferred.
+agent-browser operates on the **active tab only** in chromium, so two
+agents talking to the same CDP endpoint simultaneously would race on the
+shared "active tab" state — element refs would go stale, fills would
+overwrite each other, navigations would interleave. Studio addresses this
+with a **per-project async mutex + per-agent tab affinity**.
+
+### Per-project mutex
+
+`KeyedAsyncMutex` in `apps/studio/server/src/browser/concurrency.ts` is a
+hand-written promise-chain mutex keyed by `projectId`. Every browser command
+(both agent-initiated via `executeBrowserAction` and user-initiated via the
+`/preview` endpoint) acquires `browserMutex.acquire(projectId, ...)` before
+talking to chromium. Calls for different projects do NOT block each other.
+
+Within a project, commands run **strictly sequentially**. This is the
+correctness boundary: an agent's `snapshot` and follow-up `click` are
+guaranteed to see the same DOM, because no other agent can mutate the page
+between them.
+
+### Per-agent tab affinity
+
+`BrowserTabManager` in `apps/studio/server/src/browser/tab-manager.ts` tracks
+which chromium tab belongs to which agent. The state is purely in-memory and
+shaped like:
+
+```
+projectId → [
+  { agentId: null,    lastUsedAt: ... },  // index 0 = system tab
+  { agentId: "uuid1", lastUsedAt: ... },  // index 1 = first agent's tab
+  { agentId: "uuid2", lastUsedAt: ... },  // index 2 = second agent's tab
+  ...
+]
+```
+
+The order MUST mirror chromium's actual tab order (which matches what
+`tab_list` returns by index). The mutex guarantees indexes stay coherent —
+no two operations can mutate them concurrently, and our tracker always
+appends/removes in lockstep with the corresponding chromium operation.
+
+`executeBrowserAction` runs this preamble inside the mutex on every call:
+
+```
+1. ensureInitialized(projectId)
+2. let idx = getAgentTabIndex(projectId, agentId)
+3. if (idx === null):
+     a. if (isAtCapacity(projectId)):
+          evict the LRU agent tab via tab_close + removeTab()
+     b. tab_new in chromium
+     c. idx = appendTab(projectId, agentId)
+     d. tab_switch idx (defensive — don't trust agent-browser auto-activate)
+   else:
+     a. tab_switch idx
+4. run the actual command
+5. touch(projectId, agentId)
+```
+
+### Reserved actions
+
+The agent CAN'T call `tab_new`, `tab_close`, `tab_switch`, `tab_list`, or
+`close` directly — Studio reserves them so the LLM doesn't desync the tab
+manager. Calling any of them throws a clear error pointing the agent at the
+single-tab model. The actions still appear in `BROWSER_ACTIONS` for parity
+with `@jiku/browser`'s `BrowserCommand`, but the dispatcher rejects them at
+runtime.
+
+### Capacity & idle eviction
+
+- **Hard cap:** `MAX_TABS_PER_PROJECT = 10` (including the system tab at
+  index 0). On the 11th agent, the LRU agent tab is closed first.
+- **Idle timeout:** `IDLE_TAB_TIMEOUT_MS = 10 minutes`. A background loop
+  (`startBrowserTabCleanup()`, started from `index.ts`, runs every 60s)
+  walks every tracked project, picks tabs idle past the threshold, and
+  closes them inside the per-project mutex.
+- **Lifecycle hooks:** `runtimeManager.sleep(projectId)` and the `enabled` /
+  `config` PATCH routes call `browserTabManager.dropProject(projectId)` so
+  stale state from a previous CDP endpoint doesn't survive a config change
+  or a project shutdown.
+
+### What this gives you
+
+- **Agent A and Agent B in the same project see independent browser state.**
+  Each navigates, fills, clicks on its own page. Cookies are still shared
+  at the chromium profile level — that's a chromium constraint.
+- **No race conditions on element refs.** Within an agent's command sequence,
+  refs from a snapshot remain valid for the next command (unless something
+  else changed the DOM, e.g. a redirect or async script).
+- **No throughput parallelism.** Commands within a project run one at a
+  time. For most workloads (each command is 200ms-2s of I/O) this is fine;
+  if you genuinely need parallel browser sessions, point each project at
+  its own CDP endpoint / container.
+- **Visible diagnostics.** The Debug panel in the settings page shows the
+  live tab table + mutex state, refreshed every 2 seconds. When debugging
+  "agent X is stuck", you can confirm whether X has a tab and whether the
+  mutex is blocked on someone else's command.
+
+### Limitations
+
+- **In-memory state.** If you run multiple Studio server instances pointing
+  at the same CDP endpoint, the mutex doesn't coordinate across them. The
+  current deployment model is single-server, so this isn't an issue today.
+- **Tab indexes drift on chromium restart.** If you restart the browser
+  container without restarting Studio, the tab manager's indexes become
+  stale. Recovery: toggle the browser feature off → on (which calls
+  `dropProject`), or restart the Studio runtime (`sleep` → `wakeUp`).
+- **Cookies are shared per chromium profile.** Two agents logging into
+  different accounts at gmail.com on the same project will conflict —
+  chromium stores one set of cookies per profile. Workaround: separate
+  projects (each with its own CDP endpoint / container).
 
 ---
 

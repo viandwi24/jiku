@@ -14,6 +14,7 @@ import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronD
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { buildBrowserTools } from '../browser/tool.ts'
+import { browserTabManager } from '../browser/tab-manager.ts'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
@@ -287,6 +288,9 @@ export class JikuRuntimeManager {
     this.runtimes.delete(projectId)
     this.storages.delete(projectId)
     this.sharedToolsCache.delete(projectId)
+    // Drop browser tab tracking — the next wakeUp() starts from a clean
+    // chromium state, so any cached tab indexes would be wrong anyway.
+    browserTabManager.dropProject(projectId)
   }
 
   // ─── Smart sync methods ───────────────────────────────────────────────────

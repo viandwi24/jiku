@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@jiku/types'
+import type { ToolDefinition, ToolContext } from '@jiku/types'
 import type { BrowserProjectConfig } from '@jiku-studio/db'
 import { BrowserToolInputSchema, type BrowserToolInput } from './tool-schema.ts'
 import { executeBrowserAction } from './execute.ts'
@@ -29,27 +29,30 @@ export function buildBrowserTools(
           '4. action=screenshot — capture visual state.',
           '5. action=close — close the browser when done.',
           '',
-          'NAVIGATION: open, back, forward, reload, close.',
+          'NAVIGATION: open, back, forward, reload.',
           'OBSERVATION: snapshot, screenshot, pdf, get.',
           'INTERACTION: click, dblclick, fill, type, press, hover, focus, check, uncheck, select, drag, upload, scroll, scrollintoview.',
           'WAIT: wait (ref/text/url/ms).',
-          'TABS: tab_list, tab_new, tab_close, tab_switch.',
           'STORAGE: cookies_get, cookies_set, cookies_clear, storage.',
           'BATCH: batch (run multiple commands sequentially).',
           evalEnabled
             ? 'JS: eval — run arbitrary JavaScript in the page.'
             : 'JS: eval is disabled in this project. Ask an admin to enable it.',
           '',
+          'TAB ISOLATION: Studio assigns you your own browser tab automatically.',
+          'You DO NOT need to manage tabs — actions like tab_new/tab_close/tab_switch/close',
+          'are reserved by Studio. Just use open/snapshot/click/etc. and your work',
+          'will stay isolated from other agents in the same project.',
+          '',
           `CDP endpoint: ${cdpEndpoint}`,
-          'Single active tab — concurrent users on the same project will conflict.',
-          'Each command spawns a fresh CLI process; no state is preserved between calls.',
+          'Commands are serialized per project; element refs are guaranteed valid for your next command.',
         ].join(' '),
         group: 'browser',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: BrowserToolInputSchema,
-      execute: async (args) => {
+      execute: async (args, ctx: ToolContext) => {
         const input = args as BrowserToolInput
         if (input.action === 'eval' && !evalEnabled) {
           throw new Error('Browser eval is disabled for this project. Enable it in Browser settings.')
@@ -57,6 +60,7 @@ export function buildBrowserTools(
         return executeBrowserAction(input, {
           cdpEndpoint,
           projectId,
+          agentId: ctx.runtime.agent.id,
           timeoutMs,
           screenshotAsAttachment,
         })

@@ -15,6 +15,7 @@ COPY packages/core/package.json ./packages/core/
 COPY packages/kit/package.json ./packages/kit/
 COPY packages/types/package.json ./packages/types/
 COPY packages/ui/package.json ./packages/ui/
+COPY packages/browser/package.json ./packages/browser/
 COPY apps/studio/server/package.json ./apps/studio/server/
 COPY apps/studio/web/package.json ./apps/studio/web/
 COPY apps/studio/db/package.json ./apps/studio/db/

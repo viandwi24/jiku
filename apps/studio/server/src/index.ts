@@ -26,6 +26,7 @@ import { cronTasksRouter } from './routes/cron-tasks.ts'
 import { mcpServersRouter } from './routes/mcp-servers.ts'
 import { toolStatesRouter } from './routes/tool-states.ts'
 import { runtimeManager } from './runtime/manager.ts'
+import { startBrowserTabCleanup } from './browser/tab-manager.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
 import { connectorRegistry } from './connectors/registry.ts'
@@ -138,6 +139,9 @@ async function bootstrap() {
   setInterval(() => {
     runMemoryCleanup().catch((err) => console.warn('[jiku] Memory cleanup error:', err))
   }, CLEANUP_INTERVAL_MS)
+
+  // Browser idle tab cleanup — runs every 60s, closes agent tabs idle > 10min.
+  startBrowserTabCleanup()
 
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)

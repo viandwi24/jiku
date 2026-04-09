@@ -3,10 +3,10 @@
 import { use, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { BrowserProjectConfig, BrowserPingResult, BrowserPreviewResult } from '@/lib/api'
+import type { BrowserProjectConfig, BrowserPingResult, BrowserPreviewResult, BrowserStatus } from '@/lib/api'
 import { Button, Input, Label, Separator, Switch } from '@jiku/ui'
 import { toast } from 'sonner'
-import { Activity, CheckCircle2, XCircle, Loader2, Wifi, Globe, RefreshCw, Monitor, ImageOff } from 'lucide-react'
+import { Activity, CheckCircle2, XCircle, Loader2, Wifi, Globe, RefreshCw, Monitor, ImageOff, Bug, Lock, LockOpen } from 'lucide-react'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -34,6 +34,15 @@ function ProjectBrowserPage({ params }: PageProps) {
     queryKey: ['project-browser', projectId],
     queryFn: () => api.browser.get(projectId),
     enabled: !!projectId,
+  })
+
+  // Diagnostic snapshot — re-fetched on a 2s interval whenever the feature
+  // is enabled. This drives the Debug panel (tab table + mutex badge).
+  const { data: status } = useQuery({
+    queryKey: ['project-browser-status', projectId],
+    queryFn: () => api.browser.status(projectId),
+    enabled: !!projectId && !!data?.enabled,
+    refetchInterval: 2000,
   })
 
   const [enabled, setEnabled] = useState(false)
@@ -126,6 +135,17 @@ function ProjectBrowserPage({ params }: PageProps) {
     return <div className="text-sm text-muted-foreground py-4">Loading...</div>
   }
 
+  // Format an idle duration as "12s" / "3m 45s" / "1h 4m" — short and
+  // readable for the debug panel rows.
+  const formatIdle = (idleMs: number): string => {
+    const sec = Math.floor(idleMs / 1000)
+    if (sec < 60) return `${sec}s`
+    const min = Math.floor(sec / 60)
+    if (min < 60) return `${min}m ${sec % 60}s`
+    const hr = Math.floor(min / 60)
+    return `${hr}h ${min % 60}m`
+  }
+
   // Status bar reflects the most recent ping result. If we haven't pinged yet,
   // we only know whether the feature is enabled — not whether the CDP endpoint
   // is reachable.
@@ -156,6 +176,34 @@ function ProjectBrowserPage({ params }: PageProps) {
           <code className="text-xs bg-muted px-1 rounded">@jiku/browser</code> over CDP.
         </p>
       </div>
+
+      {/* Enable toggle — pinned to the top so the on/off switch is the first
+          thing users see, ahead of any test/preview/debug widgets that only
+          make sense once the feature is on. */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold">Browser Automation</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Inject browser tools into all agents in this project. Agents can navigate, screenshot, and interact with web pages.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Label className="text-sm font-medium">Enable browser tools</Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              When enabled, all agents in this project receive the <code className="text-xs bg-muted px-1 rounded">browser</code> tool.
+            </p>
+          </div>
+          <Switch
+            checked={enabled}
+            disabled={enableMutation.isPending || !projectId}
+            onCheckedChange={(v) => enableMutation.mutate(v)}
+          />
+        </div>
+      </section>
+
+      <Separator />
 
       {/* Status bar */}
       <div className="flex items-center gap-3">
@@ -317,31 +365,124 @@ function ProjectBrowserPage({ params }: PageProps) {
         </section>
       )}
 
-      {/* Enable toggle */}
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">Browser Automation</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Inject browser tools into all agents in this project. Agents can navigate, screenshot, and interact with web pages.
-          </p>
-        </div>
-
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <Label className="text-sm font-medium">Enable browser tools</Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              When enabled, all agents in this project receive the <code className="text-xs bg-muted px-1 rounded">browser</code> tool.
-            </p>
+      {/* Debug panel — tab + mutex diagnostics */}
+      {enabled && status && (
+        <section className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-2">
+                <Bug className="w-4 h-4" /> Debug
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Per-agent tab affinity and serialization state. Refreshes every 2 seconds.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span
+                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+                  status.mutex.busy
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                }`}
+                title={status.mutex.busy ? 'A command is currently executing or queued' : 'Idle'}
+              >
+                {status.mutex.busy
+                  ? <Lock className="h-3 w-3" />
+                  : <LockOpen className="h-3 w-3" />}
+                {status.mutex.busy ? 'busy' : 'idle'}
+              </span>
+              <span
+                className={`rounded-full border px-2.5 py-1 text-xs tabular-nums ${
+                  status.capacity.used >= status.capacity.max
+                    ? 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
+                    : 'border-border bg-muted text-muted-foreground'
+                }`}
+                title={`${status.capacity.agent_used} agent tab(s) + ${status.capacity.used - status.capacity.agent_used} system tab(s)`}
+              >
+                {status.capacity.used} / {status.capacity.max} tabs
+              </span>
+            </div>
           </div>
-          <Switch
-            checked={enabled}
-            disabled={enableMutation.isPending || !projectId}
-            onCheckedChange={(v) => enableMutation.mutate(v)}
-          />
-        </div>
-      </section>
 
-      <Separator />
+          {/* Capacity bar */}
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={`h-full transition-all ${
+                status.capacity.used >= status.capacity.max
+                  ? 'bg-red-500'
+                  : status.capacity.used >= status.capacity.max * 0.7
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
+              }`}
+              style={{ width: `${Math.min(100, (status.capacity.used / status.capacity.max) * 100)}%` }}
+            />
+          </div>
+
+          {/* Tab table */}
+          <div className="overflow-hidden rounded-md border">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/50 text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">#</th>
+                  <th className="px-3 py-2 text-left font-medium">Owner</th>
+                  <th className="px-3 py-2 text-left font-medium">Kind</th>
+                  <th className="px-3 py-2 text-right font-medium">Idle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {status.tabs.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground italic">
+                      No tracked tabs yet. Tabs are created on first browser tool call from each agent.
+                    </td>
+                  </tr>
+                ) : (
+                  status.tabs.map((tab) => {
+                    const isStale = tab.idle_ms > status.idle_timeout_ms && tab.kind === 'agent'
+                    return (
+                      <tr key={tab.index} className="border-t border-border/60">
+                        <td className="px-3 py-2 font-mono tabular-nums text-muted-foreground">{tab.index}</td>
+                        <td className="px-3 py-2">
+                          {tab.kind === 'system' ? (
+                            <span className="text-muted-foreground italic">system</span>
+                          ) : (
+                            <span className="font-medium">{tab.agent_name ?? tab.agent_id ?? '?'}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                              tab.kind === 'system'
+                                ? 'bg-muted text-muted-foreground'
+                                : 'bg-primary/10 text-primary'
+                            }`}
+                          >
+                            {tab.kind}
+                          </span>
+                        </td>
+                        <td
+                          className={`px-3 py-2 text-right font-mono tabular-nums ${
+                            isStale ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                          }`}
+                          title={isStale ? 'Idle past timeout — will be evicted on next cleanup tick' : undefined}
+                        >
+                          {formatIdle(tab.idle_ms)}
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground">
+            Each agent gets its own chromium tab. Commands are serialized per project to avoid races
+            on the active tab. Idle tabs are closed after {Math.round(status.idle_timeout_ms / 60000)} minutes.
+            When the project hits {status.capacity.max} tabs, the least-recently-used is evicted.
+          </p>
+        </section>
+      )}
 
       {/* CDP endpoint */}
       <section className="space-y-4">

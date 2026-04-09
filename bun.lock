@@ -54,6 +54,7 @@
         "@aws-sdk/client-s3": "^3.1024.0",
         "@hono/node-server": "^1.14.3",
         "@jiku-studio/db": "workspace:*",
+        "@jiku/browser": "workspace:*",
         "@jiku/core": "workspace:*",
         "@jiku/kit": "workspace:*",
         "@jiku/plugin-connector": "workspace:*",

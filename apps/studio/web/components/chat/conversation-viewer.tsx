@@ -186,6 +186,7 @@ function MessageParts({ msg }: { msg: UIMessage }) {
         }
         if (isToolUIPart(part)) {
           const toolName = getToolName(part)
+          const token = getToken()
           return (
             <div key={i}>
               <Tool>
@@ -199,7 +200,7 @@ function MessageParts({ msg }: { msg: UIMessage }) {
                     <ToolInput input={part.input} />
                   )}
                   {'output' in part && (
-                    <ToolOutput output={part.output} errorText={part.errorText} />
+                    <ToolOutput output={part.output} errorText={part.errorText} token={token ?? undefined} />
                   )}
                 </ToolContent>
               </Tool>

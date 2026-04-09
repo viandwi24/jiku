@@ -1,115 +1,135 @@
-import {
-  browserAct,
-  browserArmDialog,
-  browserArmFileChooser,
-  browserConsoleMessages,
-  browserNavigate,
-  browserPdfSave,
-  browserScreenshotAction,
-} from './browser/client-actions.js'
-import {
-  browserCloseTab,
-  browserFocusTab,
-  browserOpenTab,
-  browserProfiles,
-  browserSnapshot,
-  browserStart,
-  browserStatus,
-  browserStop,
-  browserTabs,
-} from './browser/client.js'
-import { wrapExternalContent } from './security/external-content.js'
+import { execBrowserCommand } from '@jiku/browser'
+import type { BrowserCommand } from '@jiku/browser'
+import type { ToolContentPart } from '@jiku/types'
 import type { BrowserToolInput } from './tool-schema.js'
+import { resolveCdpEndpoint } from './config.ts'
 
-type ContentPart = { type: string; text?: string; data?: string; mimeType?: string }
+type ContentPart = ToolContentPart | { type: 'text'; text: string }
 
 export async function executeBrowserAction(
   args: BrowserToolInput,
-  baseUrl: string,
+  cdpEndpoint: string,
   projectId?: string,
 ): Promise<{ content: ContentPart[] }> {
   const { action } = args
-  // Always use the projectId as the profile so each project is isolated.
-  // Ignore whatever the AI passes in — it doesn't know the profile name.
-  const profile = projectId ?? undefined
+
+  // Map tool input to BrowserCommand from @jiku/browser
+  const command: BrowserCommand = mapToBrowserCommand(args)
+
+  try {
+    // Execute via @jiku/browser's CLI bridge
+    const result = await execBrowserCommand(cdpEndpoint, command)
+
+    // Handle screenshot specially — persist to S3 and return attachment reference
+    if (action === 'screenshot' && result.type === 'screenshot') {
+      if (!projectId) {
+        throw new Error('projectId required for screenshot persistence')
+      }
+
+      // result.data is base64 from the browser CLI
+      const base64Data = result.data
+      const buffer = Buffer.from(base64Data, 'base64')
+      const mimeType = args.type === 'jpeg' ? 'image/jpeg' : 'image/png'
+
+      const { persistContentToAttachment } = await import('../content/persister.ts')
+      const attachment = await persistContentToAttachment({
+        projectId,
+        data: buffer,
+        mimeType,
+        filename: `screenshot-${Date.now()}.${args.type === 'jpeg' ? 'jpg' : 'png'}`,
+        sourceType: 'browser',
+        metadata: {
+          action: 'screenshot',
+        },
+      })
+
+      return {
+        content: [{
+          type: 'image',
+          attachment_id: attachment.attachmentId,
+          storage_key: attachment.storageKey,
+          mime_type: attachment.mimeType,
+        }],
+      }
+    }
+
+    // For all other actions, return result as JSON
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Browser action '${action}' failed: ${message}`)
+  }
+}
+
+/**
+ * Map tool input (from LLM) to BrowserCommand (@jiku/browser format).
+ * This is a simplified mapping — not all OpenClaw actions are supported yet.
+ */
+function mapToBrowserCommand(args: BrowserToolInput): BrowserCommand {
+  const { action } = args
 
   switch (action) {
-    case 'status':
-      return { content: [{ type: 'text', text: JSON.stringify(await browserStatus(baseUrl, { profile })) }] }
+    case 'open':
+      return { action: 'open', url: args.targetUrl ?? 'about:blank' }
 
-    case 'start':
-      await browserStart(baseUrl, { profile })
-      return { content: [{ type: 'text', text: JSON.stringify(await browserStatus(baseUrl, { profile })) }] }
-
-    case 'stop':
-      await browserStop(baseUrl, { profile })
-      return { content: [{ type: 'text', text: JSON.stringify(await browserStatus(baseUrl, { profile })) }] }
-
-    case 'profiles':
-      return { content: [{ type: 'text', text: JSON.stringify({ profiles: await browserProfiles(baseUrl) }) }] }
-
-    case 'tabs': {
-      const tabs = await browserTabs(baseUrl, { profile })
-      return { content: [{ type: 'text', text: JSON.stringify({ tabs }) }] }
-    }
-
-    case 'open': {
-      const tab = await browserOpenTab(baseUrl, args.targetUrl ?? 'about:blank', { profile })
-      return { content: [{ type: 'text', text: JSON.stringify(tab) }] }
-    }
-
-    case 'focus':
-      await browserFocusTab(baseUrl, args.targetId!, { profile })
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
-
-    case 'close':
-      if (args.targetId) {
-        await browserCloseTab(baseUrl, args.targetId, { profile })
-      } else {
-        await browserAct(baseUrl, { kind: 'close' }, { profile })
+    case 'screenshot':
+      return {
+        action: 'screenshot',
+        type: args.type ?? 'png',
+        fullPage: args.fullPage ?? false,
       }
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+
+    case 'snapshot':
+      return { action: 'snapshot' }
 
     case 'navigate':
-      return { content: [{ type: 'text', text: JSON.stringify(await browserNavigate(baseUrl, { url: args.targetUrl!, targetId: args.targetId, profile })) }] }
+      return { action: 'open', url: args.targetUrl ?? 'about:blank' }
 
-    case 'snapshot': {
-      const snapshot = await browserSnapshot(baseUrl, { ...args, profile })
-      const text = wrapExternalContent(JSON.stringify(snapshot), { source: 'browser', includeWarning: true })
-      return { content: [{ type: 'text', text }] }
-    }
-
-    case 'screenshot': {
-      const result = await browserScreenshotAction(baseUrl, { ...args, profile })
-      const { readFile } = await import('node:fs/promises')
-      const data = await readFile(result.path)
+    case 'click':
       return {
-        content: [
-          { type: 'image', data: data.toString('base64'), mimeType: args.type === 'jpeg' ? 'image/jpeg' : 'image/png' },
-        ],
+        action: 'click',
+        ref: args.ref ?? '',
+        doubleClick: args.doubleClick ?? false,
+        button: args.button ?? 'left',
       }
-    }
 
-    case 'console': {
-      const result = await browserConsoleMessages(baseUrl, { level: args.level, targetId: args.targetId, profile })
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] }
-    }
+    case 'fill':
+      return { action: 'fill', ref: args.ref ?? '', text: args.text ?? '' }
 
-    case 'pdf': {
-      const result = await browserPdfSave(baseUrl, { targetId: args.targetId, profile })
-      return { content: [{ type: 'text', text: `PDF saved: ${result.path}` }] }
-    }
+    case 'type':
+      return { action: 'type', ref: args.ref ?? '', text: args.text ?? '' }
 
-    case 'upload':
-      return { content: [{ type: 'text', text: JSON.stringify(await browserArmFileChooser(baseUrl, { paths: args.paths!, ref: args.ref, inputRef: args.inputRef, element: args.element, targetId: args.targetId, timeoutMs: args.timeoutMs, profile })) }] }
+    case 'press':
+      return { action: 'press', key: args.key ?? '' }
 
-    case 'dialog':
-      return { content: [{ type: 'text', text: JSON.stringify(await browserArmDialog(baseUrl, { accept: args.accept!, promptText: args.promptText, targetId: args.targetId, timeoutMs: args.timeoutMs, profile })) }] }
+    case 'hover':
+      return { action: 'hover', ref: args.ref ?? '' }
 
-    case 'act':
-      return { content: [{ type: 'text', text: JSON.stringify(await browserAct(baseUrl, args.request!, { profile })) }] }
+    case 'focus':
+      return { action: 'focus', ref: args.ref ?? '' }
+
+    case 'select':
+      return { action: 'select', ref: args.ref ?? '', values: args.values ?? [] }
+
+    case 'wait':
+      return {
+        action: 'wait',
+        timeMs: args.timeMs,
+        text: args.text,
+        textGone: args.textGone,
+        selector: args.selector,
+      }
+
+    case 'evaluate':
+      return { action: 'evaluate', fn: args.fn ?? '' }
+
+    case 'get':
+      return { action: 'get', path: args.path ?? '' }
+
+    case 'close':
+      return { action: 'close' }
 
     default:
-      throw new Error(`Unknown browser action: ${action}`)
+      throw new Error(`Unsupported browser action: ${action}`)
   }
 }

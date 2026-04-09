@@ -372,3 +372,29 @@ Never return `{ type: 'text', text: 'Screenshot saved: /path...' }` from server 
 ## Wrap stream untuk cleanup after full consume
 
 `modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).
+
+## Content attachment persistence pattern (Plan 33)
+
+Tool outputs (screenshots, exported data) should be persisted as attachments, not returned as base64 inline. Pattern:
+
+1. **Tool execution** (e.g. `executeBrowserAction` for screenshot):
+   - Call `persistContentToAttachment({ projectId, data: buffer, mimeType, sourceType, metadata })`
+   - Returns `{ attachmentId, storageKey, mimeType }` (no URL — only storage references)
+   - Upload to S3 via filesystem adapter; DB record created automatically
+
+2. **Tool output format**: Return `ToolContentPart` array:
+   ```typescript
+   { content: [{ type: 'image', attachment_id, storage_key, mime_type }] }
+   ```
+   NOT: `{ content: [{ type: 'image', data: 'base64...', mimeType }] }`
+
+3. **URL generation** happens at TWO layers:
+   - **UI rendering**: `useAttachmentUrl()` hook generates `/api/attachments/:id/inline?token=JWT` with token injection
+   - **LLM delivery**: Chat route converts `attachment://id` to proxy_url or base64 per agent's `file_delivery` setting
+
+4. **Why storage_key + attachment_id, not URL**:
+   - Decouples storage from URLs (domain changes don't break data)
+   - Single source of truth in DB; URLs are derived on-demand
+   - Enables URL generation in multiple contexts (UI proxy, LLM delivery, etc.)
+
+Never store URLs in the database. Always resolve attachments via ID at the edge (UI or API).

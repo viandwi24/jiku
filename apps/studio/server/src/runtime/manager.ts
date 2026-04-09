@@ -13,7 +13,6 @@ import { cronTaskScheduler } from '../cron/scheduler.ts'
 import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool } from '../cron/tools.ts'
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
-import { startBrowserServer, stopBrowserServer, stopAllBrowserServers } from '../browser/index.js'
 import { buildBrowserTools } from '../browser/tool.js'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
@@ -81,23 +80,10 @@ export class JikuRuntimeManager {
     const browserCfg = await getProjectBrowserConfig(projectId)
     if (browserCfg.enabled) {
       try {
-        const timeoutMs = 10_000
-        const handle = await Promise.race([
-          startBrowserServer(projectId, browserCfg.config),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Browser server start timed out after ${timeoutMs}ms`)), timeoutMs)
-          ),
-        ])
-        browserTools = buildBrowserTools(handle.baseUrl, projectId)
-        console.log(`[browser] Project ${projectId} browser server started on port ${handle.port}`)
+        browserTools = buildBrowserTools(projectId, browserCfg.config)
+        console.log(`[browser] Project ${projectId} browser tools enabled`)
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        const isDisabled = msg.includes('BROWSER_CONTROL_SERVER_ENABLED')
-        if (isDisabled) {
-          console.log(`[browser] Skipping browser tools for project ${projectId} (server disabled)`)
-        } else {
-          console.warn(`[browser] Failed to start browser server for project ${projectId}:`, err)
-        }
+        console.warn(`[browser] Failed to build browser tools for project ${projectId}:`, err)
       }
     }
 
@@ -293,7 +279,6 @@ export class JikuRuntimeManager {
   }
 
   async sleep(projectId: string): Promise<void> {
-    await stopBrowserServer(projectId)
     const runtime = this.runtimes.get(projectId)
     if (runtime) await runtime.stop()
     this.runtimes.delete(projectId)
@@ -318,9 +303,7 @@ export class JikuRuntimeManager {
       getProjectById(projectId),
     ])
 
-    // Stop old browser server before resolving new tools (in case config changed)
-    await stopBrowserServer(projectId)
-
+    // Resolve shared tools (browser, filesystem, connectors)
     const shared = await this.resolveSharedTools(projectId)
     const storage = this.storages.get(projectId) ?? new StudioStorageAdapter(projectId)
     const projectMemoryConfig = (projectRow?.memory_config as import('@jiku/types').ProjectMemoryConfig | null)
@@ -613,7 +596,6 @@ export class JikuRuntimeManager {
   async stopAll(): Promise<void> {
     heartbeatScheduler.stopAll()
     cronTaskScheduler.stopAll()
-    await stopAllBrowserServers()
 
     await Promise.all(
       Array.from(this.runtimes.entries()).map(([, rt]) => rt.stop()),

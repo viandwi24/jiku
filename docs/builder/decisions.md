@@ -1,5 +1,15 @@
 # Decisions
 
+## ADR-034 — Content references use attachment_id + storage_key, never URLs
+
+**Context:** Binary content (screenshots, generated files, tool outputs) were stored as inline base64 in tool output parts or as URLs in database records. URLs are fragile (domain changes, proxy endpoint changes break data). Inline base64 wastes 33% space and bloats LLM context window.
+
+**Decision:** All binary content references in DB (conversation_messages.parts, tool outputs) use the shape `{ type: 'image', attachment_id, storage_key, mime_type }`. No URL, no base64 data is stored. URL generation happens exclusively at two points: (1) UI rendering layer builds `<img src>` URLs on-demand from `attachment_id`, (2) LLM delivery resolves attachment references to base64 or proxy URL based on `agent.file_delivery` config. Storage key format is standardized: `jiku/attachments/{projectId}/{scope}/{uuid}.{ext}`.
+
+**Consequences:** Data is portable — export conversation, change domains, import, all references remain valid. Single source of truth for content format across stream, DB, and UI. Slight complexity increase: rendering layer must resolve references on-demand, and LLM delivery must resolve before API calls. Trade-off is worth it for data integrity and context efficiency.
+
+---
+
 ## ADR-033 — Credential resolution always uses getAvailableCredentials (company + project union)
 
 **Context:** Features that resolve credentials at runtime (embedding API key, LLM provider, etc.) were using `getProjectCredentials(projectId)` which only returns credentials scoped to the project. Users creating credentials at company level (a common pattern for shared API keys like OpenAI) got "no credential found" errors.

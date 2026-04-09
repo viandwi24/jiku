@@ -431,6 +431,38 @@ export type MessagePart =
 export type MessageContent = MessagePart
 
 // ============================================================
+// CONTENT PERSISTENCE (Plan 33)
+// ============================================================
+
+/** Content part as stored in DB and streamed to clients. URL-free. */
+export type ToolContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; attachment_id: string; storage_key: string; mime_type: string }
+  | { type: 'document'; attachment_id: string; storage_key: string; mime_type: string; file_name: string }
+  | { type: 'audio'; attachment_id: string; storage_key: string; mime_type: string }
+
+/** Result of persisting binary content to S3 + DB. No URL -- URL is generated on-demand at render time. */
+export interface ContentPersistResult {
+  attachmentId: string
+  storageKey: string       // e.g. 'jiku/attachments/{projectId}/{scope}/{uuid}.png'
+  mimeType: string
+  sizeBytes: number
+}
+
+export interface ContentPersistOptions {
+  projectId: string
+  data: Buffer
+  mimeType: string
+  filename: string
+  sourceType: string       // 'browser' | 'tool' | 'user_upload' etc.
+  conversationId?: string
+  agentId?: string
+  userId?: string
+  scope?: 'per_user' | 'shared'
+  metadata?: Record<string, unknown>
+}
+
+// ============================================================
 // MODEL PROVIDER
 // ============================================================
 

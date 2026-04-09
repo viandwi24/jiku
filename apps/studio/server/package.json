@@ -24,6 +24,7 @@
     "@jiku/plugin-connector": "workspace:*",
     "@jiku/plugin-telegram": "workspace:*",
     "@jiku/types": "workspace:*",
+    "@jiku/browser": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openrouter/ai-sdk-provider": "^2.3.3",
     "@qdrant/js-client-rest": "^1.17.0",

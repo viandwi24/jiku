@@ -130,14 +130,49 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
 export type ToolOutputProps = ComponentProps<"div"> & {
   output: ToolPart["output"];
   errorText: ToolPart["errorText"];
+  token?: string;
 };
 
-type ContentPart = { type: string; text?: string; data?: string; mimeType?: string };
+type ContentPart =
+  | { type: string; text?: string; data?: string; mimeType?: string }
+  | {
+      type: "image";
+      attachment_id: string;
+      storage_key: string;
+      mime_type: string;
+    };
 
-const renderContentParts = (parts: ContentPart[]) => (
+const getAttachmentUrl = (attachmentId: string, token?: string): string => {
+  const baseUrl = typeof window !== "undefined"
+    ? window.location.origin
+    : "http://localhost:3001";
+  const url = new URL(`/api/attachments/${attachmentId}/inline`, baseUrl);
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+  return url.toString();
+};
+
+const renderContentParts = (parts: ContentPart[], token?: string) => (
   <>
     {parts.map((part, idx) => {
-      if (part.type === "image" && part.data && part.mimeType) {
+      // Handle attachment reference (new format from browser/plugins)
+      if (
+        part.type === "image" &&
+        "attachment_id" in part &&
+        "storage_key" in part
+      ) {
+        return (
+          <img
+            key={idx}
+            src={getAttachmentUrl(part.attachment_id, token)}
+            alt="Tool output"
+            className="h-auto max-w-full overflow-hidden rounded-md"
+          />
+        );
+      }
+      // Handle inline base64 image (legacy format)
+      if (part.type === "image" && "data" in part && part.data && part.mimeType) {
         return (
           <img
             key={idx}
@@ -159,6 +194,7 @@ export const ToolOutput = ({
   className,
   output,
   errorText,
+  token,
   ...props
 }: ToolOutputProps) => {
   if (!(output || errorText)) {
@@ -173,9 +209,9 @@ export const ToolOutput = ({
       const parts = obj.content as ContentPart[];
       const hasImageOnly = parts.length === 1 && parts[0].type === "image";
       Output = hasImageOnly ? (
-        renderContentParts(parts)
+        renderContentParts(parts, token)
       ) : (
-        <div className="space-y-2">{renderContentParts(parts)}</div>
+        <div className="space-y-2">{renderContentParts(parts, token)}</div>
       );
     } else {
       Output = (

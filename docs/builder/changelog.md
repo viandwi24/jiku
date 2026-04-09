@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-04-09 — Plan 33: Browser rebuild + unified attachment system
+
+**Shipped:** Plan 33 replaces the failed Plan 13 (OpenClaw port). Browser automation now works via `@jiku/browser` (CLI bridge to Vercel `agent-browser` over CDP), and all tool outputs (starting with screenshots) persist to S3 via a single reusable `persistContentToAttachment()` service.
+
+**Key change:** Attachment references are `{ attachment_id, storage_key, mime_type }` — URLs are never stored in the DB. URLs are generated on-demand at the UI boundary (`useAttachmentUrl()`) or at LLM call time (chat route).
+
+**Added:**
+- `apps/studio/server/src/content/persister.ts` — unified content persistence service
+- `apps/studio/web/hooks/use-attachment-url.ts` — authenticated URL hook for UI
+- `apps/studio/db/src/migrations/0008_add_attachment_source_tracking.sql` — `source_type` + `metadata` columns
+- `docs/plans/impl-reports/13-browser-implement-report.md` — full implementation report
+
+**Changed:**
+- `packages/types/src/index.ts` — `ToolContentPart`, `ContentPersistResult`, `ContentPersistOptions`
+- `packages/ui/src/components/ai-elements/tool.tsx` — `ToolOutput` renders attachment refs; `token` prop added
+- `apps/studio/server/src/browser/` — `execute.ts`, `tool.ts`, `config.ts`, `index.ts` rewritten to use `@jiku/browser`
+- `apps/studio/server/src/runtime/manager.ts` — removed `startBrowserServer`/`stopBrowserServer` lifecycle
+- `apps/studio/server/src/routes/browser.ts` — simplified schema; ping tests CDP directly
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — passes JWT token to `ToolOutput`
+- `docs/feats/browser.md` — marked rebuilt, new architecture
+- `docs/builder/current.md`, `docs/builder/memory.md`, `docs/builder/decisions.md` — updated
+
+**Deleted:**
+- `apps/studio/server/src/browser/browser/*` — ~80 files of OpenClaw port
+
+**Verification:** `bun run dev` boots cleanly; `bun run db:push` applied migration. End-to-end screenshot pipeline pending manual test with live browser container.
+
+---
+
 ## 2026-04-09 — Fix: Cron task conversation type should be 'task' not 'cron'
 
 **Fixed:** `CronTaskScheduler.triggerTask()` was creating conversations with `type: 'cron'`, which is not a valid conversation type. Valid types are: `chat`, `task`, `heartbeat`.

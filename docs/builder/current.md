@@ -1,14 +1,47 @@
 ## Phase
-Plan 15 — OpenClaw-Inspired Agentic Improvements. ALL 4 SPRINTS COMPLETE. Post-launch connector tools enhancement.
+Plan 33 — Unified Content Attachment System & Browser Engine Integration. Replacing failed Plan 13 (OpenClaw browser) with new `@jiku/browser` engine.
 
-## Currently Working On
-- Plan 15 FULLY IMPLEMENTED + post-launch improvements
-- **FIXED (2026-04-08):** Credential inheritance bug — company-level credentials now visible in memory semantic search credential picker and resolved at runtime
-- **ADDED (2026-04-08):** `connector_list` tool — agent can now discover connector IDs before calling `connector_send`, etc.
-- Pending migrations: `0005`, `0006`, `0007` — run `bun run db:push`
+## Currently Working On (2026-04-09)
+- **Phase 1 COMPLETE:** Database schema + types
+  - ✅ Added `source_type` + `metadata` columns to `project_attachments` table (schema + migration)
+  - ✅ Created `ContentPersistResult`, `ContentPersistOptions`, `ToolContentPart` types in `@jiku/types`
+  - ✅ Created migration `0008_add_attachment_source_tracking.sql`
+  
+- **Phase 2 COMPLETE:** Content persistence layer
+  - ✅ Created `apps/studio/server/src/content/persister.ts` — `persistContentToAttachment()` function
+  - ✅ Updated browser screenshot tool to use new persister (returns `attachment_id` + `storage_key`, no URL)
+  - ✅ Deleted all 80+ OpenClaw browser engine files (marked as failed Plan 13)
+  - ✅ Rewrote `config.ts` to remove server management (now just `resolveCdpEndpoint()`)
+  - ✅ Rewrote `index.ts` to track CDP endpoints only (no Node child process singleton)
+  - ✅ Rewrote `execute.ts` to use `@jiku/browser` CLI bridge via `execBrowserCommand()`
+  - ✅ Updated `tool.ts` signature to accept `config` instead of `serverBaseUrl`
+  - ✅ Removed all `startBrowserServer`, `stopBrowserServer` calls from `runtime/manager.ts`
+  
+- **Phase 3 COMPLETE:** UI rendering + LLM delivery
+  - ✅ `GET /api/attachments/:id/inline` endpoint exists (auth-gated with JWT token)
+  - ✅ Updated `ToolOutput` component to render attachment references (`attachment_id` + `storage_key` format)
+  - ✅ Created `useAttachmentUrl()` hook for JWT token injection in `<img src>`
+  - ✅ Chat route already handles attachment resolution (converts to proxy_url or base64 per agent settings)
+  
+- **Phase 4-7 TODO:** Connector integration, testing, documentation
+  - [ ] Add content persistence to connector action outputs
+  - [ ] Test screenshot persistence end-to-end
+  - [ ] Update memory.md with attachment persistence pattern
+  - [ ] Verify browser screenshot workflow end-to-end: open → snapshot → screenshot → attachment persisted → rendered in UI
+
+- ✅ Migrations applied: `bun run db:push` successful
 - Qdrant needs `docker compose up qdrant` to start
 - MCP SDK installed (`@modelcontextprotocol/sdk@1.29.0`)
 - Qdrant client installed (`@qdrant/js-client-rest@1.17.0`)
+
+## Plan 33 Implementation Summary (this session)
+- ✅ **Phase 1-2**: Database schema + content persister + OpenClaw removal
+- ✅ **Phase 3-5**: Attachment serving + UI rendering + LLM integration
+  - Endpoints: `GET /api/attachments/:id/inline?token=JWT` (existing)
+  - UI hook: `useAttachmentUrl()` for authenticated image URLs
+  - Component: Updated `ToolOutput` to render attachment references
+  - Workflow: attachment_id → inline URL with JWT → image rendered in chat
+  - Chat route: Resolves attachments per agent settings (proxy_url or base64) before LLM
 
 ## Relevant Files (Most Recently Worked On)
 

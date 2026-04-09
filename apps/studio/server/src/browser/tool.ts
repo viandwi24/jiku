@@ -1,8 +1,12 @@
 import type { ToolDefinition } from '@jiku/types'
 import { BrowserToolInputSchema } from './tool-schema.js'
 import { executeBrowserAction } from './execute.js'
+import { resolveCdpEndpoint } from './config.ts'
+import type { BrowserProjectConfig } from '@jiku-studio/db'
 
-export function buildBrowserTools(serverBaseUrl: string, projectId: string): ToolDefinition[] {
+export function buildBrowserTools(projectId: string, config: BrowserProjectConfig | undefined | null): ToolDefinition[] {
+  const cdpEndpoint = resolveCdpEndpoint(config)
+
   return [
     {
       meta: {
@@ -12,23 +16,19 @@ export function buildBrowserTools(serverBaseUrl: string, projectId: string): Too
           'Control the browser: navigate pages, interact with UI elements, take screenshots, and extract data.',
           '',
           'WORKFLOW — always follow this order:',
-          '1. action=start — launch the browser (required before anything else).',
-          '2. action=navigate — go to a URL.',
-          '3. action=snapshot — read the current page as an accessibility tree. ALWAYS snapshot before interacting.',
-          '4. action=act — interact using a ref from the snapshot (click, type, press, hover, drag, fill, select).',
-          '   - Every act REQUIRES a ref (e.g. ref="e12") obtained from the snapshot.',
-          '   - After each click that opens a menu, modal, or changes the page: snapshot again before the next act.',
-          '   - For typing into an input: click the input ref first, then type.',
-          '   - NEVER guess a ref — always snapshot first to get current refs.',
-          '5. action=screenshot — capture a visual snapshot when you need to see the visual state.',
+          '1. action=open — navigate to a URL (launch browser if needed).',
+          '2. action=snapshot — read the current page as an accessibility tree. ALWAYS snapshot before interacting.',
+          '3. action=click/type/fill — interact using selectors from the snapshot.',
+          '   - After each interaction that changes the page: snapshot again.',
+          '4. action=screenshot — capture visual state when you need to see how the page looks.',
+          '5. action=close — close the browser when done.',
           '',
-          'Other actions: action=tabs (list tabs), action=open (new tab), action=console (read console logs).',
+          'Other actions: action=get (read page content), action=evaluate (run JS), action=wait (wait for condition).',
           '',
-          'COMMON MISTAKES TO AVOID:',
-          '- Do NOT call action=act without a ref from a recent snapshot.',
-          '- Do NOT assume refs stay the same after navigation or interaction — snapshot again.',
-          '- Do NOT call action=type without first clicking the input element.',
-          '- Do NOT retry after an error without snapshotting first to understand current page state.',
+          'IMPORTANT NOTES:',
+          '- CDP endpoint: ' + cdpEndpoint,
+          '- Each action is stateless — page state (logs, network) is not retained between calls.',
+          '- Single active tab only — concurrent users will interfere with each other.',
         ].join(' '),
         group: 'browser',
       },
@@ -38,7 +38,7 @@ export function buildBrowserTools(serverBaseUrl: string, projectId: string): Too
       execute: async (args) => {
         // Strip profile from AI input — profile is always the owning projectId, never AI-controlled
         const { profile: _ignored, ...safeArgs } = args as import('./tool-schema.js').BrowserToolInput & { profile?: string }
-        return executeBrowserAction(safeArgs as import('./tool-schema.js').BrowserToolInput, serverBaseUrl, projectId)
+        return executeBrowserAction(safeArgs as import('./tool-schema.js').BrowserToolInput, cdpEndpoint, projectId)
       },
     },
   ]

@@ -19,6 +19,11 @@ export interface ExecuteBrowserOptions {
    * instead of being persisted to S3 + DB. Defaults to true.
    */
   screenshotAsAttachment?: boolean
+  /**
+   * Per-project hard cap on chromium tabs (including the system tab at
+   * index 0). Defaults to `DEFAULT_MAX_TABS_PER_PROJECT` if undefined.
+   */
+  maxTabs?: number
 }
 
 /**
@@ -41,7 +46,7 @@ export async function executeBrowserAction(
   input: BrowserToolInput,
   options: ExecuteBrowserOptions,
 ): Promise<{ content: ContentPart[] }> {
-  const { cdpEndpoint, projectId, agentId, timeoutMs, screenshotAsAttachment = true } = options
+  const { cdpEndpoint, projectId, agentId, timeoutMs, screenshotAsAttachment = true, maxTabs } = options
 
   if (RESERVED_TAB_ACTIONS.has(input.action)) {
     throw new Error(
@@ -58,7 +63,7 @@ export async function executeBrowserAction(
   return await browserMutex.acquire(projectId, async () => {
     // 1. Make sure this agent has a tab and that it's currently the active
     //    one in chromium. May open or evict tabs as a side effect.
-    await ensureAgentTabActive(cdpEndpoint, projectId, agentId, timeoutMs)
+    await ensureAgentTabActive(cdpEndpoint, projectId, agentId, maxTabs, timeoutMs)
 
     // 2. Run the requested command. The mutex guarantees no other agent
     //    can change the active tab between the switch above and this call.
@@ -140,9 +145,10 @@ async function ensureAgentTabActive(
   cdpEndpoint: string,
   projectId: string,
   agentId: string,
+  maxTabs: number | undefined,
   timeoutMs?: number,
 ): Promise<void> {
-  browserTabManager.ensureInitialized(projectId)
+  browserTabManager.ensureInitialized(projectId, maxTabs)
 
   // Already have a tab? Just switch to it.
   const existingIdx = browserTabManager.getAgentTabIndex(projectId, agentId)

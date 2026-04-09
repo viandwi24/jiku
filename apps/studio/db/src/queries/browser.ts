@@ -21,6 +21,13 @@ export type BrowserProjectConfig = {
    * attachment references. If false, they are returned inline as base64.
    */
   screenshot_as_attachment?: boolean
+  /**
+   * Maximum number of chromium tabs this project may hold open at once,
+   * including the system tab at index 0. When the cap is hit, the
+   * least-recently-used agent tab is evicted before creating a new one.
+   * Default: 10. Bounds: 2..50 (enforced by the route Zod schema).
+   */
+  max_tabs?: number
 }
 
 export async function getProjectBrowserConfig(projectId: string): Promise<{

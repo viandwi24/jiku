@@ -15,7 +15,9 @@ import { resolveCdpEndpoint } from '../browser/config.ts'
 import { browserMutex } from '../browser/concurrency.ts'
 import {
   browserTabManager,
-  MAX_TABS_PER_PROJECT,
+  DEFAULT_MAX_TABS_PER_PROJECT,
+  MIN_MAX_TABS,
+  MAX_MAX_TABS,
   IDLE_TAB_TIMEOUT_MS,
 } from '../browser/tab-manager.ts'
 
@@ -27,6 +29,7 @@ const BrowserConfigSchema = z.object({
   timeout_ms: z.number().int().min(1000).max(120000).optional(),
   evaluate_enabled: z.boolean().optional(),
   screenshot_as_attachment: z.boolean().optional(),
+  max_tabs: z.number().int().min(MIN_MAX_TABS).max(MAX_MAX_TABS).optional(),
 })
 
 // GET /projects/:pid/browser — config + status
@@ -202,6 +205,15 @@ router.get('/projects/:pid/browser/status', requirePermission('settings:read'), 
     const totalTabs = tabs.length
     const agentTabs = tabs.filter(t => t.kind === 'agent').length
 
+    // Resolve max: prefer the value the manager has actually applied to the
+    // running state, fall back to the saved config, finally to the default.
+    // This way the UI shows what the runtime is *currently using*, even if
+    // the user just changed the config and hasn't triggered a re-init yet.
+    const maxTabs =
+      browserTabManager.getMaxTabs(projectId) ??
+      cfg.config.max_tabs ??
+      DEFAULT_MAX_TABS_PER_PROJECT
+
     res.json({
       enabled: cfg.enabled,
       mutex: { busy: browserMutex.isBusy(projectId) },
@@ -209,7 +221,7 @@ router.get('/projects/:pid/browser/status', requirePermission('settings:read'), 
       capacity: {
         used: totalTabs,
         agent_used: agentTabs,
-        max: MAX_TABS_PER_PROJECT,
+        max: maxTabs,
       },
       idle_timeout_ms: IDLE_TAB_TIMEOUT_MS,
     })

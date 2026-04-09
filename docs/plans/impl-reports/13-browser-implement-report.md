@@ -581,8 +581,10 @@ can't desync our index tracking.
 
 ### 4. Idle eviction + capacity
 
-- `MAX_TABS_PER_PROJECT = 10` (including the system tab). On the 11th
-  agent, the LRU agent tab is closed first.
+- Per-project hard cap, default `DEFAULT_MAX_TABS_PER_PROJECT = 10`
+  (including the system tab). Configurable via
+  `BrowserProjectConfig.max_tabs` in 2..50. On the (max+1)th agent, the
+  LRU agent tab is closed first.
 - `IDLE_TAB_TIMEOUT_MS = 10 minutes`.
 - `startBrowserTabCleanup()` (called from `index.ts` after the runtime
   boots) runs every 60s. It walks every tracked project, picks idle tabs

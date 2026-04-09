@@ -31,9 +31,11 @@ import { resolveCdpEndpoint } from './config.ts'
  *
  * # Capacity & cleanup
  *
- * - Hard cap: `MAX_TABS_PER_PROJECT` (default 10) including the system tab.
- *   When full, the LRU agent tab (excluding system) is evicted before
- *   creating a new one.
+ * - Hard cap: per-project, stored on the `ProjectTabState` (default
+ *   `DEFAULT_MAX_TABS_PER_PROJECT = 10`, configurable via
+ *   `BrowserProjectConfig.max_tabs` from 2..50). The cap includes the
+ *   system tab. When full, the LRU agent tab (excluding system) is evicted
+ *   before creating a new one.
  * - Idle eviction: `IDLE_TAB_TIMEOUT_MS` (default 10 minutes). The
  *   `evictIdleTabs()` method finds tabs older than the threshold; the caller
  *   runs `tab_close` for each and then commits the eviction via
@@ -43,7 +45,16 @@ import { resolveCdpEndpoint } from './config.ts'
  *   accept that the next wakeUp() will see orphan tabs in chromium).
  */
 
-export const MAX_TABS_PER_PROJECT = 10
+/**
+ * Default tab cap per project. Used when `BrowserProjectConfig.max_tabs`
+ * isn't set. The user can override this per-project from the settings page.
+ */
+export const DEFAULT_MAX_TABS_PER_PROJECT = 10
+/** Lower bound: must allow at least the system tab + one agent tab. */
+export const MIN_MAX_TABS = 2
+/** Upper bound: more than this and chromium starts misbehaving. */
+export const MAX_MAX_TABS = 50
+
 export const IDLE_TAB_TIMEOUT_MS = 10 * 60 * 1000  // 10 minutes
 
 /**
@@ -59,6 +70,8 @@ interface ProjectTabState {
   tabs: TrackedTab[]
   /** True once the system tab (index 0) has been recorded. */
   initialized: boolean
+  /** Per-project hard cap, including the system tab. */
+  maxTabs: number
 }
 
 export class BrowserTabManager {
@@ -67,12 +80,28 @@ export class BrowserTabManager {
   /**
    * Initialize the project's tab list with a single system tab at index 0.
    * Idempotent. Called the first time we touch a project.
+   *
+   * `maxTabs` is the per-project cap. If a state already exists with a
+   * different cap (i.e. the user changed the config since the last call),
+   * we update it in place — the new value takes effect on the next
+   * `isAtCapacity()` check. We do NOT proactively evict tabs that exceed
+   * the new (smaller) cap; eviction happens lazily when the next agent
+   * needs a slot.
    */
-  ensureInitialized(projectId: string): ProjectTabState {
+  ensureInitialized(
+    projectId: string,
+    maxTabs: number = DEFAULT_MAX_TABS_PER_PROJECT,
+  ): ProjectTabState {
     let state = this.byProject.get(projectId)
     if (!state) {
-      state = { tabs: [{ agentId: null, lastUsedAt: Date.now() }], initialized: true }
+      state = {
+        tabs: [{ agentId: null, lastUsedAt: Date.now() }],
+        initialized: true,
+        maxTabs,
+      }
       this.byProject.set(projectId, state)
+    } else if (state.maxTabs !== maxTabs) {
+      state.maxTabs = maxTabs
     }
     return state
   }
@@ -134,13 +163,23 @@ export class BrowserTabManager {
   }
 
   /**
-   * Returns true if the project has reached the hard cap and a new agent
-   * cannot get a tab without eviction.
+   * Returns true if the project has reached its hard cap and a new agent
+   * cannot get a tab without eviction. Honors the per-project `maxTabs`
+   * stored in state by `ensureInitialized()`.
    */
   isAtCapacity(projectId: string): boolean {
     const state = this.byProject.get(projectId)
     if (!state) return false
-    return state.tabs.length >= MAX_TABS_PER_PROJECT
+    return state.tabs.length >= state.maxTabs
+  }
+
+  /**
+   * Read the configured max for a project, or null if the project has no
+   * tracked state yet (the caller should fall back to the config value or
+   * `DEFAULT_MAX_TABS_PER_PROJECT`).
+   */
+  getMaxTabs(projectId: string): number | null {
+    return this.byProject.get(projectId)?.maxTabs ?? null
   }
 
   /**

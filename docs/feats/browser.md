@@ -171,6 +171,7 @@ interface BrowserProjectConfig {
   timeout_ms?: number               // default: 30000
   evaluate_enabled?: boolean        // default: false
   screenshot_as_attachment?: boolean // default: true
+  max_tabs?: number                  // default: 10, range: 2..50
 }
 ```
 
@@ -393,8 +394,10 @@ runtime.
 
 ### Capacity & idle eviction
 
-- **Hard cap:** `MAX_TABS_PER_PROJECT = 10` (including the system tab at
-  index 0). On the 11th agent, the LRU agent tab is closed first.
+- **Hard cap:** per-project, configurable via
+  `BrowserProjectConfig.max_tabs` (default `DEFAULT_MAX_TABS_PER_PROJECT =
+  10`, allowed 2..50, including the system tab at index 0). On the (max+1)th
+  agent, the LRU agent tab is closed first.
 - **Idle timeout:** `IDLE_TAB_TIMEOUT_MS = 10 minutes`. A background loop
   (`startBrowserTabCleanup()`, started from `index.ts`, runs every 60s)
   walks every tracked project, picks tabs idle past the threshold, and

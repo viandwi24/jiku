@@ -12,6 +12,7 @@ export function buildBrowserTools(
   const timeoutMs = config?.timeout_ms
   const screenshotAsAttachment = config?.screenshot_as_attachment ?? true
   const evalEnabled = config?.evaluate_enabled ?? false
+  const maxTabs = config?.max_tabs
 
   return [
     {
@@ -63,6 +64,7 @@ export function buildBrowserTools(
           agentId: ctx.runtime.agent.id,
           timeoutMs,
           screenshotAsAttachment,
+          maxTabs,
         })
       },
     },

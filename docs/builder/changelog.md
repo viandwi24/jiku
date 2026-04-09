@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-04-09 — Browser: max_tabs is per-project configurable
+
+**Added:** `BrowserProjectConfig.max_tabs` (range 2..50, default 10) lets each
+project pick its own chromium tab cap instead of sharing a global constant.
+The Debug panel / Browser settings page show the active value from the running
+state, not just the saved config.
+
+**Changed:**
+- `apps/studio/server/src/browser/tab-manager.ts` — renamed
+  `MAX_TABS_PER_PROJECT` → `DEFAULT_MAX_TABS_PER_PROJECT`. Added
+  `MIN_MAX_TABS = 2` and `MAX_MAX_TABS = 50` bounds. `ProjectTabState` now
+  carries its own `maxTabs`. `ensureInitialized(projectId, maxTabs)` reads
+  the value, idempotently updates the existing state if it changed (lazy:
+  the next `isAtCapacity()` honors the new value). New `getMaxTabs()` helper
+  for the status endpoint.
+- `apps/studio/server/src/browser/execute.ts` — `ExecuteBrowserOptions` gains
+  `maxTabs?: number`. Passed through to `ensureAgentTabActive` →
+  `ensureInitialized`.
+- `apps/studio/server/src/browser/tool.ts` — reads `config?.max_tabs` and
+  forwards via `executeBrowserAction` options.
+- `apps/studio/server/src/routes/browser.ts` — `BrowserConfigSchema` adds
+  `max_tabs: z.number().int().min(2).max(50).optional()`. Status endpoint
+  resolves the displayed cap as `manager.getMaxTabs() ?? cfg.max_tabs ??
+  DEFAULT_MAX_TABS_PER_PROJECT` so the UI shows what the runtime is
+  *currently using*, not just the saved config.
+- `apps/studio/db/src/queries/browser.ts` and `apps/studio/web/lib/api.ts` —
+  `BrowserProjectConfig.max_tabs` documented.
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+  — new "Max tabs" number input in the Advanced section, bounds 2..50.
+  System tab row in the Debug panel now displays `— always on` instead of
+  an ever-growing idle counter, with a tooltip explaining it.
+
+**Files:**
+- `apps/studio/server/src/browser/{tab-manager,execute,tool}.ts`
+- `apps/studio/server/src/routes/browser.ts`
+- `apps/studio/db/src/queries/browser.ts`
+- `apps/studio/web/lib/api.ts`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/page.tsx`
+- `docs/feats/browser.md`, `docs/builder/memory.md`,
+  `docs/plans/impl-reports/13-browser-implement-report.md`
+
+---
+
 ## 2026-04-09 — Fix: cross-container CDP fails with "Host header is not an IP address or localhost"
 
 **Symptom:** the @jiku/browser docker container worked perfectly when accessed

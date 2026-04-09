@@ -731,6 +731,11 @@ export interface BrowserProjectConfig {
   evaluate_enabled?: boolean
   /** If true (default), screenshots persist as attachments instead of inline base64. */
   screenshot_as_attachment?: boolean
+  /**
+   * Hard cap on chromium tabs per project (including the system tab).
+   * Default: 10. Bounds: 2..50.
+   */
+  max_tabs?: number
 }
 
 export interface BrowserPingResult {

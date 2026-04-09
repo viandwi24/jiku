@@ -438,13 +438,19 @@ function ProjectBrowserPage({ params }: PageProps) {
                   </tr>
                 ) : (
                   status.tabs.map((tab) => {
-                    const isStale = tab.idle_ms > status.idle_timeout_ms && tab.kind === 'agent'
+                    const isSystem = tab.kind === 'system'
+                    const isStale = !isSystem && tab.idle_ms > status.idle_timeout_ms
                     return (
                       <tr key={tab.index} className="border-t border-border/60">
                         <td className="px-3 py-2 font-mono tabular-nums text-muted-foreground">{tab.index}</td>
                         <td className="px-3 py-2">
-                          {tab.kind === 'system' ? (
-                            <span className="text-muted-foreground italic">system</span>
+                          {isSystem ? (
+                            <span
+                              className="text-muted-foreground italic"
+                              title="Container startup tab (about:blank). Owned by no agent."
+                            >
+                              system
+                            </span>
                           ) : (
                             <span className="font-medium">{tab.agent_name ?? tab.agent_id ?? '?'}</span>
                           )}
@@ -452,7 +458,7 @@ function ProjectBrowserPage({ params }: PageProps) {
                         <td className="px-3 py-2">
                           <span
                             className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
-                              tab.kind === 'system'
+                              isSystem
                                 ? 'bg-muted text-muted-foreground'
                                 : 'bg-primary/10 text-primary'
                             }`}
@@ -462,11 +468,19 @@ function ProjectBrowserPage({ params }: PageProps) {
                         </td>
                         <td
                           className={`px-3 py-2 text-right font-mono tabular-nums ${
-                            isStale ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                            isStale
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-muted-foreground'
                           }`}
-                          title={isStale ? 'Idle past timeout — will be evicted on next cleanup tick' : undefined}
+                          title={
+                            isSystem
+                              ? 'System tab is never evicted — idle timer does not apply'
+                              : isStale
+                                ? 'Idle past timeout — will be evicted on next cleanup tick'
+                                : undefined
+                          }
                         >
-                          {formatIdle(tab.idle_ms)}
+                          {isSystem ? '— always on' : formatIdle(tab.idle_ms)}
                         </td>
                       </tr>
                     )
@@ -478,8 +492,10 @@ function ProjectBrowserPage({ params }: PageProps) {
 
           <p className="text-[11px] text-muted-foreground">
             Each agent gets its own chromium tab. Commands are serialized per project to avoid races
-            on the active tab. Idle tabs are closed after {Math.round(status.idle_timeout_ms / 60000)} minutes.
-            When the project hits {status.capacity.max} tabs, the least-recently-used is evicted.
+            on the active tab. Idle agent tabs are closed after {Math.round(status.idle_timeout_ms / 60000)} minutes.
+            When the project hits {status.capacity.max} tabs, the least-recently-used agent tab is evicted.
+            Index 0 is always the system tab (about:blank from container startup) and is never evicted —
+            it's the fallback target after every agent tab is gone.
           </p>
         </section>
       )}
@@ -531,6 +547,24 @@ function ProjectBrowserPage({ params }: PageProps) {
               placeholder="30000"
               value={cfg.timeout_ms ?? ''}
               onChange={(e) => setCfg(p => ({ ...p, timeout_ms: e.target.value ? Number(e.target.value) : undefined }))}
+              className="w-36 font-mono text-sm"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">Max tabs</Label>
+            <p className="text-xs text-muted-foreground">
+              Hard cap on chromium tabs for this project, including the system tab at index 0.
+              When the cap is hit, the least-recently-used agent tab is evicted before opening a new one.
+              Default: 10. Allowed: 2..50.
+            </p>
+            <Input
+              type="number"
+              min={2}
+              max={50}
+              placeholder="10"
+              value={cfg.max_tabs ?? ''}
+              onChange={(e) => setCfg(p => ({ ...p, max_tabs: e.target.value ? Number(e.target.value) : undefined }))}
               className="w-36 font-mono text-sm"
             />
           </div>

@@ -498,16 +498,19 @@ export const api = {
       const qs = new URLSearchParams({ path: filePath, mode })
       return `${BASE_URL}/api/projects/${projectId}/files/proxy?${qs}`
     },
-    upload: (projectId: string, folderPath: string, files: File[]) => {
+    upload: async (projectId: string, folderPath: string, files: File[]) => {
       const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
       const form = new FormData()
       for (const f of files) form.append('file', f)
       const qs = new URLSearchParams({ path: folderPath })
-      return fetch(`${BASE_URL}/api/projects/${projectId}/files/upload?${qs}`, {
+      const r = await fetch(`${BASE_URL}/api/projects/${projectId}/files/upload?${qs}`, {
         method: 'POST',
         headers: { ...getAuthHeaders() },
         body: form,
-      }).then(r => r.json() as Promise<{ files: FilesystemFileEntry[] }>)
+      })
+      const body = await r.json() as { files?: FilesystemFileEntry[]; error?: string }
+      if (!r.ok) throw new Error(body.error ?? 'Upload failed')
+      return body as { files: FilesystemFileEntry[] }
     },
   },
 

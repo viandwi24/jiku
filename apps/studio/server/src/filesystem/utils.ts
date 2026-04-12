@@ -11,6 +11,11 @@ export const ALLOWED_EXTENSIONS = new Set([
   // Config / Data
   '.json', '.yaml', '.yml', '.toml', '.env', '.ini',
   '.xml', '.csv', '.sql',
+  // Office / Documents
+  '.xlsx', '.xls', '.ods',
+  '.docx', '.doc', '.odt',
+  '.pptx', '.ppt', '.odp',
+  '.pdf',
 ])
 
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024 // 5 MB
@@ -85,6 +90,16 @@ const MIME_MAP: Record<string, string> = {
   '.cs': 'text/x-csharp',
   '.env': 'text/plain',
   '.ini': 'text/plain',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword',
+  '.odt': 'application/vnd.oasis.opendocument.text',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.pdf': 'application/pdf',
 }
 
 export function getMimeType(ext: string): string {

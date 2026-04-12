@@ -377,11 +377,11 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
                   const files = Array.from(e.target.files ?? [])
                   if (!files.length) return
                   try {
-                    await api.filesystem.upload(projectId, currentPath, files)
+                    const res = await api.filesystem.upload(projectId, currentPath, files)
                     qc.invalidateQueries({ queryKey: ['files', projectId] })
-                    toast.success(`Uploaded ${files.length} file(s)`)
-                  } catch {
-                    toast.error('Upload failed')
+                    toast.success(`Uploaded ${res.files.length} file(s)`)
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : 'Upload failed')
                   }
                   e.target.value = ''
                 }}

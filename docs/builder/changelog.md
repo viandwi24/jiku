@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-04-12 — Plan 17: Plugin UI System (final — isolated runtime, CLI, hardened)
+
+**Shipped:** Plugins now contribute React UI as **fully isolated islands** —
+each plugin is a self-contained ESM bundle (built by tsup), carries its own
+React instance, is loaded by the browser via opaque dynamic URL import, and
+mounted into a host-provided `<div>`. Build/runtime isolation guarantees that
+a misbehaving plugin cannot break Studio's Next.js build or React tree.
+
+The first-pass "workspace component registry" ADR (ADR-PLUG-17-A) was
+**replaced** mid-session by the isolated-bundle design after user feedback
+pointed out that workspace-source imports coupled plugin TS errors to
+Studio's build. The revised impl report supersedes the original.
+
+Key deliverables:
+
+- **Isolation primitives** in `@jiku/kit/ui`: `defineMountable<C>(Component)`,
+  `usePluginQuery` / `usePluginMutation` (plain useState/useEffect hooks —
+  plugin-React-instance agnostic), layout wrappers.
+- **Auto-discovery gateway** in `@jiku/core`: `discoverPluginsFromFolder(root)`
+  replaces hardcoded `sharedLoader.register(X)` calls. Server scans `plugins/`
+  at boot.
+- **Studio host anchor** (`@jiku-plugin/studio`) — pure-types no-op plugin
+  using the plugin system's native `contributes` / `depends`. Exports
+  `StudioComponentProps` for typed `ctx.studio.api` in UI components.
+  **No TypeScript module augmentation.**
+- **Connector built-in** — `plugins/jiku.connector/` deleted; connector API
+  is now part of `@jiku-plugin/studio.contributes`. Runtime wired by server
+  context-extender via the existing `connector:register` hook.
+- **CLI** (`apps/cli/`, binary `jiku`): commander + Ink. Commands: `list`,
+  `info`, `build` (cwd-aware), `watch` (cwd-aware), `create` (scaffold).
+  Placeholder namespaces `agent`, `db`, `dev`.
+- **Hardened asset serving**: HMAC signed URLs (10 min TTL, `JWT_SECRET`),
+  in-memory IP rate limiter (120 req/min), prod `.map` gate, path-traversal
+  guard, CORS/nosniff/CORP headers.
+- **Plugin UI provider moved to `studio/layout.tsx`** so both sidebar and
+  project tree see the registry (previously inside project layout only, which
+  left sidebar outside the context).
+- **Active Plugins tab split** into System / Project sections with sticky
+  headers.
+- **Demo plugin** `@jiku/plugin-analytics` with `depends: [StudioPlugin]`,
+  HTTP handlers, tool, and UI that exercises `usePluginQuery`,
+  `ctx.tools.invoke`, `ctx.ui.toast`, `ctx.studio.api.get(...)`.
+- **Reverted** the previous `jiku.cron` UI experiment — it now matches its
+  pre-Plan-17 state.
+- **DB**: `plugin_audit_log` table, `project_plugins.granted_permissions` +
+  `ui_api_version` columns (migration `0010_plugin_ui.sql`).
+- **Relaxed `ContributesValue = object`** in `@jiku/types` so specific
+  interfaces (like `StudioContributes`) satisfy the constraint without
+  requiring an index signature.
+
+**Files touched** (notable):
+- `packages/kit/src/ui/**`, `packages/types/src/plugin-ui.ts`,
+  `packages/core/src/plugins/{discover.ts,loader.ts}`.
+- `plugins/jiku.studio/**` (new), `plugins/jiku.analytics/**` (new),
+  `plugins/jiku.connector/` (deleted), `plugins/jiku.telegram/**` (depends
+  + dep swap).
+- `apps/studio/server/src/routes/{plugin-assets,plugin-ui}.ts`,
+  `apps/studio/server/src/plugins/ui/**`,
+  `apps/studio/server/src/plugins/narration.ts` (new),
+  `apps/studio/server/src/index.ts` (asset router ordering, discovery).
+- `apps/studio/web/lib/plugins/**`,
+  `apps/studio/web/components/plugin/**`,
+  `apps/studio/web/app/(app)/studio/layout.tsx`,
+  `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/{plugin-pages,plugins/inspector}/**`.
+- `apps/cli/**` (new workspace app).
+- `apps/studio/db/src/schema/{plugin_audit_log.ts,plugins.ts}`,
+  `apps/studio/db/src/queries/plugin_audit.ts`,
+  `apps/studio/db/src/migrations/0010_plugin_ui.sql`.
+- Docs: `docs/plugin-dev/{overview,cli,context-api,slots,security}.md`,
+  `docs/feats/plugin-ui.md`, impl report at
+  `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.
+
+See that impl report for the final architecture, security model, and
+deferred follow-ups (third-party sandboxing, `ctx.files`/`ctx.secrets`/
+`ctx.api.stream` wiring).
+
 ## 2026-04-10 — Plan 16-FS-Revision-V2: Filesystem production-scale revision
 
 **Shipped:** All 8 phases of the filesystem revision. Plan 14's virtual filesystem

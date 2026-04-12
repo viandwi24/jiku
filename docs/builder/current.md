@@ -1,4 +1,53 @@
-## Phase
+## Phase (2026-04-12) — Plan 17: Plugin UI System (final)
+
+Full isolated Plugin UI runtime shipped. All 6 milestones + post-ship
+revisions landed. Details in
+`docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.
+
+Final architecture:
+- **Isolated bundles** — each plugin built with tsup, carries its own React,
+  loaded via opaque dynamic URL import, mounted into host-provided `<div>`.
+- **Auto-discovery gateway** — server scans `plugins/` at boot,
+  dynamic-imports each entry, registers via shared loader. No hardcoded
+  plugin list anywhere (except `NarrationPlugin`, server-internal).
+- **Studio host anchor** (`@jiku-plugin/studio`) — pure-types no-op plugin.
+  Plugins `depends: [StudioPlugin]` to get typed `ctx.http` / `ctx.events`
+  / `ctx.connector` via the plugin system's native `contributes`/`depends`
+  mechanism (NOT module augmentation). UI components use `StudioComponentProps`
+  for typed `ctx.studio.api`.
+- **`apps/cli/` (binary `jiku`)** — commander + Ink. Plugin management
+  tooling completely isolated from studio server/web runtime — tsup, Ink,
+  commander deps never leak to client bundle.
+- **Hardened asset serving** — HMAC-signed URLs (10 min TTL, `JWT_SECRET`),
+  in-memory IP rate limiter (120 req/min), prod `.map` gate, path-traversal
+  guard, nosniff + CORP headers.
+- **Demo plugin** `@jiku/plugin-analytics` — exercises every ctx surface.
+- **First-party migrations**:
+  - `jiku.connector` deleted. Connector features now part of
+    `@jiku-plugin/studio.contributes`. Runtime via existing `connector:register`
+    hook in server context-extender.
+  - `jiku.telegram` → `depends: [StudioPlugin]`.
+  - `jiku.studio` (old, in-server) replaced by `plugins/jiku.studio/` anchor
+    + server-internal `apps/studio/server/src/plugins/narration.ts` for the
+    prompt-injection behavior.
+  - `jiku.cron` reverted to pre-Plan-17 state (no UI attached; built-in
+    cron backend is already the de-facto scheduler).
+
+### Pending user action
+- `bun install` at repo root — pickups all new workspace packages
+  (`@jiku-plugin/studio`, `@jiku/plugin-analytics`, `@jiku/cli`).
+- `cd apps/studio/db && bun run db:push` — adds `plugin_audit_log` table +
+  `project_plugins.granted_permissions` / `ui_api_version` columns.
+- `bun run jiku plugin build` — produce `plugins/*/dist/ui/*.js`.
+- Restart `apps/studio/server` + `apps/studio/web`.
+- In Studio → project → **Plugins** → enable **Analytics** to light up the
+  sidebar, project-page, settings-section slots + inspector.
+
+### Next up
+- Resume previous backlog — see `docs/builder/tasks.md`.
+- Plan 18 follow-ups for third-party plugin sandboxing.
+
+## Phase archived
 Idle / next backlog item. Plan 33 (Browser rebuild + unified attachment system)
 fully shipped on 2026-04-09 — see the impl report at
 `docs/plans/impl-reports/13-browser-implement-report.md`.

@@ -24,6 +24,7 @@ import {
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth.store'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { PluginSidebarSlot } from '@/components/plugin/plugin-sidebar-slot'
 import {
   Avatar,
   AvatarFallback,
@@ -203,6 +204,18 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Plan 17 — plugin sidebar slots */}
+        {projectId && projectData && user && (
+          <PluginSidebarSlot
+            projectId={projectId}
+            projectSlug={projectSlug}
+            projectName={projectData.name ?? projectSlug}
+            userId={user.id}
+            userPermissions={Array.from(permSet)}
+            base={base}
+          />
+        )}
       </SidebarContent>
 
       <SidebarFooter>

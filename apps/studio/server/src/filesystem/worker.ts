@@ -1,4 +1,4 @@
-import { eq, and, sql, lt } from 'drizzle-orm'
+import { eq, and, sql, lt } from '@jiku-studio/db'
 import { db, storage_cleanup_queue } from '@jiku-studio/db'
 import { getFilesystemService } from './factory.ts'
 

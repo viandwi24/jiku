@@ -19,6 +19,7 @@ import type {
   ConnectorSendResult,
   ConnectorContext,
   ConnectorAction,
+  PluginUIDefinition,
 } from '@jiku/types'
 
 export type {
@@ -38,6 +39,7 @@ export type {
   ConnectorSendResult,
   ConnectorContext,
   ConnectorAction,
+  PluginUIDefinition,
 }
 
 // Minimal ZodObject shape — avoids importing zod as a dep in kit
@@ -76,6 +78,7 @@ export function definePlugin<
   depends: Deps
   contributes?: Contributes<TContributes>
   configSchema?: ZodObjectLike<TConfigOutput>
+  ui?: PluginUIDefinition
   setup: (ctx: BasePluginContext & MergeContributes<Deps>) => void
   onActivated?: (ctx: CallerContext) => void | Promise<void>
   onDeactivated?: () => void | Promise<void>
@@ -92,6 +95,7 @@ export function definePlugin<
   depends?: never
   contributes?: Contributes<TContributes>
   configSchema?: ZodObjectLike<TConfigOutput>
+  ui?: PluginUIDefinition
   setup: (ctx: BasePluginContext) => void
   onActivated?: (ctx: CallerContext) => void | Promise<void>
   onDeactivated?: () => void | Promise<void>

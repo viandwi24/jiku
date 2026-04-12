@@ -25,6 +25,10 @@ export const project_plugins = pgTable('project_plugins', {
   enabled:      boolean('enabled').default(false),
   // Config validated by configSchema
   config:       jsonb('config').default({}),
+  // Plan 17 — permissions the user has granted this plugin at install time.
+  granted_permissions: jsonb('granted_permissions').default([]),
+  // Plan 17 — UI apiVersion the plugin was built against. Used for compat checks.
+  ui_api_version: varchar('ui_api_version', { length: 10 }),
   activated_at: timestamp('activated_at'),
   updated_at:   timestamp('updated_at').defaultNow(),
 }, t => [unique().on(t.project_id, t.plugin_id)])

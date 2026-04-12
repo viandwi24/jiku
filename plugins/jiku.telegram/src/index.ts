@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
 import type { ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
-import ConnectorPlugin from '@jiku/plugin-connector'
+import { StudioPlugin } from '@jiku-plugin/studio'
 import type { Bot } from 'grammy'
 import { getFileByPath } from '@jiku-studio/db'
 
@@ -417,7 +417,7 @@ export default definePlugin({
     icon: 'telegram',
     category: 'channel',
   },
-  depends: [ConnectorPlugin],
+  depends: [StudioPlugin],
   setup(ctx) {
     ctx.connector.register(telegramAdapter)
   },

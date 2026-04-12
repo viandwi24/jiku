@@ -1,6 +1,6 @@
 import nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { eq, and, like, or, sql } from 'drizzle-orm'
+import { eq, and, like, or, sql } from '@jiku-studio/db'
 import { db } from '@jiku-studio/db'
 import {
   getFilesystemConfig,

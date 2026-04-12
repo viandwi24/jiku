@@ -27,6 +27,8 @@ export function ActivePlugins({ projectId }: ActivePluginsProps) {
   })
 
   const activePlugins = (data?.plugins ?? []).filter(p => p.enabled)
+  const systemPlugins = activePlugins.filter(p => !p.project_scope)
+  const projectPlugins = activePlugins.filter(p => p.project_scope)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = activePlugins.find(p => p.id === selectedId) ?? activePlugins[0] ?? null
 
@@ -68,26 +70,23 @@ export function ActivePlugins({ projectId }: ActivePluginsProps) {
 
   return (
     <div className="flex h-full">
-      {/* Left — plugin list */}
+      {/* Left — plugin list, split into System + Project sections. */}
       <div className="w-56 shrink-0 border-r flex flex-col">
         <ScrollArea className="flex-1">
-          {activePlugins.map(plugin => (
-            <button
-              key={plugin.id}
-              onClick={() => setSelectedId(plugin.id)}
-              className={cn(
-                'w-full flex items-center gap-2.5 px-3 py-2.5 text-left border-b border-border/40',
-                'hover:bg-muted/50 transition-colors',
-                (selected?.id === plugin.id) && 'bg-muted border-l-2 border-l-primary',
-              )}
-            >
-              <div className="h-2 w-2 rounded-full shrink-0 bg-green-500" />
-              <div className="min-w-0">
-                <p className="text-sm font-medium truncate">{plugin.name}</p>
-                <p className="text-xs text-muted-foreground truncate">{plugin.id} v{plugin.version}</p>
-              </div>
-            </button>
-          ))}
+          <PluginGroup
+            label="System"
+            description="Always active — provides Studio built-ins."
+            plugins={systemPlugins}
+            selectedId={selected?.id}
+            onSelect={setSelectedId}
+          />
+          <PluginGroup
+            label="Project"
+            description="Enabled for this project only."
+            plugins={projectPlugins}
+            selectedId={selected?.id}
+            onSelect={setSelectedId}
+          />
         </ScrollArea>
       </div>
 
@@ -104,6 +103,48 @@ export function ActivePlugins({ projectId }: ActivePluginsProps) {
         )}
       </div>
     </div>
+  )
+}
+
+interface PluginGroupProps {
+  label: string
+  description: string
+  plugins: PluginItem[]
+  selectedId: string | undefined
+  onSelect: (id: string) => void
+}
+
+function PluginGroup({ label, description, plugins, selectedId, onSelect }: PluginGroupProps) {
+  if (plugins.length === 0) return null
+  return (
+    <section>
+      <header className="sticky top-0 z-10 bg-background/95 backdrop-blur px-3 pt-3 pb-1.5 border-b border-border/40">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {label}
+          </h3>
+          <span className="text-[10px] text-muted-foreground">{plugins.length}</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground/70 leading-snug">{description}</p>
+      </header>
+      {plugins.map(plugin => (
+        <button
+          key={plugin.id}
+          onClick={() => onSelect(plugin.id)}
+          className={cn(
+            'w-full flex items-center gap-2.5 px-3 py-2.5 text-left border-b border-border/40',
+            'hover:bg-muted/50 transition-colors',
+            (selectedId === plugin.id) && 'bg-muted border-l-2 border-l-primary',
+          )}
+        >
+          <div className="h-2 w-2 rounded-full shrink-0 bg-green-500" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium truncate">{plugin.name}</p>
+            <p className="text-xs text-muted-foreground truncate">{plugin.id} v{plugin.version}</p>
+          </div>
+        </button>
+      ))}
+    </section>
   )
 }
 

@@ -6,7 +6,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@jiku/plugin-connector": "workspace:*",
+    "@jiku-plugin/studio": "workspace:*",
     "@jiku/kit": "workspace:*",
     "@jiku/types": "workspace:*",
     "@jiku-studio/db": "workspace:*",

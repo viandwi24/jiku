@@ -1,5 +1,70 @@
 # Decisions
 
+## ADR-040 — Plugin UI asset serving: signed URLs instead of per-request auth
+
+**Context:** Plugin UI bundles are served at `/api/plugins/:id/ui/*.js` and loaded by the browser via dynamic `import(url)`. Dynamic import cannot attach an `Authorization` header, so the endpoint must either be public or carry auth inside the URL. A naive public endpoint exposes enumeration, DoS, and accidental-secret-leak risk.
+
+**Decision:** **HMAC-signed URLs with 10-minute TTL.** The authed `ui-registry` endpoint mints `?sig=<HMAC>&exp=<epoch>` over `(pluginId, file, exp)` using `JWT_SECRET`. The asset router (`apps/studio/server/src/routes/plugin-assets.ts`) verifies the signature before streaming. Signatures are bound to a specific file; URL replay for a different asset is rejected. Complemented by an in-memory 120 req/min per-IP rate limiter and a `.map` serving gate (404 in production). `.map` files in dev are served unsigned so DevTools can fetch them (still rate-limited + path-traversal-guarded). See `docs/plugin-dev/security.md` for the full threat model + operator notes.
+
+**Consequences:**
+- Public URL but not anonymous — every served request traces back to a registry fetch during an authed session.
+- TanStack Query `staleTime: 30s` on ui-registry keeps sigs rotated before expiry.
+- Plugin bundles are still readable by any authed Studio user (signed URL ≠ per-user ACL); the do-not-do checklist in `docs/plugin-dev/security.md` makes this explicit.
+- `JWT_SECRET` must be a strong random value in production — documented.
+
+## ADR-039 — Plugin UI dev tooling lives in `apps/cli`, not `@jiku/kit`
+
+**Context:** Plan 17 needs a developer CLI (build, watch, scaffold plugins, inspect manifest). Putting the code in `@jiku/kit` would work, but `@jiku/kit` is imported by the web client — anything shipped there is a potential client bundle inclusion. The CLI depends on tsup, Ink, commander, child_process — all Node-only, all dev-time. Leaking them to the browser bundle is wrong on principle and wastes bytes in practice.
+
+**Decision:** New workspace app at `apps/cli/` (package `@jiku/cli`, binary `jiku`). Depends only on `@jiku/core` + `@jiku/types` + dev-time libs (commander, Ink, tsup, React for Ink). Apps/studio/server and apps/studio/web do NOT depend on it. Root `package.json` exposes `bun run jiku` as a convenience runner.
+
+Commands: `jiku plugin list|info|build|watch|create`, interactive Ink TUI as default entry. Placeholder namespaces (`agent`, `db`, `dev`) reserved for future growth.
+
+**Consequences:**
+- Zero risk of tsup/Ink/commander leaking to client.
+- CLI can grow into a general Jiku dev tool beyond plugin management without disturbing runtime packages.
+- `build` / `watch` detect cwd: running from inside a plugin folder scopes to that plugin; from the root, all plugins.
+- The old `build:plugins` / `watch:plugins` root scripts removed — one obvious way to do it.
+
+## ADR-038 — `@jiku-plugin/studio` uses `contributes`/`depends`, not TS module augmentation
+
+**Context:** Studio-host-specific ctx fields (`ctx.http`, `ctx.events`, `ctx.connector`, and UI-side `ctx.studio.api`) shouldn't live in `@jiku/types` because that package is host-agnostic shared runtime types. A naive first attempt used `declare module '@jiku/types'` augmentation inside `@jiku-plugin/studio` to add these fields. This worked but (a) bypassed the plugin system's existing `contributes` mechanism, which already does exactly this, and (b) is harder to discover via IDE navigation and TS error messages.
+
+**Decision:** Use the plugin system's native `contributes` + `depends` inference. `@jiku-plugin/studio` declares `contributes: () => ({} as unknown as StudioContributes)` — an empty object at runtime but typed as `{ http, events, connector }`. Plugins that `depends: [StudioPlugin]` get `MergeContributes<Deps>` applied to their `setup(ctx)` parameter, so `ctx.http` / `ctx.events` / `ctx.connector` are typed and non-optional.
+
+Runtime values continue to come from the Studio server's context-extender (`apps/studio/server/src/plugins/ui/context-extender.ts`) — per-plugin HTTP handler maps, event emitters, connector register closures. The loader's spread order `{ ...extended, ...mergedFromDeps }` means contributes's empty object does NOT clobber the extender's real bindings.
+
+Browser-side: `@jiku-plugin/studio` exports `StudioPluginContext = PluginContext & { studio: PluginStudioHost }` and `StudioComponentProps = PluginComponentProps<StudioPluginContext>`. Plugin UI authors type their components with `StudioComponentProps` — the generic on `defineMountable<C>` infers `C = StudioPluginContext` automatically.
+
+Also required a one-line relaxation: `ContributesValue = object` (was `Record<string, unknown>`) in `@jiku/types`, so concrete interfaces like `StudioContributes` satisfy the constraint without needing an index signature.
+
+**Consequences:**
+- Types flow through the same mechanism as plugin dependencies — one thing to learn, not two.
+- `depends: [StudioPlugin]` doubles as a runtime dependency signal: if a host doesn't have the extender, `ctx.http` is still typed but undefined at runtime — plugins can (and should) use optional-chaining for portability.
+- Connector functionality (`ctx.connector.register`) moved from `plugins/jiku.connector/` into `@jiku-plugin/studio.contributes`; that plugin was deleted. Telegram's `depends: [ConnectorPlugin]` became `depends: [StudioPlugin]`.
+
+## ADR-037 — Plugin UI runtime isolation: tsup bundles + own React + dynamic URL import
+
+**Context:** The original Plan 17 spec called for ESM native + import map + dynamic `import(url)` + Vite preset + per-plugin SRI. The first implementation cut corners with a "workspace component registry" (ADR-PLUG-17-A): plugin UI modules imported as TS source into Studio's Next.js build, tree-shaken by Next, resolved at render via a string → lazy-import map. This worked but **coupled plugin TS errors to Studio's build** — a type error in a plugin broke `next build`. Not acceptable.
+
+**Decision:** Commit to the spec's isolation pattern. Each plugin:
+
+1. Has a `tsup.config.ts` that builds `src/ui/*.tsx → dist/ui/*.js` as self-contained ESM with `noExternal: [/^@jiku\//, /^@jiku-plugin\//, 'react', 'react-dom', 'react-dom/client']`. The bundle carries its OWN React + ReactDOM + `@jiku/kit/ui` copies.
+2. Default-exports a `Mountable = { mount(el, ctx, meta, subPath) => unmount }` via `defineMountable(Component)`. The host creates a `<div>` and calls `mount(el, ctx, ...)`, which spins up a separate React root inside that div.
+3. Registry manifest (`GET /api/plugins/ui-registry`) includes `assetUrl` pointing to `/api/plugins/:id/ui/<module>.js` (served from `plugins/<id>/dist/ui/`).
+4. Studio web loads the bundle via opaque dynamic import: `new Function('u', 'return import(u)')(url)` — bypasses Turbopack's bundle-time resolver so the URL stays runtime-only.
+
+Guarantees:
+- **Build isolation.** Studio's Next.js never touches plugin source — plugin TS errors can't break Studio's build.
+- **Runtime isolation.** Plugin's own React instance means a render crash is caught by the host `PluginErrorBoundary` at the island boundary. Studio's React tree stays clean.
+- **Hot reload.** `invalidatePlugin(id)` in `mount-runtime.ts` bumps a per-plugin counter; `usePluginBustVersion(id)` subscribes via `useSyncExternalStore`; all islands of that plugin re-fetch a fresh bundle on next render. Zero Studio restart.
+
+**Consequences:**
+- Each plugin bundle carries ~50KB React. Acceptable for isolation; first-party plugins ship few bundles.
+- Context hooks like `usePluginQuery` are implemented with plain `useState` + `useEffect` (not TanStack Query) so they work with the plugin's own React instance — no cross-instance context sharing.
+- `ctx` is passed as a plain object to the mount call (not via React context), since cross-React-instance context is impossible.
+- ADR-PLUG-17-A (workspace component registry) is **superseded** — its `registerPluginComponent` / `lib/plugins/built-in.ts` barrel was removed.
+
 ## ADR-036 — Browser concurrency: per-project mutex + per-agent tab affinity
 
 **Context:** With Plan 33 shipped, the browser tool became usable end-to-end

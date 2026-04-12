@@ -8,6 +8,10 @@
     "apps/studio/*",
     "plugins/*"
   ],
+  "scripts": {
+    "jiku": "bun apps/cli/src/index.ts",
+    "cli": "bun apps/cli/src/index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^25.5.2"

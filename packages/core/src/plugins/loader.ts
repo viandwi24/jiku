@@ -50,6 +50,13 @@ export class PluginLoader implements PluginLoaderInterface {
   // Global hook listeners: event → handlers[]
   private globalHookListeners = new Map<string, Array<(payload: unknown) => Promise<void>>>()
 
+  /** Plan 17 — host-provided extender that adds fields (e.g. http, events) to each plugin's setup ctx. */
+  private contextExtender: ((pluginId: string, baseCtx: BasePluginContext) => BasePluginContext) | null = null
+
+  setContextExtender(fn: (pluginId: string, baseCtx: BasePluginContext) => BasePluginContext): void {
+    this.contextExtender = fn
+  }
+
   setStorage(storage: JikuStorageAdapter): void {
     this.storage = storage
   }
@@ -179,7 +186,8 @@ export class PluginLoader implements PluginLoaderInterface {
         storage: pluginStorage,
       }
 
-      const ctx = { ...baseCtx, ...mergedFromDeps } as BasePluginContext & Record<string, unknown>
+      const extended = this.contextExtender ? this.contextExtender(pluginId, baseCtx) : baseCtx
+      const ctx = { ...extended, ...mergedFromDeps } as BasePluginContext & Record<string, unknown>
       node.def.setup(ctx)
 
       // Register tools with plugin_id tracking

@@ -10,6 +10,9 @@ import { credentialsRouter } from './routes/credentials.ts'
 import { chatRouter } from './routes/chat.ts'
 import { previewRouter } from './routes/preview.ts'
 import { pluginsRouter } from './routes/plugins.ts'
+import { pluginUiRouter } from './routes/plugin-ui.ts'
+import { pluginAssetsRouter } from './routes/plugin-assets.ts'
+import { extendPluginContext } from './plugins/ui/context-extender.ts'
 import { memoryRouter } from './routes/memory.ts'
 import { personaRouter } from './routes/persona.ts'
 import connectorsRouter from './routes/connectors.ts'
@@ -29,11 +32,11 @@ import { runtimeManager } from './runtime/manager.ts'
 import { startBrowserTabCleanup } from './browser/tab-manager.ts'
 import { startStorageCleanupWorker } from './filesystem/worker.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
-import { JikuStudioPlugin } from './plugins/jiku.studio.ts'
+import { NarrationPlugin } from './plugins/narration.ts'
 import { connectorRegistry } from './connectors/registry.ts'
-import { PluginLoader } from '@jiku/core'
-import ConnectorPlugin from '@jiku/plugin-connector'
-import TelegramPlugin from '@jiku/plugin-telegram'
+import { PluginLoader, discoverPluginsFromFolder } from '@jiku/core'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
 
@@ -48,6 +51,12 @@ app.use(express.json())
 app.use('/api', attachmentsRouter)
 app.use('/', attachmentsRouter)  // /files/view proxy is at root level
 
+// Plan 17 — plugin UI asset router is PUBLIC (no auth) and must be registered
+// BEFORE any router that calls `router.use(authMiddleware)` globally, otherwise
+// unauth'd dynamic-import requests get 401'd by the first such router they hit
+// before they can fall through here.
+app.use('/api', pluginAssetsRouter)
+
 app.use('/api/auth', authRouter)
 app.use('/api/companies', companiesRouter)
 app.use('/api', projectsRouter)
@@ -57,6 +66,7 @@ app.use('/api', conversationsRouter)
 app.use('/api', credentialsRouter)
 app.use('/api', chatRouter)
 app.use('/api', previewRouter)
+app.use('/api', pluginUiRouter)
 app.use('/api', pluginsRouter)
 app.use('/api', memoryRouter)
 app.use('/api', personaRouter)
@@ -98,14 +108,28 @@ async function bootstrap() {
 
   const sharedLoader = new PluginLoader()
 
+  // Plan 17 — attach http + events API to each plugin's setup ctx.
+  sharedLoader.setContextExtender(extendPluginContext)
+
   // Listen for connector:register hook — any plugin calling this registers its adapter
   sharedLoader.onHook('connector:register', async (adapter) => {
     connectorRegistry.register(adapter as import('@jiku/kit').ConnectorAdapter)
   })
 
-  sharedLoader.register(JikuStudioPlugin)
-  sharedLoader.register(ConnectorPlugin)
-  sharedLoader.register(TelegramPlugin)
+  // Plan 17 — plugin auto-discovery gateway. All plugins under `plugins/` are
+  // scanned + dynamic-imported, INCLUDING the `jiku.studio` host anchor plugin.
+  // Adding a new plugin = drop a folder here with a valid package.json +
+  // default-exported PluginDefinition. Server reboot picks it up; UI loads
+  // its bundle via /api/plugins/:id/ui/*.
+  const __filename = fileURLToPath(import.meta.url)
+  const PLUGINS_ROOT = join(dirname(__filename), '..', '..', '..', '..', 'plugins')
+  const discovered = await discoverPluginsFromFolder(PLUGINS_ROOT)
+  for (const p of discovered) sharedLoader.register(p.def)
+  console.log(`[jiku] Plugin discovery: ${discovered.length} plugin(s) from ${PLUGINS_ROOT}`)
+
+  // Internal Studio-only plugins (not auto-discovered; these carry Studio
+  // product behavior, not generic plugin types).
+  sharedLoader.register(NarrationPlugin)
   await seedPluginRegistry(sharedLoader)
   runtimeManager.setPluginLoader(sharedLoader)
 

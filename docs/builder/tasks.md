@@ -1,12 +1,25 @@
 ## Backlog
 
-- [ ] Plan 17 — Cron Task System improvements (schedule_paused state, timezone support, run history pagination)
-- [ ] Verify Telegram bot responds end-to-end (test: send message → typing indicator → get_datetime tool call → MarkdownV2 response)
-- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies all pending schema changes (filesystem, attachments, persona_prompt, etc.)
-- [ ] Register jiku.cron and jiku.skills plugins in server bootstrap (plugins exist at plugins/jiku.cron + plugins/jiku.skills)
-- [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/` — now that components live in @jiku/ui
+### Plan 17 follow-ups
+- [ ] Plan 18 — third-party plugin sandboxing (iframe origin isolation, code signing, per-publisher keys, per-user permission grants, bundle SRI)
+- [ ] Wire `ctx.files.*` to filesystem service (currently stubbed — returns empty)
+- [ ] Wire `ctx.secrets.*` to credentials vault (currently throws)
+- [ ] Implement `ctx.api.stream` (SSE streaming from plugin server to UI)
+- [ ] Client-side `ctx.events.on` subscription (EventSource with query-string token similar to signed-URL flow)
+- [ ] `ctx.ui.openModal` / `global.modal` slot host
+- [ ] Rate-limit per plugin × user (complement to per-IP limiter on asset router)
+- [ ] Bundle-size budget enforcement (warn on > 50KB, error on > 200KB gzipped)
+- [ ] axe-core a11y CI check for plugin slot variations
+- [ ] Add `jiku plugin reload <id> --project <p>` CLI command (needs server-side invalidate endpoint)
+- [ ] Migrate `jiku.skills` / `jiku.social` to contribute UI entries (pattern now trivial)
+
+### Other
+- [ ] Cron Task System nice-to-haves (schedule_paused state, timezone support, run history pagination)
+- [ ] Verify Telegram bot responds end-to-end after `depends: [StudioPlugin]` switch (test: send message → typing indicator → get_datetime tool call → MarkdownV2 response)
+- [ ] DB migration: `cd apps/studio/db && bun run db:push` — applies Plan 17 migration plus any previously pending (filesystem, attachments, persona_prompt)
+- [ ] Update `apps/studio/web` to import from `@jiku/ui` instead of local `@/components/ui/` and `@/components/ai-elements/`
 - [ ] Add `NEXT_PUBLIC_API_URL` to web `.env.local` (WS_URL no longer needed)
-- [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller
+- [ ] Test suite — unit tests for resolveScope, checkAccess, PluginLoader, resolveCaller, `discoverPluginsFromFolder`, `signAsset` / `verifyAsset`
 - [ ] Invite member feature (currently only owner can be member)
 - [ ] Agent Tools tab — currently placeholder "coming soon", needs real tool assignment UI
 - [ ] `extractPersonaPostRun()` — auto-extract persona signals after conversation (implemented but needs keyword tuning)
@@ -14,6 +27,7 @@
 
 ## Done
 
+- [x] Plan 17 — Plugin UI System (full): isolated runtime (tsup bundles + dynamic URL import + own React), auto-discovery loader, `apps/cli` (commander + Ink), `@jiku-plugin/studio` host anchor via native contributes/depends, signed-URL + rate-limit + prod .map gate on asset router, `jiku.analytics` demo plugin, Active Plugins tab split into System/Project sections, jiku.connector merged into Studio anchor, jiku.telegram switched to `depends: [StudioPlugin]` — completed 2026-04-12. See `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.
 - [x] Plan 16 — Cron Task System: full end-to-end (DB schema, scheduler, tools, REST API, web UI, expression preview) — completed 2026-04-07
 - [x] Memory System (Plan 8): core types, relevance scoring, builder, extraction, DB schema, server tools + routes, web browser + config UI — completed 2026-04-05
 - [x] Memory previewRun integration — memory section visible in context preview sheet — completed 2026-04-05

@@ -6,6 +6,8 @@ import { api } from '@/lib/api'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@jiku/ui'
 import { ActivePlugins } from '@/components/plugin/active-plugins'
 import { Marketplace } from '@/components/plugin/marketplace'
+import Link from 'next/link'
+import { Button } from '@jiku/ui'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -34,9 +36,16 @@ function PluginsPage({ params }: PageProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
-        <h1 className="text-lg font-semibold">Plugins</h1>
-        <p className="text-sm text-muted-foreground">Manage plugins for this project.</p>
+      <div className="flex items-start justify-between border-b px-6 py-4">
+        <div>
+          <h1 className="text-lg font-semibold">Plugins</h1>
+          <p className="text-sm text-muted-foreground">Manage plugins for this project.</p>
+        </div>
+        <Button variant="outline" size="sm" asChild>
+          <Link href={`/studio/companies/${companySlug}/projects/${projectSlug}/plugins/inspector`}>
+            Inspector
+          </Link>
+        </Button>
       </div>
 
       <Tabs defaultValue="active" className="flex-1 flex flex-col min-h-0">

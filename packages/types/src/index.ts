@@ -5,6 +5,13 @@
 export type AgentMode = 'chat' | 'task'
 
 // ============================================================
+// PLUGIN UI (Plan 17)
+// ============================================================
+
+export type { PluginUISlotId, PluginUIEntry, PluginUIDefinition } from './plugin-ui.ts'
+import type { PluginUIDefinition as _PluginUIDefinition } from './plugin-ui.ts'
+
+// ============================================================
 // CONVERSATION TYPES (Plan 11)
 // ============================================================
 
@@ -174,7 +181,10 @@ export interface PluginMeta {
 
 // --- Contributes ---
 
-export type ContributesValue = Record<string, unknown>
+// Any object shape a plugin can contribute. Must be an object; fields are
+// otherwise free-form. Kept intentionally permissive so specific interfaces
+// (like `{ http, events }`) are assignable without needing an index signature.
+export type ContributesValue = object
 
 /**
  * Factory that produces the contributed context.
@@ -240,6 +250,9 @@ export interface BasePluginContext {
   }
   hooks: HookAPI
   storage: PluginStorageAPI
+  // Host-specific extensions (e.g. Studio's `http` / `events`) are added via
+  // module augmentation by their owning host package (see `@jiku-plugin/studio`).
+  // Keeping @jiku/types host-agnostic.
 }
 
 /**
@@ -277,6 +290,8 @@ export interface PluginDefinition<
   onProjectPluginActivated?: (projectId: string, ctx: ProjectPluginContext<Record<string, unknown>>) => void | Promise<void>
   onProjectPluginDeactivated?: (projectId: string, ctx: ProjectPluginContext<Record<string, unknown>>) => void | Promise<void>
   onServerStop?: (ctx: BasePluginContext) => void | Promise<void>
+  /** Plan 17 — optional UI contributions (slots, components, pages). */
+  ui?: _PluginUIDefinition
 }
 
 // ============================================================

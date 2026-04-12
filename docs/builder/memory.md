@@ -401,6 +401,80 @@ Never return `{ type: 'text', text: 'Screenshot saved: /path...' }` from server 
 
 `modelCache.delete(cacheKey)` tidak bisa dilakukan di `finally` setelah `runtime.run()` karena stream di-consume setelah method return. Bungkus stream dalam custom `ReadableStream` yang delete cache key di: `done === true` (drain selesai) dan `cancel()` (client disconnect).
 
+## Plugin UI — Plan 17 gotchas
+
+### Plugin bundles run with their own React instance
+
+Each plugin is a self-contained ESM bundle (tsup) — bundles its own React + ReactDOM + `@jiku/kit/ui`. The host does not share its React instance with plugins. Consequences:
+
+- **Do not use React context across the host/plugin boundary.** Pass `ctx` as a plain prop (that's what `defineMountable` does).
+- **`usePluginQuery` / `usePluginMutation` in `@jiku/kit/ui` are plain `useState` + `useEffect`**, not TanStack Query. They work with any React instance. Do not rewrite them using Studio's query client.
+- **Host components use their own React.** `<Slot>` → `<SlotIsland>` → `<div ref>` + `useEffect(mount)` — Studio's React tree stops at the div; the plugin's React takes over inside.
+
+### Dynamic URL import must bypass the bundler
+
+Turbopack and webpack both try to resolve `import(someVar)` at build time. For plugin bundles loaded at runtime from `/api/plugins/:id/ui/*.js`, use:
+
+```ts
+const runtimeImport = new Function('u', 'return import(u)') as (u: string) => Promise<any>
+```
+
+in `apps/studio/web/lib/plugins/mount-runtime.ts`. Do not switch to a plain `import(url)` — the bundler will try to analyze it and fail.
+
+### tsup config must `noExternal` workspace + React
+
+tsup externalizes deps by default. Plugin bundles MUST force-bundle React + workspace packages or the browser gets bare-specifier imports it can't resolve:
+
+```ts
+noExternal: [/^@jiku\//, /^@jiku-plugin\//, 'react', 'react-dom', 'react-dom/client']
+```
+
+Without this: `Failed to resolve module specifier '@jiku/kit/ui'` in the browser.
+
+### Studio host types: `depends: [StudioPlugin]`, not TS augmentation
+
+Plugins that need `ctx.http` / `ctx.events` / `ctx.connector` declare `depends: [StudioPlugin]` (from `@jiku-plugin/studio`). Typed access comes from the plugin system's `MergeContributes<Deps>` — NOT from `declare module` augmentation. See ADR-038.
+
+For plugin UI components, import `StudioComponentProps` from `@jiku-plugin/studio` as the prop type:
+
+```tsx
+import type { StudioComponentProps } from '@jiku-plugin/studio'
+function Dashboard({ ctx }: StudioComponentProps) { ctx.studio.api.get(...) }
+export default defineMountable(Dashboard)
+```
+
+### `ContributesValue = object` (not `Record<string, unknown>`)
+
+In `@jiku/types`. A stricter constraint (with index signature) rejects concrete interfaces. Kept at `object` so any shape is acceptable; the inferred `TContributes` carries the narrow type through `MergeContributes` unchanged.
+
+### Plugin asset router must be registered BEFORE authed routers
+
+In `apps/studio/server/src/index.ts`, `pluginAssetsRouter` must come before any router that calls `router.use(authMiddleware)` globally. Otherwise the first authed router 401's the unauth'd browser dynamic-import request, and the request never falls through to the public asset handler. Signature-based auth at the asset router is the only gate; prior routers must not pre-empt.
+
+### Plugin asset URLs are signed (HMAC) with `JWT_SECRET`
+
+Registry (authed) mints `?sig=<HMAC>&exp=<epoch>` per file; asset router verifies. TTL 10 min. TanStack Query `staleTime: 30s` keeps sigs rotated. If adding a reload-bust param, use `&` (not `?`) since the URL already carries a query string.
+
+### Plugin UI provider lives at `studio/layout.tsx`
+
+`PluginUIProvider` MUST wrap both sidebar + project tree. Putting it inside `projects/[project]/layout.tsx` leaves the sidebar (rendered by parent) outside the context and crashes `usePluginUIRegistry`. Use `useOptionalPluginUIRegistry()` defensively in shared sidebar components.
+
+### No `process.env.*` in plugin `src/ui/*`
+
+tsup inlines `process.env.*` at build time. The bundle is served via signed-but-shareable URL — any Studio-authed user can fetch + read it. Plugin authors MUST move any config into `src/index.ts` (server-side) and expose it through `ctx.http` handlers filtered per user.
+
+### Plugin loader auto-discovery; NarrationPlugin registered explicitly
+
+`apps/studio/server/src/index.ts` calls `discoverPluginsFromFolder('<repo>/plugins')` at boot — every subfolder with a valid `package.json` + default-exported `PluginDefinition` is loaded. The one exception is `NarrationPlugin` (`apps/studio/server/src/plugins/narration.ts`), registered explicitly because its behavior (baseline system-prompt injection) is Studio-product-specific, not plugin contract.
+
+Connector functionality (the `jiku.connector` plugin) is NO LONGER a separate plugin — it's part of `@jiku-plugin/studio`'s contributes. Runtime is wired via the existing `connector:register` hook in the context-extender.
+
+### `jiku` CLI is in `apps/cli/`, NOT in kit or server
+
+Plugin management tooling (commander + Ink + tsup) lives in `apps/cli/`. It's not imported by studio server or web — so tsup/Ink/commander can never leak into the client bundle. See ADR-039.
+
+Run via `bun run jiku ...`. `jiku plugin build` + `jiku plugin watch` are cwd-aware: inside a plugin folder → scope to that plugin; else all plugins with UI entries.
+
 ## Content attachment persistence pattern (Plan 33)
 
 Tool outputs (screenshots, exported data) should be persisted as attachments, not returned as base64 inline. Pattern:

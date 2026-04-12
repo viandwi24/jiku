@@ -1,15 +1,196 @@
 # Decisions
 
+## ADR-048 — Skills loader: DB is a cache, filesystem is the authority
+
+**Context:** Plan 15 stored skill content in DB. Plan 19 needed to accept external
+skill packages (from skills.sh, vercel-labs/agent-skills, GitHub repos, plugins
+contributing their own skills) which naturally live as folders with `SKILL.md`.
+Continuing DB-as-source made every external import a sync step with its own
+consistency problems. Alternative: drop DB entirely and scan filesystem per-request.
+
+**Decision:** `project_skills` becomes a **cache** of parsed manifests, not the
+source of truth. Unique key shifts from `(project_id, slug)` to
+`(project_id, slug, source)` to let FS and plugin sources coexist for the same
+slug. Columns added: `manifest` (jsonb), `manifest_hash`, `source` (`fs` or
+`plugin:<id>`), `plugin_id`, `active`, `last_synced_at`. SkillLoader syncs cache
+on project wakeUp and on plugin activate/deactivate. Entrypoint default bumped
+`'index.md'` → `'SKILL.md'` but legacy honored.
+
+**Consequences:**
+- Single source of truth = `/skills/<slug>/SKILL.md` content. Users can edit
+  skills via git, file explorer, or UI; all roads lead to the same file.
+- Cache-invalidation strategy: SHA-ish `manifest_hash` compared on sync. Simple
+  djb2 hash, not cryptographic — plenty for change detection.
+- Plugin deactivate sets `active=false` instead of deleting rows, so
+  `agent_skills` assignments survive re-activation.
+- Harder to query "all skills" without the loader warm — but `getActiveSkills()`
+  is a simple SQL query over the cache.
+- Backward compat: existing FS-only skills were already stored at
+  `/skills/<slug>/` since Plan 14, so no data migration needed.
+
+## ADR-047 — Dreaming model config: credential + model_id, not abstract tier
+
+**Context:** Plan 19 original spec proposed `model_tier: 'cheap' | 'balanced' | 'expensive'`
+with a project-level model router mapping tiers to concrete models. We don't have
+a project-level model router — models are resolved per-agent via `agent_credentials`.
+The initial implementation fell back to "use first agent's credential" which was
+a leaky abstraction: admin couldn't actually pick which model dreaming used.
+
+**Decision:** Replace `model_tier` with explicit `credential_id` + `model_id` at
+two levels: dreaming-level default, optional per-phase override. UI uses the
+same `CredentialSelector` + `ModelSelector` components as the agent LLM page,
+so the mental model is identical. Backend `resolveDreamingModel()` cascades
+phase → dreaming default → legacy first-agent fallback.
+
+**Consequences:**
+- Zero magic: user picks exactly the model dreaming runs on, with the same
+  provider-scoped credentials they already manage.
+- Per-phase override stays in the schema but is NOT exposed in UI yet (YAGNI
+  until a real use case emerges — most teams want the same model for all phases).
+- Legacy fallback means existing projects without `credential_id` keep working;
+  they see a quiet warning in server logs and the admin can set credential when
+  they open the tab.
+- `DreamingModelTier` export retained in `@jiku/types` as `@deprecated` so
+  external callers (unlikely but possible) don't hard-break.
+
+## ADR-046 — Reflection trigger counts user turns, not LLM steps
+
+**Context:** `FinalizeHook` fires per-run (one user message → one assistant
+response = one run). The reflection handler was configured with
+`min_conversation_turns` and initially passed `steps.length` (internal LLM
+step count including tool calls) as `turn_count`. Result: a conversation with
+5 user messages never reached the threshold because each run only had 1-2
+steps. Alternative: count conversation turns in the finalize hook and pass as
+payload.
+
+**Decision:** Handler re-fetches `getMessages(conversation_id)` from DB and
+counts `role='user'` rows directly. Payload `turn_count` field removed.
+Idempotency key changed from `reflection:<conv>:<turns>` to
+`reflection:<conv>:<minuteBucket>` to prevent multiple fires per minute while
+still allowing growing conversations to re-reflect.
+
+**Consequences:**
+- Semantics match user mental model: "at least 3 messages before reflecting".
+- One extra `getMessages()` per reflection — acceptable (this path is already
+  off the request critical path).
+- Minute-bucket idempotency is coarser than per-turn but correct: multiple
+  fast-succeeding runs in the same minute are de-duped; over time, the handler
+  still runs and the semantic dedup (cosine ≥ 0.9 against existing reflective
+  memories) prevents duplicate insertion even across minute boundaries.
+
+## ADR-045 — Universal `recordLLMUsage` helper, no per-caller ad-hoc logging
+
+**Context:** Post-Plan 19, LLM calls happen from 7+ places: chat runner, task
+runner, title gen, reflection handler, dreaming (×3 phases), and soon
+plugin-invoked calls. Before, only the chat route persisted `usage_logs` (task
+runner didn't log at all). Without a central helper, each caller would roll
+its own DB insert and the cost dashboard would quietly under-report.
+
+**Decision:** Single fire-and-forget helper at
+`apps/studio/server/src/usage/tracker.ts#recordLLMUsage()`. Accepts a
+`source` enum (`chat` | `task` | `title` | `reflection` | `dreaming.{light,deep,rem}`
+| `flush` | `plugin:<id>` | `custom`), optional `agent_id`/`conversation_id`,
+required-when-known `project_id`, provider/model, token counts, duration,
+and optional raw prompt/messages. Schema migration `0014_plan19_usage_logs_expand.sql`
+makes `agent_id`+`conversation_id` nullable and adds `project_id` + `source` +
+`duration_ms`. Convention codified in `docs/builder/memory.md` — new LLM paths
+MUST use this helper or the cost dashboard silently under-reports.
+
+**Consequences:**
+- Project-level usage totals now cover background jobs and plugin-invoked
+  calls. Union query in `getUsageLogsByProject` matches by `project_id` OR
+  agent FK to handle both legacy rows and new null-agent rows.
+- Raw system prompt + messages captured for debug — Raw Data dialog in UI
+  surfaces the actual LLM exchange.
+- Duration tracked → UI can show speed per source and catch pathological slow
+  calls.
+- Agent-scoped `/agents/:id/usage` page intentionally does NOT union null-agent
+  rows — that view is agent-specific by definition. Project page is the
+  all-sources view.
+
+## ADR-044 — Background LLM jobs use durable queue, never inline enqueue + handler
+
+**Context:** Reflection, dreaming, and compaction-flush all run LLM calls that
+take seconds-to-minutes. Running them inline on the chat response path would
+hold the user stream open. In-memory fire-and-forget (`setImmediate` / unawaited
+promise) risks losing work on crash. Alternative durable approaches: external
+queue (Bull/BullMQ/Redis), pg_cron, or a simple `background_jobs` table with
+a tick-based worker.
+
+**Decision:** New `background_jobs` table + in-process `BackgroundWorker` class.
+Worker ticks every 5s, atomically claims one pending job via
+`UPDATE ... WHERE id = (SELECT id ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`,
+runs the registered handler for that type, marks completed or retries with 30s
+backoff (up to `max_attempts=3`). `enqueueAsync()` only INSERTs — the caller
+never awaits handler execution. Runner is required to close its stream BEFORE
+calling enqueue. Documented as HARD RULE in `docs/feats/memory.md` "Background
+Jobs Contract".
+
+**Consequences:**
+- Zero user-visible latency from reflection/dreaming — measured `finalize()`
+  completion is DB-INSERT time only.
+- Jobs survive crash; worker resumes on next boot. Attempts/backoff/error
+  stored on row.
+- SKIP LOCKED is safe under multiple worker instances (future scale-out),
+  though we run single-instance today.
+- Idempotency keys on `memory.flush` (content-hash) and `memory.reflection`
+  (minute-bucket) prevent duplicate work from retry storms or rapid-succession
+  enqueues.
+- No external Redis dependency — aligns with self-hosted Dokploy target.
+- Trade-off: pg-as-queue doesn't scale to 1000+ jobs/sec, but at that scale
+  we'd already need rearchitecture anyway.
+
+## ADR-043 — Settings navigation: vertical sidebar with Access Control grouping
+
+**Context:** Settings had 7 horizontal tabs (General, Credentials, Permissions, Policies, MCP, Plugin Permissions, Audit Log) after Plan 18 landed. Admins had trouble reasoning about overlap between Policies (runtime rule engine) and Plugin Permissions (static capability grants) because they were presented as peer tabs with no visual relationship, and Members/Roles/Agent Access lived as internal sub-tabs of one "Permissions" page — invisible from the top nav.
+
+**Decision:** Replace the horizontal Tabs bar with a **GitHub-style vertical sidebar** (`settings/layout.tsx`). Three groups with uppercase mini-headings:
+
+- **Project** — General, Credentials, MCP Servers
+- **Access Control** — Members, Roles, Agent Access, Policies, Plugin Permissions
+- **Observability** — Audit Log
+
+Memory and Filesystem configs intentionally excluded from Settings — they already live on dedicated `/memory` and `/disk` pages. Members / Roles / Agent Access stay on one URL (`/settings/permissions`) but the internal `<Tabs>` is now **URL-controlled** via `?tab=roles` / `?tab=agents`, so sidebar links deep-link and highlight the correct sub-tab.
+
+**Consequences:**
+- All permission-related configuration is discoverable in one visual group, with a clear semantic gradient (members → role → agent scope → runtime rules → plugin capability).
+- Policies vs Plugin Permissions distinction becomes obvious by position alone — you see them in a single sidebar column, not two hops apart.
+- Internal state of `/settings/permissions` is now URL-synced — deep links into a specific sub-tab work and can be bookmarked.
+- Slight duplication in the sidebar (three links pointing at the same URL with different `?tab=`), but this is intentional — each feels like its own nav entry to the user.
+
+## ADR-042 — Plan 18 plugin permission model: per-member grant, not per-project
+
+**Context:** Plan 17 introduced a `project_plugins.granted_permissions` jsonb column, granting capabilities project-wide. Plan 18 required per-member enforcement so that e.g. "Jane can send Telegram messages but Bob cannot" within the same project. Option A: extend the jsonb blob with member filters. Option B: new normalized table.
+
+**Decision:** New table `plugin_granted_permissions(project_id, membership_id, plugin_id, permission, granted_by, created_at)` with unique constraint `(membership_id, plugin_id, permission)`. Enforcement lives in `packages/core/src/runner.ts` which checks `caller.granted_plugin_permissions` against `tool.meta.required_plugin_permission` before `execute()`; superadmin bypasses. `RuntimeManager.run()` enriches the caller with `getGrantedPluginPermissions(user_id, project_id)` + `membership.is_superadmin` on every run.
+
+**Consequences:**
+- Per-member granularity without reshaping the Plan 17 jsonb column — both coexist; the new table is the source of truth for Plan 18 enforcement.
+- Foreign key `membership_id` cascades on membership delete, so removed members automatically lose all grants.
+- `project_plugins.granted_permissions` is effectively deprecated as an enforcement mechanism going forward, but left in place for Plan 17 backwards compat. Consider dropping in a later sweep.
+- New `ToolMeta.required_plugin_permission` field is opt-in — tools without it bypass enforcement. This preserves the default-open behavior of existing tools until plugin authors explicitly mark sensitive ones.
+
+## ADR-041 — Plan 18 audit logging: new broad table, coexist with plugin_audit_log
+
+**Context:** Plan 17 shipped a `plugin_audit_log` table scoped to plugin actions (tool.invoke, file.write, secret.get, api.call). Plan 18 needs audit coverage for auth events, member changes, permission changes, broader filesystem events, agent lifecycle — none of which fit the plugin_id-keyed schema. Options: extend plugin_audit_log (make plugin_id nullable, rename), or introduce a second table.
+
+**Decision:** New table `audit_logs` with richer schema — `actor_type`, `resource_type` + `resource_id` + `resource_name`, structured `metadata jsonb`, plus `ip_address` + `user_agent`. All Plan 18 coverage writes to `audit_logs` via `insertAuditLog()` + the `audit.*` convenience helpers in `apps/studio/server/src/audit/logger.ts`. Tool invocations are captured here too via `ToolHooks` in the core runner. The old `plugin_audit_log` and its `writeAuditLog`/`listAuditLog` functions remain untouched — plugin-ui.ts still writes to them for backwards compat.
+
+**Consequences:**
+- Two audit tables during the transition. Read-side (`settings/audit` UI) only reads `audit_logs`; plugin-ui's own audit viewer still reads the old table. No migration/backfill between them.
+- Future cleanup: a later sweep can fold plugin_audit_log into audit_logs once the UI no longer depends on it — the `event_type` field already supports `tool.invoke` so the data shape is compatible.
+- Fire-and-forget writes — audit failures never block request flow, only log a warning. Trade: occasional missing log entries under DB pressure, versus never-failing user operations.
+
 ## ADR-040 — Plugin UI asset serving: signed URLs instead of per-request auth
 
 **Context:** Plugin UI bundles are served at `/api/plugins/:id/ui/*.js` and loaded by the browser via dynamic `import(url)`. Dynamic import cannot attach an `Authorization` header, so the endpoint must either be public or carry auth inside the URL. A naive public endpoint exposes enumeration, DoS, and accidental-secret-leak risk.
 
-**Decision:** **HMAC-signed URLs with 10-minute TTL.** The authed `ui-registry` endpoint mints `?sig=<HMAC>&exp=<epoch>` over `(pluginId, file, exp)` using `JWT_SECRET`. The asset router (`apps/studio/server/src/routes/plugin-assets.ts`) verifies the signature before streaming. Signatures are bound to a specific file; URL replay for a different asset is rejected. Complemented by an in-memory 120 req/min per-IP rate limiter and a `.map` serving gate (404 in production). `.map` files in dev are served unsigned so DevTools can fetch them (still rate-limited + path-traversal-guarded). See `docs/plugin-dev/security.md` for the full threat model + operator notes.
+**Decision:** **HMAC-signed URLs with 10-minute TTL.** The authed `ui-registry` endpoint mints `?sig=<HMAC>&exp=<epoch>` over `(pluginId, file, exp)` using `JWT_SECRET`. The asset router (`apps/studio/server/src/routes/plugin-assets.ts`) verifies the signature before streaming. Signatures are bound to a specific file; URL replay for a different asset is rejected. Complemented by an in-memory 120 req/min per-IP rate limiter and a `.map` serving gate (404 in production). `.map` files in dev are served unsigned so DevTools can fetch them (still rate-limited + path-traversal-guarded). See `docs/dev/plugin/security.md` for the full threat model + operator notes.
 
 **Consequences:**
 - Public URL but not anonymous — every served request traces back to a registry fetch during an authed session.
 - TanStack Query `staleTime: 30s` on ui-registry keeps sigs rotated before expiry.
-- Plugin bundles are still readable by any authed Studio user (signed URL ≠ per-user ACL); the do-not-do checklist in `docs/plugin-dev/security.md` makes this explicit.
+- Plugin bundles are still readable by any authed Studio user (signed URL ≠ per-user ACL); the do-not-do checklist in `docs/dev/plugin/security.md` makes this explicit.
 - `JWT_SECRET` must be a strong random value in production — documented.
 
 ## ADR-039 — Plugin UI dev tooling lives in `apps/cli`, not `@jiku/kit`

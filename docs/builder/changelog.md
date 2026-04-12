@@ -1,5 +1,186 @@
 # Changelog
 
+## 2026-04-12 — Plan 19 post-ship polish & bug fixes
+
+- **Memory browser clickable rows → detail/edit dialog.** Content / importance /
+  visibility editable via `PATCH /memories/:id`; immutable fields (scope, tier,
+  agent, type, source_type, health, timestamps) displayed read-only.
+- **Memory table columns for Type + Health.** Type badge color-coded per
+  `memory_type`; Health rendered as 0..1 progress bar with threshold colors
+  (green ≥0.8, amber ≥0.5, orange ≥0.2, red <0.2).
+- **Raw data capture in background LLM calls.** Reflection, title, and dreaming
+  (light/deep/rem) now include `raw_system_prompt` + `raw_messages` so the Raw
+  Data dialog on `/usage` shows the actual exchange, not `(not captured)`.
+- **Reflection handler fix.** Previously filtered on LLM internal `steps.length`
+  instead of conversation user-turn count → never triggered. Handler now
+  re-fetches messages and counts `role='user'` rows against
+  `min_conversation_turns`.
+- **SkillLoader fs.read unwrap fix.** `fs.read()` returns `{ content, version,
+  cached }` since Plan 16 v2, but loader passed the object to `parseSkillDoc()`
+  causing `content.match is not a function` for every FS skill sync. Applied
+  at all call sites in `loader.ts`.
+- **`/files/content` route fix.** Same class of bug — route was sending the
+  full wrapper object as `content` field to the frontend editor, breaking
+  both skills page and disk page editors (`value must be typeof string`).
+- **Usage page: Source column + filter + duration + color badges.** Source
+  filter dropdown surfaces chat / task / reflection / dreaming.* / flush /
+  title / plugin:*. Agent column shows `—` for background-job rows.
+- **Dreaming model picker replaced.** `model_tier: cheap|balanced|expensive`
+  dropped in favor of explicit `credential_id` + `model_id` (CredentialSelector
+  + ModelSelector — same pattern as agent LLM page). Legacy fallback to first
+  agent's credential preserved so old configs don't break silently.
+- **Cron input convention.** Dreaming phases + agent heartbeat now use
+  `CronExpressionInput` (cronstrue live preview + presets). Codified in
+  `docs/builder/memory.md`.
+- **Import parser accepts `npx skills add` command form.** Paste the full
+  `npx skills add https://github.com/owner/repo --skill name` (or `pnpx`/`bunx`,
+  with `-s`/`--skill=`/`--ref`/`--branch`/`--tag` flags) — parser extracts
+  URL + skill name and rebuilds canonical spec.
+- **skills.sh discovery convention.** Importer now follows vercel-labs resolver
+  order: literal path → `skills/<name>` → `skills/.curated/<name>` →
+  `.claude/skills/<name>` → etc. → recursive fallback. Error lists available
+  skill names in the repo when no match found.
+- **Preview context includes on-demand skill hint.** Previously skills XML hint
+  only appeared in the actual system prompt; preview missed it. Also reordered
+  preview segments to match `buildSystemPrompt` output exactly.
+- **Orphan `settings/memory/page.tsx` deleted.** Left over from first Dreaming
+  UI attempt, never wired to nav, had stale `model_tier` types that broke the
+  build.
+- **FK name length.** `plugin_granted_permissions` foreign keys renamed to
+  explicit short names to stay under Postgres 63-char identifier limit
+  (previously hit truncation NOTICE on `db:push`).
+- **Files:**
+  - `apps/studio/server/src/jobs/handlers/{reflection,dreaming}.ts`,
+    `title/generate.ts` — raw data + userTurns fix + tracker wiring
+  - `apps/studio/server/src/skills/{loader,importer}.ts` — fs.read unwrap,
+    skills.sh resolver, npx command parser
+  - `apps/studio/server/src/routes/{filesystem,memory}.ts` — content unwrap,
+    `PATCH /memories/:id`
+  - `apps/studio/web/components/memory/{memory-browser,memory-config}.tsx` —
+    detail dialog, Type/Health columns, CredentialSelector dreaming picker
+  - `apps/studio/web/app/(app)/**/usage/page.tsx` — source filter + badge + duration
+  - `apps/studio/web/components/providers.tsx` — `refetchOnWindowFocus: false`
+  - `apps/studio/server/src/middleware/rate-limit.ts` — 120/min
+  - `apps/studio/db/src/schema/plugin_granted_permissions.ts` — explicit FK names
+  - Deleted: `apps/studio/web/app/(app)/**/settings/memory/page.tsx`
+
+## 2026-04-12 — Usage tracking: every LLM call logs via `recordLLMUsage`
+
+- `usage_logs` now accepts `agent_id` / `conversation_id` as nullable, adds
+  `project_id`, `source` (varchar), and `duration_ms`. Migration
+  `0014_plan19_usage_logs_expand.sql` backfills `project_id` from `agents` for
+  legacy rows. Project-scope queries (`getUsageLogsByProject`,
+  `getUsageSummaryByProject`, `getUsageCountByProject`) union rows matched by
+  `project_id` OR by agent FK.
+- New helper `apps/studio/server/src/usage/tracker.ts#recordLLMUsage()`
+  (fire-and-forget). Sources: `chat`, `task`, `title`, `reflection`,
+  `dreaming.{light,deep,rem}`, `flush`, `plugin:<id>`, `custom`.
+- Wired: chat (existing path, added `source`+`project_id`), task runner
+  (previously not logging at all!), title generator, reflection handler,
+  all three dreaming phases.
+- Rate-limit: raised `credentialRateLimit` 30 → 120/min. With multiple
+  credential-dependent pages (agent LLM, memory config, disk, filesystem,
+  channels), 30/min tripped too easily during normal navigation.
+- React Query client: disabled `refetchOnWindowFocus` globally. Explicit
+  invalidate after mutate is the one way to force fresh data; no more
+  silent refires on tab flip.
+
+## 2026-04-12 — Plan 19 Workstream B: Skills Loader v2
+
+- FS-first skill packages: `/skills/<slug>/SKILL.md` with YAML frontmatter.
+  `project_skills` becomes a cache; unique key now `(project_id, slug, source)`.
+- `SkillLoader` (project-scoped) unifies FS + plugin sources; triggers on wakeUp
+  and on plugin activation/deactivation.
+- Plugin API: `ctx.skills.register({ slug, source: 'folder' | 'inline', ... })` in
+  `setup()`. Studio tracks plugin roots (via `discoverPluginsFromFolder` dir) and
+  propagates specs per project. Deactivate marks rows inactive (preserves
+  `agent_skills` assignments).
+- Runtime tools updated: `skill_list` / `skill_activate` / `skill_read_file` /
+  `skill_list_files` — eligibility filter, categorized file trees, source labels.
+- Progressive disclosure: `buildOnDemandSkillHint` emits structured XML with
+  budget limits (50 skills, 20KB).
+- Per-agent `skill_access_mode`: `manual` (current) or `all_on_demand`.
+- Eligibility: `requires.{os, bins, env, permissions, config}` evaluated pre-run
+  via `buildEligibilityContext`; `which`/`where` probed with 5-min cache.
+- Import: `/skills/import` (GitHub tarball via public API) and `/skills/import-zip`
+  (raw body ≤20MB). Caps enforced (1000 files, 2MB/file, 20MB total).
+- UI: Import dialog + Refresh + source badge on project skills page.
+  Access-mode toggle on agent skills page.
+- Audit: `skill.import`, `skill.source_changed`, `skill.assignment_changed`.
+- Migration `0013_plan19_skills_v2.sql`. New deps: `yaml` (core), `tar`, `unzipper`
+  (studio/server).
+- Docs: new `docs/feats/skills.md` with full architecture.
+
+## 2026-04-12 — Plan 19 Workstream A: Memory Learning Loop
+
+- Memory rows now typed (`episodic`/`semantic`/`procedural`/`reflective`), carry `score_health`
+  and `source_type`. Retrieval boosts health; deep dreaming decays & purges dream-origin rows.
+- New `background_jobs` table + `BackgroundWorker` (SKIP LOCKED pickup, retry/backoff).
+  `enqueueAsync()` enforces fire-and-forget — stream must close before job insert.
+- `CompactionHook` on core runner → studio enqueues `memory.flush` on every compaction summary.
+- `FinalizeHook` on core runner → `memory.reflection` (opt-in per agent via
+  `AgentMemoryConfig.reflection`). Handler extracts at most one insight, dedups (cosine ≥ 0.9).
+- Dreaming engine: 3 phases (light/deep/REM) via per-project croner. `POST /api/projects/:pid/memory/dream`
+  for manual trigger. `dreamScheduler` re-syncs on config PATCH.
+- Audit events: `memory.write`, `memory.flush`, `memory.reflection_run`, `memory.dream_run`.
+- UI: Dreaming section on project memory settings; Reflection section on agent memory page.
+- Migration: `0012_plan19_memory_jobs.sql`.
+- Files: `apps/studio/db/src/schema/{memories,background_jobs}.ts`,
+  `apps/studio/db/src/queries/{memory,background_jobs}.ts`,
+  `apps/studio/server/src/jobs/**`,
+  `apps/studio/server/src/memory/hooks.ts`,
+  `packages/core/src/{runner,runtime}.ts`,
+  `packages/types/src/index.ts`.
+  See `docs/feats/memory.md` → "Plan 19" section for full file list + contract.
+
+## 2026-04-12 — Settings nav refactor: vertical sidebar + Access Control grouping
+
+**Changed:** Replaced the horizontal Tabs bar on project Settings with a GitHub-style vertical sidebar. Three groups: **Project** (General, Credentials, MCP Servers), **Access Control** (Members, Roles, Agent Access, Policies, Plugin Permissions), **Observability** (Audit Log). Members / Roles / Agent Access still live on one URL but the internal Tabs is now URL-controlled via `?tab=`, so the sidebar can deep-link to each sub-tab and highlight correctly. Memory and Filesystem intentionally excluded — they remain on `/memory` and `/disk`. Motivation: admins struggled to reason about the relationship between Policies (rule engine) and Plugin Permissions (capability grants) when they sat as peer top-level tabs. Grouping them under "Access Control" with an obvious semantic gradient (members → role → agent scope → rules → plugin capability) makes the model legible.
+
+**Files touched:** `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/layout.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/permissions/page.tsx`.
+
+See ADR-043.
+
+## 2026-04-12 — Plan 18: Production Hardening
+
+Shipped all 5 sections from `docs/plans/18-fixing-prevs-plans.md`:
+rate limiting (express-rate-limit, 5 layers), broad audit log system
+(`audit_logs` table + `audit.*` helper + settings/audit UI with CSV export),
+plugin policy enforcement (`required_plugin_permission` on `ToolMeta`,
+per-member `plugin_granted_permissions` table, runner enforcement via
+ToolHooks), tool hot-unregister (activate/deactivate triggers
+syncProjectTools), and plugin permissions UI at settings/plugin-permissions.
+
+Files added:
+- `apps/studio/server/src/middleware/rate-limit.ts`
+- `apps/studio/server/src/audit/logger.ts`
+- `apps/studio/server/src/routes/audit.ts`
+- `apps/studio/server/src/routes/plugin-permissions.ts`
+- `apps/studio/db/src/schema/audit_logs.ts`
+- `apps/studio/db/src/schema/plugin_granted_permissions.ts`
+- `apps/studio/db/src/queries/audit.ts`
+- `apps/studio/db/src/queries/plugin_permissions.ts`
+- `apps/studio/db/src/migrations/0011_plan18_audit_and_permissions.sql`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/audit/page.tsx`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/plugin-permissions/page.tsx`
+- `docs/plans/impl-reports/18-production-hardening-report.md`
+
+Files modified: `packages/types/src/index.ts`, `packages/core/src/runtime.ts`,
+`packages/core/src/runner.ts`, `apps/studio/server/src/index.ts`,
+`apps/studio/server/src/routes/auth.ts`,
+`apps/studio/server/src/routes/chat.ts`,
+`apps/studio/server/src/routes/credentials.ts`,
+`apps/studio/server/src/routes/filesystem.ts`,
+`apps/studio/server/src/routes/attachments.ts`,
+`apps/studio/server/src/routes/acl-members.ts`,
+`apps/studio/server/src/routes/acl-invitations.ts`,
+`apps/studio/server/src/filesystem/service.ts`,
+`apps/studio/server/src/runtime/manager.ts`,
+`apps/studio/server/package.json` (+express-rate-limit),
+`apps/studio/db/src/schema/index.ts`, `apps/studio/db/src/index.ts`,
+`apps/studio/web/lib/api.ts`,
+`apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/layout.tsx`.
+
 ## 2026-04-12 — Plan 17: Plugin UI System (final — isolated runtime, CLI, hardened)
 
 **Shipped:** Plugins now contribute React UI as **fully isolated islands** —
@@ -68,7 +249,7 @@ Key deliverables:
 - `apps/studio/db/src/schema/{plugin_audit_log.ts,plugins.ts}`,
   `apps/studio/db/src/queries/plugin_audit.ts`,
   `apps/studio/db/src/migrations/0010_plugin_ui.sql`.
-- Docs: `docs/plugin-dev/{overview,cli,context-api,slots,security}.md`,
+- Docs: `docs/dev/plugin/{overview,cli,context-api,slots,security}.md`,
   `docs/feats/plugin-ui.md`, impl report at
   `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.
 

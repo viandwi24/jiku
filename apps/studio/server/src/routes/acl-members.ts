@@ -9,6 +9,7 @@ import {
 } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission, requireSuperadmin } from '../middleware/permission.ts'
+import { audit, auditContext } from '../audit/logger.ts'
 
 const router = Router()
 router.use(authMiddleware)
@@ -37,6 +38,7 @@ router.patch('/projects/:pid/members/:uid/role', requirePermission('members:writ
   if (!membership) { res.status(404).json({ error: 'Member not found' }); return }
 
   const updated = await updateProjectMembership(pid, uid, { role_id: role_id ?? undefined })
+  audit.memberRoleChanged({ ...auditContext(req), project_id: pid }, uid, role_id ?? null)
   res.json({ membership: updated })
 })
 
@@ -100,6 +102,7 @@ router.delete('/projects/:pid/members/:uid', requirePermission('members:write'),
   }
 
   await removeProjectMembership(pid, uid)
+  audit.memberRemove({ ...auditContext(req), project_id: pid }, uid)
   res.json({ ok: true })
 })
 

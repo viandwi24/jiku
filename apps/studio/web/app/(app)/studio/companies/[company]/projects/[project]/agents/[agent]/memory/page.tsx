@@ -4,7 +4,7 @@ import { use, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { AgentMemoryConfig, ResolvedMemoryConfig } from '@/lib/api'
-import { Badge, Button, Label, Separator, Switch } from '@jiku/ui'
+import { Badge, Button, Input, Label, Separator, Switch } from '@jiku/ui'
 import { toast } from 'sonner'
 
 interface PageProps {
@@ -112,6 +112,11 @@ export default function AgentMemoryPage({ params }: PageProps) {
   const [writeRuntime, setWriteRuntime] = useState<InheritOrBool>('inherit')
   const [crossUserRead, setCrossUserRead] = useState<InheritOrBool>('inherit')
   const [extractionEnabled, setExtractionEnabled] = useState<InheritOrBool>('inherit')
+  // Plan 19 — reflection (opt-in, default off)
+  const [reflectionEnabled, setReflectionEnabled] = useState<boolean>(false)
+  const [reflectionModel, setReflectionModel] = useState<string>('')
+  const [reflectionScope, setReflectionScope] = useState<'agent_caller' | 'agent_global'>('agent_caller')
+  const [reflectionMinTurns, setReflectionMinTurns] = useState<number>(3)
 
   // Sync form state whenever fresh data arrives from the server
   useEffect(() => {
@@ -120,6 +125,12 @@ export default function AgentMemoryPage({ params }: PageProps) {
     setWriteRuntime(toInherit(resolvedData.agent_config?.policy?.write?.runtime_global ?? null))
     setCrossUserRead(toInherit(resolvedData.agent_config?.policy?.read?.cross_user ?? null))
     setExtractionEnabled(toInherit(resolvedData.agent_config?.extraction?.enabled ?? null))
+    // Plan 19
+    const ref = resolvedData.agent_config?.reflection
+    setReflectionEnabled(ref?.enabled ?? false)
+    setReflectionModel(ref?.model ?? '')
+    setReflectionScope((ref?.scope as 'agent_caller' | 'agent_global') ?? 'agent_caller')
+    setReflectionMinTurns(ref?.min_conversation_turns ?? 3)
   }, [resolvedData])
 
   const saveMutation = useMutation({
@@ -138,10 +149,20 @@ export default function AgentMemoryPage({ params }: PageProps) {
         : undefined
 
       const hasPolicy = Object.keys(policy.read).length > 0 || Object.keys(policy.write).length > 0
-      const config: AgentMemoryConfig | null = (hasPolicy || extraction)
+      // Plan 19 — reflection: only persist when non-default
+      const reflection = reflectionEnabled
+        ? {
+            enabled: true,
+            model: reflectionModel,
+            scope: reflectionScope,
+            min_conversation_turns: reflectionMinTurns,
+          }
+        : undefined
+      const config: AgentMemoryConfig | null = (hasPolicy || extraction || reflection)
         ? {
             ...(hasPolicy ? { policy } : {}),
             ...(extraction ? { extraction } : {}),
+            ...(reflection ? { reflection } : {}),
           }
         : null
 
@@ -234,6 +255,63 @@ export default function AgentMemoryPage({ params }: PageProps) {
           resolved={resolved.extraction.enabled}
           resolvedSource={sourceOf('extraction')}
         />
+      </div>
+
+      <Separator />
+
+      {/* Plan 19 — Reflection */}
+      <div className="space-y-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Reflection</p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <Label className="text-sm font-medium">Post-run reflection</Label>
+            <p className="text-xs text-muted-foreground">
+              After each run, a small LLM reviews the conversation and writes at most one
+              <em> reflective </em> insight to memory. Default off.
+            </p>
+          </div>
+          <Switch checked={reflectionEnabled} onCheckedChange={setReflectionEnabled} />
+        </div>
+        {reflectionEnabled && (
+          <div className="grid grid-cols-2 gap-3 pl-2 border-l-2 border-muted">
+            <div className="space-y-1">
+              <Label className="text-xs">Model (override)</Label>
+              <Input
+                value={reflectionModel}
+                onChange={e => setReflectionModel(e.target.value)}
+                placeholder="empty = use agent's own model"
+                className="h-8 text-sm font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Min conversation turns</Label>
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={reflectionMinTurns}
+                onChange={e => setReflectionMinTurns(parseInt(e.target.value || '3', 10))}
+                className="h-8 text-sm"
+              />
+            </div>
+            <div className="col-span-2 space-y-1">
+              <Label className="text-xs">Target scope</Label>
+              <div className="flex gap-2">
+                {(['agent_caller', 'agent_global'] as const).map(s => (
+                  <Button
+                    key={s}
+                    type="button"
+                    size="sm"
+                    variant={reflectionScope === s ? 'default' : 'outline'}
+                    onClick={() => setReflectionScope(s)}
+                  >
+                    {s === 'agent_caller' ? 'Per-user' : 'Agent-wide'}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <Separator />

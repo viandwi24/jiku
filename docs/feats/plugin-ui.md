@@ -39,7 +39,7 @@ Browser
 - `jiku` — interactive Ink TUI (arrow nav, `b` build, `w` watch, `r` refresh, `q` quit).
 - `jiku plugin list|info|build|watch|create` — scriptable sub-commands. `build`/`watch` without an id are cwd-aware (builds only the plugin the cwd lives in, else all).
 - Placeholder namespaces: `jiku agent`, `jiku db`, `jiku dev`.
-- Full reference: [`docs/plugin-dev/cli.md`](../plugin-dev/cli.md).
+- Full reference: [`docs/dev/plugin/cli.md`](../dev/plugin/cli.md).
 
 ### Server HTTP surface
 - `GET /api/plugins/ui-registry?project=:p` — manifest with signed asset URLs.
@@ -67,7 +67,7 @@ Browser
 - Plugin bundles are **not** per-user gated — any authed Studio user can fetch. Per-user logic must live in `ctx.api` / `ctx.tools` handlers.
 - Plugin authors MUST NOT put secrets in `src/ui/*.tsx` (bundle is publicly readable by any authed user).
 
-Full threat model + operator checklist: [`docs/plugin-dev/security.md`](../plugin-dev/security.md).
+Full threat model + operator checklist: [`docs/dev/plugin/security.md`](../dev/plugin/security.md).
 
 ## Known limitations (fase 1)
 
@@ -88,4 +88,4 @@ Full threat model + operator checklist: [`docs/plugin-dev/security.md`](../plugi
 - **CLI**: `apps/cli/src/**`
 - **Demo plugin**: `plugins/jiku.analytics/**`
 - **DB**: `apps/studio/db/src/schema/plugin_audit_log.ts`, migration `0010_plugin_ui.sql`
-- **Docs**: `docs/plugin-dev/{overview,context-api,slots,cli,security}.md`, impl report `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`
+- **Docs**: `docs/dev/plugin/{overview,context-api,slots,cli,security}.md`, impl report `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`

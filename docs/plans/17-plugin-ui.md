@@ -712,7 +712,7 @@ Pemilik plugin tinggal tambahkan `ui: defineUI({ entries: [...] })` di `definePl
 - [ ] `jiku.cron` tambah UI entries.
 - [ ] `jiku.skills` tambah UI entries.
 - [ ] `jiku.telegram` + `jiku.social` contoh showcase.
-- [ ] Dokumentasi author-facing di `docs/plugin-dev/`.
+- [ ] Dokumentasi author-facing di `docs/dev/plugin/`.
 
 **Exit criteria:** Minimal 3 plugin first-party pakai sistem baru, tanpa regression fungsional.
 
@@ -807,12 +807,12 @@ Pemilik plugin tinggal tambahkan `ui: defineUI({ entries: [...] })` di `definePl
 - `packages/create-jiku-plugin/` — scaffolding package.
 
 ### Docs
-- `docs/plugin-dev/overview.md` — intro & quickstart.
-- `docs/plugin-dev/context-api.md` — reference `ctx.*` lengkap.
-- `docs/plugin-dev/slots.md` — reference tiap slot.
-- `docs/plugin-dev/manifest.md` — schema manifest.
-- `docs/plugin-dev/tutorial.md` — end-to-end: bikin plugin analytics.
-- `docs/plugin-dev/migration-guide.md` — upgrade plugin lama.
+- `docs/dev/plugin/overview.md` — intro & quickstart.
+- `docs/dev/plugin/context-api.md` — reference `ctx.*` lengkap.
+- `docs/dev/plugin/slots.md` — reference tiap slot.
+- `docs/dev/plugin/manifest.md` — schema manifest.
+- `docs/dev/plugin/tutorial.md` — end-to-end: bikin plugin analytics.
+- `docs/dev/plugin/migration-guide.md` — upgrade plugin lama.
 - `docs/feats/plugin-ui.md` — feature doc.
 
 ### Tests

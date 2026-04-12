@@ -1,6 +1,7 @@
 'use client'
 
 import { use, useState } from 'react'
+import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ProjectRole, ProjectMember, Agent } from '@/lib/api'
@@ -269,6 +270,9 @@ function InviteDialog({
 export default function ProjectPermissionsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const qc = useQueryClient()
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -363,9 +367,19 @@ export default function ProjectPermissionsPage({ params }: PageProps) {
 
   if (!projectData) return <div className="text-sm text-muted-foreground p-4">Loading...</div>
 
+  const urlTab = searchParams.get('tab')
+  const activeTab = urlTab === 'roles' ? 'roles' : urlTab === 'agents' ? 'agent-access' : 'members'
+  const setActiveTab = (v: string) => {
+    const p = new URLSearchParams(searchParams.toString())
+    if (v === 'members') p.delete('tab')
+    else if (v === 'roles') p.set('tab', 'roles')
+    else if (v === 'agent-access') p.set('tab', 'agents')
+    router.replace(`${pathname}${p.toString() ? `?${p.toString()}` : ''}`)
+  }
+
   return (
     <div className="space-y-6">
-      <Tabs defaultValue="members">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="members">Members</TabsTrigger>
           <TabsTrigger value="roles">Roles</TabsTrigger>

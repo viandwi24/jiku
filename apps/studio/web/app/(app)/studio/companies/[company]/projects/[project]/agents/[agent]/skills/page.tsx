@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import type { AgentSkillAssignment, SkillItem } from '@/lib/api'
 import { Button, Badge, cn } from '@jiku/ui'
 import { BookOpen, Plus, Trash2, ToggleLeft, ToggleRight, Zap, Clock } from 'lucide-react'
+import { toast } from 'sonner'
 
 interface PageProps {
   params: Promise<{ company: string; project: string; agent: string }>
@@ -87,6 +88,15 @@ export default function AgentSkillsPage({ params }: PageProps) {
         </p>
       </div>
 
+      {/* Plan 19 — Access mode */}
+      {agent && (
+        <AccessModeControl
+          agentId={agent.id}
+          currentMode={agent.skill_access_mode ?? 'manual'}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: ['agents', project?.id] })}
+        />
+      )}
+
       {/* Assigned skills */}
       <div className="space-y-2">
         {assignmentsLoading && (
@@ -125,7 +135,7 @@ export default function AgentSkillsPage({ params }: PageProps) {
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-sm">{skill.name}</div>
                   {skill.description && (
-                    <div className="text-xs text-muted-foreground truncate">{skill.description}</div>
+                    <div className="text-xs text-muted-foreground break-words">{skill.description}</div>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -233,6 +243,66 @@ function AssignmentRow({
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
       </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────
+// Plan 19 — Skill access mode control
+// ──────────────────────────────────────────────────────────────
+function AccessModeControl({
+  agentId,
+  currentMode,
+  onChanged,
+}: {
+  agentId: string
+  currentMode: 'manual' | 'all_on_demand'
+  onChanged: () => void
+}) {
+  const [mode, setMode] = useState<'manual' | 'all_on_demand'>(currentMode)
+  const [busy, setBusy] = useState(false)
+
+  const change = async (next: 'manual' | 'all_on_demand') => {
+    if (next === mode) return
+    setBusy(true)
+    try {
+      await api.skills.setAgentAccessMode(agentId, next)
+      setMode(next)
+      toast.success(`Access mode: ${next === 'manual' ? 'Manual' : 'All on-demand'}`)
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Access Mode</div>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant={mode === 'manual' ? 'default' : 'outline'}
+          onClick={() => change('manual')}
+          disabled={busy}
+        >
+          Manual
+        </Button>
+        <Button
+          size="sm"
+          variant={mode === 'all_on_demand' ? 'default' : 'outline'}
+          onClick={() => change('all_on_demand')}
+          disabled={busy}
+        >
+          All on-demand
+        </Button>
+      </div>
+      <p className="text-[10px] text-muted-foreground">
+        {mode === 'manual'
+          ? 'Agent sees only the skills explicitly assigned below.'
+          : 'Agent sees every active skill in the project on-demand. Use "always" below to pin specific skills into the system prompt.'}
+      </p>
     </div>
   )
 }

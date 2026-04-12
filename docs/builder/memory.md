@@ -1,5 +1,101 @@
 # Memory
 
+## Every LLM call MUST log via `recordLLMUsage`
+
+Any code that invokes `generateText` / `streamText` / `generateObject` in
+`apps/studio/server` (or plugins via studio) MUST call `recordLLMUsage(...)`
+from `apps/studio/server/src/usage/tracker.ts` immediately after the call
+returns. This is how the usage/cost dashboard stays truthful.
+
+- `source` field is required. Use one of: `chat`, `task`, `title`,
+  `reflection`, `dreaming.light`, `dreaming.deep`, `dreaming.rem`, `flush`,
+  `plugin:<id>`, `custom`.
+- `agent_id` and `conversation_id` are OPTIONAL — background jobs (reflection,
+  dreaming, flush) have neither. Always include `project_id` when known so
+  project-level totals include the row.
+- The tracker is fire-and-forget; do NOT `await`.
+
+Existing wire sites: runner (chat/task via `jiku-usage` stream event →
+`createUsageLog`), `jobs/handlers/reflection.ts`, `jobs/handlers/dreaming.ts`
+(per-phase), `title/generate.ts`. If you add a new LLM-calling path and skip
+this helper, the cost dashboard will silently under-report.
+
+## `fs.read()` returns `{ content, version, cached }`, not a string
+
+Since Plan 16 v2, `FilesystemService.read()` returns an object with content +
+version (for optimistic locking) + cached flag. Every consumer MUST unwrap
+`.content` before using it as a string. Bugs caught twice in Plan 19:
+- SkillLoader passed the object to YAML parser → `content.match is not a function`.
+- `/api/projects/:pid/files/content` route returned the object as the `content`
+  field → frontend editor showed "value must be typeof string but got object"
+  for both disk and skills pages.
+
+Pattern:
+```ts
+const res = await fs.read(path)
+const text = typeof res === 'string' ? res : res?.content
+// OR: const { content } = await fs.read(path); ... content
+```
+
+Defensive `typeof res === 'string'` fallback kept in hot paths because this
+same footgun showed up in multiple places.
+
+## Background jobs contract: non-blocking, enqueue-only
+
+Any LLM-invoking background work (reflection, dreaming, compaction-flush,
+future plugin-invoked) MUST go through `apps/studio/server/src/jobs/enqueue.ts`.
+Rules:
+1. **Runner closes stream FIRST.** Hooks like `CompactionHook` / `FinalizeHook`
+   in `packages/core/src/runner.ts` fire fire-and-forget and MUST NOT be awaited.
+2. `enqueue()` is DB INSERT only. Never call a handler inline.
+3. The worker picks up on its own interval. Handlers have no request context.
+4. Use an `idempotencyKey` whenever you can express uniqueness — the `UNIQUE`
+   constraint on `background_jobs.idempotency_key` prevents retry-storm dupes.
+
+When adding a new job type: register the handler in `jobs/register.ts`, make
+sure `agent_id` / `conversation_id` / `project_id` are all propagated through
+the payload so the handler can attribute LLM usage correctly via
+`recordLLMUsage`.
+
+## Cron inputs must use `CronExpressionInput`, not a plain `<Input>`
+
+Any UI field where the user types a cron expression MUST use
+`@/components/cron/cron-expression-input` (wraps `cronstrue` for realtime human
+preview + presets dropdown). Known sites: cron-tasks page, agent heartbeat page,
+project memory → Dreaming tab. When adding a new cron field anywhere, reuse the
+same component — do NOT add a raw `<Input>` with a static hint paragraph. Users
+rely on the realtime "at 01:01" / "every hour" preview to sanity-check their
+expression before save.
+
+## Rate limit keying: use res.locals['user_id'], NOT req.user
+
+The auth middleware attaches user identity to `res.locals['user_id']`, not to `req.user`. The Plan 18 rate limiter (`apps/studio/server/src/middleware/rate-limit.ts`) respects this convention — its `keyGenerator` reads `res.locals['user_id']` with IP fallback. Any future middleware that needs the authenticated user must do the same. If you write `req.user` you'll get undefined silently.
+
+## Audit logging is fire-and-forget; never await audit.* calls
+
+The `audit.*` helpers in `apps/studio/server/src/audit/logger.ts` return `void`, not a Promise. Internally they catch write failures and log a warning. Do not `await` them — if you do, TypeScript will still compile but you gain nothing and lose the fire-and-forget intent. In particular: never wrap an audit write in the same try/catch as a request-critical DB write, because a DB-down situation will cascade the failure.
+
+## Two audit tables coexist: audit_logs (new) vs plugin_audit_log (legacy)
+
+Plan 18 introduced `audit_logs` (broad coverage). Plan 17's `plugin_audit_log` still exists and is still written to by `routes/plugin-ui.ts`. The settings/audit UI reads only `audit_logs`. Do NOT add new writes to `plugin_audit_log` — send all new audit events via the `audit.*` helper into `audit_logs`. If you need to query cross-plugin activity, query `audit_logs` with `resource_type = 'tool'`.
+
+## Plugin permissions: two layers exist, don't confuse them
+
+- `project_plugins.granted_permissions` (jsonb, Plan 17) — project-wide, controls whether a plugin has been granted its declared capabilities at all during activation.
+- `plugin_granted_permissions` table (Plan 18) — **per-member** grants, enforced at tool invoke time against `ToolMeta.required_plugin_permission`. This is the source of truth for runtime enforcement.
+
+When adding a sensitive tool to a plugin, set `required_plugin_permission` in its `ToolMeta`. The runner will then require the caller to have a matching grant in `plugin_granted_permissions` (or be a superadmin) before executing.
+
+## ToolHooks in core runner: use for cross-cutting tool concerns
+
+`JikuRuntime` / `AgentRunner` accept a `ToolHooks` option (`onInvoke`, `onBlocked`, `onError`). Studio uses this to write audit log entries (`RuntimeManager` constructs `buildToolHooks(projectId)` per-project). If you need to add other cross-cutting behavior to every tool execution (metrics, cost tracking, circuit breaker), plug into these hooks instead of wrapping individual tool `execute` functions — it's a single choke point and it already fires for both streaming and non-streaming tools.
+
+## Settings layout: vertical sidebar, three groups
+
+`apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/layout.tsx` uses a 220px vertical sidebar with three groups: **Project**, **Access Control**, **Observability**. To add a new settings page, drop it into the correct group in the `groups` array. Memory and Filesystem configs are intentionally NOT under /settings — they live on `/memory` and `/disk` (dedicated feature pages).
+
+Access Control sub-sections (Members/Roles/Agent Access) all live at `/settings/permissions` — the internal Tabs is URL-controlled via `?tab=roles` / `?tab=agents`. The sidebar links to these query strings directly, so deep-linking works and active highlighting uses `searchParams.get('tab')`.
+
 ## Credential inheritance: always use getAvailableCredentials, not getProjectCredentials
 
 `getProjectCredentials(projectId)` returns only project-scoped credentials. When you need to resolve credentials that may live at company level (e.g. a shared OpenAI key defined once for all projects), always use `getAvailableCredentials(companyId, projectId)` — it returns a union. You need to look up `companyId` from the project first (`getProjectById`).

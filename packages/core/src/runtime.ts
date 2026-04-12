@@ -9,8 +9,9 @@ import type {
   PreviewRunResult,
   ResolvedMemoryConfig,
   PersonaSeed,
+  ToolHooks,
 } from '@jiku/types'
-import { AgentRunner } from './runner.ts'
+import { AgentRunner, type CompactionHook, type FinalizeHook } from './runner.ts'
 import { ModelProviders } from './providers.ts'
 import { defaultSubjectMatcher } from './resolver/access.ts'
 import type { PluginLoader } from './plugins/loader.ts'
@@ -23,6 +24,9 @@ export class JikuRuntime {
   private providers: ModelProviders
   private subjectMatcher: SubjectMatcher
   private runtimeId?: string
+  private toolHooks?: ToolHooks
+  private compactionHook?: CompactionHook
+  private finalizeHook?: FinalizeHook
 
   constructor(
     options: Omit<JikuRuntimeOptions, 'plugins'> & {
@@ -39,10 +43,36 @@ export class JikuRuntime {
     )
     this.subjectMatcher = options.subject_matcher ?? defaultSubjectMatcher
     this.runtimeId = options.runtime_id
+    this.toolHooks = options.tool_hooks
+  }
+
+  setToolHooks(hooks: ToolHooks | undefined): void {
+    this.toolHooks = hooks
+    for (const runner of this.agents.values()) runner.setToolHooks(hooks)
+  }
+
+  /** Plan 19 — fired after compaction writes a summary. Propagates to all agents. */
+  setCompactionHook(hook: CompactionHook | undefined): void {
+    this.compactionHook = hook
+    for (const runner of this.agents.values()) runner.setCompactionHook(hook)
+  }
+
+  /** Plan 19 — fired after run stream closes. Propagates to all agents. */
+  setFinalizeHook(hook: FinalizeHook | undefined): void {
+    this.finalizeHook = hook
+    for (const runner of this.agents.values()) runner.setFinalizeHook(hook)
+  }
+
+  /** Plan 18 — list all registered agent IDs. */
+  getAgentIds(): string[] {
+    return Array.from(this.agents.keys())
   }
 
   addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig, personaSeed?: PersonaSeed | null, personaPrompt?: string | null, skillSection?: string | null, skillHint?: string | null): void {
     const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed, personaPrompt, skillSection, skillHint)
+    runner.setToolHooks(this.toolHooks)
+    runner.setCompactionHook(this.compactionHook)
+    runner.setFinalizeHook(this.finalizeHook)
     this.agents.set(def.meta.id, runner)
   }
 

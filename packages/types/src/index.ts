@@ -69,6 +69,12 @@ export interface ToolMeta {
   name: string
   description: string
   group?: string
+  /**
+   * Plan 18 — if set, caller must have been granted this plugin permission
+   * (either via per-member grant in `plugin_granted_permissions` or as a
+   * superadmin) before the tool can be invoked.
+   */
+  required_plugin_permission?: string
 }
 
 /** Plan 15.1: Chunk yielded during tool streaming */
@@ -248,6 +254,14 @@ export interface BasePluginContext {
     tools: { register: (...tools: ToolDefinition[]) => void }
     prompt: { inject: (segment: string | (() => Promise<string>)) => void }
   }
+  /**
+   * Plan 19 — Register plugin-contributed skills. Each registered spec is propagated
+   * to every project that activates this plugin (via the SkillLoader), and cleaned
+   * up when the plugin is deactivated for that project.
+   */
+  skills?: {
+    register: (spec: PluginSkillSpec) => void
+  }
   hooks: HookAPI
   storage: PluginStorageAPI
   // Host-specific extensions (e.g. Studio's `http` / `events`) are added via
@@ -386,6 +400,14 @@ export interface CallerContext {
    * Provides platform context for connector-aware tools.
    */
   connector_context?: ConnectorCallerContext
+  /**
+   * Plan 18 — per-member plugin permissions granted in the current project.
+   * Populated by Studio's caller resolver. Used by the runner to enforce
+   * `tool.meta.required_plugin_permission`.
+   */
+  granted_plugin_permissions?: string[]
+  /** Plan 18 — bypasses plugin permission enforcement. */
+  is_superadmin?: boolean
 }
 
 // ============================================================
@@ -503,6 +525,26 @@ export interface JikuRuntimeOptions {
    * Handles: role, permission, user, wildcard '*', and attributes.{key}
    */
   subject_matcher?: SubjectMatcher
+  /**
+   * Plan 18 — optional hooks fired around every tool invocation in the
+   * AI-SDK-wrapped runner. Use from Studio to write audit log entries.
+   */
+  tool_hooks?: ToolHooks
+}
+
+export interface ToolHooks {
+  onInvoke?: (info: ToolHookInfo) => void | Promise<void>
+  onBlocked?: (info: ToolHookInfo & { reason: string }) => void | Promise<void>
+  onError?: (info: ToolHookInfo & { error: unknown }) => void | Promise<void>
+}
+
+export interface ToolHookInfo {
+  tool_id: string
+  tool_name: string
+  plugin_id: string
+  caller: CallerContext
+  agent_id: string
+  args?: unknown
 }
 
 // ============================================================
@@ -728,6 +770,12 @@ export type MemoryTier = 'core' | 'extended'
 export type MemoryImportance = 'low' | 'medium' | 'high'
 export type MemoryVisibility = 'private' | 'agent_shared' | 'project_shared'
 
+/** Plan 19: Semantic classification of memory content. */
+export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'reflective'
+
+/** Plan 19: Where this memory record originated. */
+export type MemorySourceType = 'tool' | 'reflection' | 'dream' | 'flush'
+
 export interface AgentMemory {
   id: string
   runtime_id: string
@@ -740,6 +788,12 @@ export interface AgentMemory {
   importance: MemoryImportance
   visibility: MemoryVisibility
   source: 'agent' | 'extraction'
+  /** Plan 19 */
+  memory_type: MemoryType
+  /** Plan 19: 0..1, decayed by dreaming, boosted by retrieval. */
+  score_health: number
+  /** Plan 19: How this record was produced. */
+  source_type: MemorySourceType
   access_count: number
   last_accessed: Date | null
   expires_at: Date | null
@@ -800,6 +854,68 @@ export interface ResolvedMemoryConfig {
     /** Vector dimensions (auto-detected from model, but stored for collection creation). */
     dimensions: number
   }
+  /** Plan 19: Dreaming engine config (project-level only). */
+  dreaming?: DreamingConfig
+  /** Plan 19: Post-run reflection (per-agent override allowed). */
+  reflection?: ReflectionConfig
+}
+
+/** Plan 19: Dreaming engine per-project config. */
+export interface DreamingPhaseConfig {
+  enabled: boolean
+  cron: string
+  /** Credential row id used to build the provider for this phase. null = inherit from `dreaming.credential_id`. */
+  credential_id: string | null
+  /** Explicit model id. Empty string = inherit from `dreaming.model_id`. */
+  model_id: string
+}
+
+export interface DreamingConfig {
+  enabled: boolean
+  /** Default credential used when a phase doesn't override. */
+  credential_id: string | null
+  /** Default model id used when a phase doesn't override. */
+  model_id: string
+  light: DreamingPhaseConfig
+  deep: DreamingPhaseConfig
+  rem: DreamingPhaseConfig & { min_pattern_strength: number }
+}
+
+/** @deprecated Kept for backward compat with rows saved before 2026-04-12 */
+export type DreamingModelTier = 'cheap' | 'balanced' | 'expensive'
+
+export interface ReflectionConfig {
+  enabled: boolean
+  /** Model id used for insight LLM. */
+  model: string
+  /** Where to attach the reflective memory. */
+  scope: 'agent_caller' | 'agent_global'
+  /** Conversations below this turn count do not trigger. */
+  min_conversation_turns: number
+}
+
+/** Plan 19: Durable background job queue. */
+export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export type JobType =
+  | 'memory.reflection'
+  | 'memory.dream'
+  | 'memory.flush'
+
+export interface BackgroundJob {
+  id: string
+  type: JobType | string
+  project_id: string | null
+  idempotency_key: string | null
+  payload: unknown
+  status: JobStatus
+  attempts: number
+  max_attempts: number
+  scheduled_at: Date
+  started_at: Date | null
+  completed_at: Date | null
+  error: string | null
+  created_at: Date
 }
 
 export type ProjectMemoryConfig = ResolvedMemoryConfig
@@ -815,6 +931,7 @@ export type AgentMemoryConfig = {
   core?: Partial<ResolvedMemoryConfig['core']>
   extraction?: Partial<ResolvedMemoryConfig['extraction']>
   embedding?: Partial<ResolvedMemoryConfig['embedding']>
+  reflection?: Partial<ReflectionConfig>
 }
 
 // ============================================================
@@ -850,10 +967,10 @@ export interface JikuStorageAdapter {
 
   saveMemory?(memory: Omit<AgentMemory,
     'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'
-  >): Promise<AgentMemory>
+  > & Partial<Pick<AgentMemory, 'memory_type' | 'score_health' | 'source_type'>>): Promise<AgentMemory>
 
   updateMemory?(id: string, data: Partial<Pick<AgentMemory,
-    'content' | 'importance' | 'visibility' | 'expires_at'
+    'content' | 'importance' | 'visibility' | 'expires_at' | 'score_health' | 'memory_type'
   >>): Promise<void>
 
   deleteMemory?(id: string): Promise<void>
@@ -1224,5 +1341,93 @@ export interface ResolvedPermissions {
 export interface ProjectGrant {
   project_id: string
   role_id: string
+}
+
+// ============================================================
+// SKILLS (Plan 19 Workstream B)
+// ============================================================
+
+/** SKILL.md frontmatter schema — compatible with skills.sh/vercel-labs shape. */
+export interface SkillManifest {
+  /** Human-readable name (required). */
+  name: string
+  /** Short description used for progressive disclosure (required). */
+  description: string
+  /** Optional classification tags. */
+  tags?: string[]
+  /** Jiku-specific extension — safe to omit for third-party skills. */
+  metadata?: {
+    jiku?: {
+      emoji?: string
+      os?: NodeJS.Platform[]
+      requires?: {
+        bins?: string[]
+        env?: string[]
+        permissions?: string[]
+        config?: string[]
+      }
+      /** Entry file, relative to skill folder. Default "SKILL.md" with "index.md" legacy fallback. */
+      entrypoint?: string
+    }
+    [k: string]: unknown
+  }
+}
+
+/** Origin of a skill: FS scan or a plugin-contributed registration. */
+export type SkillSource = 'fs' | `plugin:${string}`
+
+/** How an agent consumes skills. */
+export type SkillAccessMode = 'manual' | 'all_on_demand'
+
+/** Runtime-computed file tree for an activated skill. */
+export type SkillFileCategory = 'markdown' | 'code' | 'asset' | 'binary'
+
+export interface SkillFileTree {
+  entrypoint: { path: string; content: string }
+  files: Array<{
+    path: string
+    category: SkillFileCategory
+    size_bytes: number
+  }>
+}
+
+/** Shape that a plugin can contribute via ctx.registerSkill(). */
+export type PluginSkillSpec =
+  | {
+      slug: string
+      source: 'folder'
+      /** Path relative to the plugin root. */
+      path: string
+    }
+  | {
+      slug: string
+      source: 'inline'
+      manifest: SkillManifest
+      files: Record<string, string>
+    }
+
+/** Runtime context consulted by the eligibility checker. */
+export interface SkillEligibilityContext {
+  os: NodeJS.Platform
+  availableBins: Set<string>
+  env: Record<string, string | undefined>
+  grantedPermissions: Set<string>
+  projectConfig: unknown
+}
+
+export interface SkillEligibility {
+  eligible: boolean
+  reason?: string
+}
+
+/** An entry in the union SkillRegistry (FS + plugin sources). */
+export interface SkillEntry {
+  slug: string
+  source: SkillSource
+  plugin_id: string | null
+  manifest: SkillManifest
+  manifest_hash: string
+  active: boolean
+  last_synced_at: Date | null
 }
 

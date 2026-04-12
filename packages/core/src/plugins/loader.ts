@@ -8,6 +8,7 @@ import type {
   BasePluginContext,
   ContributesValue,
   ProjectPluginContext,
+  PluginSkillSpec,
 } from '@jiku/types'
 import { SharedRegistry } from './registry.ts'
 import {
@@ -44,6 +45,12 @@ export class PluginLoader implements PluginLoaderInterface {
   private registeredTools: RegisteredTool[] = []
   private registeredPrompts: RegisteredPrompt[] = []
 
+  // Plan 19 — per-plugin skill specs collected during setup
+  private registeredSkills = new Map<string, PluginSkillSpec[]>()
+  // Plugin root directory (absolute path on disk) for plugins discovered from FS.
+  // Required to resolve `source: 'folder'` skill spec paths.
+  private pluginRoots = new Map<string, string>()
+
   // New: per-project enabled plugin sets
   private projectEnabledPlugins = new Map<string, Set<string>>()
 
@@ -74,6 +81,20 @@ export class PluginLoader implements PluginLoaderInterface {
 
   register(...plugins: AnyPluginDef[]): void {
     for (const p of plugins) this.plugins.set(p.meta.id, p)
+  }
+
+  /** Plan 19 — record a plugin's root directory (used for resolving skill folder specs). */
+  setPluginRoot(pluginId: string, root: string): void {
+    this.pluginRoots.set(pluginId, root)
+  }
+
+  getPluginRoot(pluginId: string): string | undefined {
+    return this.pluginRoots.get(pluginId)
+  }
+
+  /** Plan 19 — return all skills contributed by a plugin during setup. */
+  getPluginSkills(pluginId: string): PluginSkillSpec[] {
+    return this.registeredSkills.get(pluginId) ?? []
   }
 
   override(pluginId: string, newDef: Partial<AnyPluginDef>): void {
@@ -170,6 +191,11 @@ export class PluginLoader implements PluginLoaderInterface {
       const injectPrompt = (segment: string | (() => Promise<string>)) => {
         this.registeredPrompts.push({ segment, plugin_id: pluginId })
       }
+      const registerSkill = (spec: PluginSkillSpec) => {
+        const arr = this.registeredSkills.get(pluginId) ?? []
+        arr.push(spec)
+        this.registeredSkills.set(pluginId, arr)
+      }
 
       const baseCtx: BasePluginContext = {
         tools: {
@@ -181,6 +207,9 @@ export class PluginLoader implements PluginLoaderInterface {
         project: {
           tools: { register: registerTool },
           prompt: { inject: injectPrompt },
+        },
+        skills: {
+          register: registerSkill,
         },
         hooks: hookAPI,
         storage: pluginStorage,
@@ -233,6 +262,7 @@ export class PluginLoader implements PluginLoaderInterface {
           tools: { register: () => {} },
           prompt: { inject: () => {} },
         },
+        skills: { register: () => {} },
         hooks: hookAPI,
         storage: pluginStorage,
       }

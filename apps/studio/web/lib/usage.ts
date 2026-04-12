@@ -94,6 +94,7 @@ export function aggregateByAgent(
 
   for (const log of logs) {
     const agentId = log.agent_id
+    if (!agentId) continue
     const agentName = log.agent?.name ?? agentId.slice(0, 8)
     const existing = map.get(agentId)
     if (existing) {

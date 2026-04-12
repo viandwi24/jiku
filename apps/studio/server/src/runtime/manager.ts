@@ -21,6 +21,49 @@ import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
 import { buildSkillTools } from '../skills/tools.ts'
 import { SkillService } from '../skills/service.ts'
+import type { ToolHooks } from '@jiku/types'
+import { audit } from '../audit/logger.ts'
+
+// Plan 18 — tool hooks factory. Writes audit log for every tool invocation /
+// block / error inside the given project.
+function buildToolHooks(projectId: string): ToolHooks {
+  return {
+    onInvoke: (info) => {
+      audit.toolInvoke(
+        {
+          actor_id: info.caller.user_id || null,
+          actor_type: info.caller.user_id ? 'user' : 'system',
+          project_id: projectId,
+        },
+        info.tool_id,
+        { agent_id: info.agent_id, plugin_id: info.plugin_id },
+      )
+    },
+    onBlocked: (info) => {
+      audit.toolBlocked(
+        {
+          actor_id: info.caller.user_id || null,
+          actor_type: info.caller.user_id ? 'user' : 'system',
+          project_id: projectId,
+        },
+        info.tool_id,
+        info.reason,
+      )
+    },
+    onError: (info) => {
+      const message = info.error instanceof Error ? info.error.message : String(info.error)
+      audit.toolBlocked(
+        {
+          actor_id: info.caller.user_id || null,
+          actor_type: info.caller.user_id ? 'user' : 'system',
+          project_id: projectId,
+        },
+        info.tool_id,
+        `error: ${message}`,
+      )
+    },
+  }
+}
 
 // Sentinel model_id — the dynamic provider resolves the model from the credential
 const DYNAMIC_MODEL_ID = '__dynamic__'
@@ -135,12 +178,25 @@ export class JikuRuntimeManager {
     // Trigger onProjectPluginActivated lifecycle for each enabled plugin
     for (const row of enabledRows) {
       const plugin = pluginLoader.getAllPlugins().find(p => p.meta.id === row.plugin_id)
-      if (!plugin?.onProjectPluginActivated) continue
-      try {
-        await pluginLoader.activatePlugin(projectId, row.plugin_id, row.config ?? {}, { updateSet: false })
-      } catch (err) {
-        console.warn(`[jiku] Failed to activate plugin "${row.plugin_id}" for project "${projectId}":`, err)
+      if (plugin?.onProjectPluginActivated) {
+        try {
+          await pluginLoader.activatePlugin(projectId, row.plugin_id, row.config ?? {}, { updateSet: false })
+        } catch (err) {
+          console.warn(`[jiku] Failed to activate plugin "${row.plugin_id}" for project "${projectId}":`, err)
+        }
       }
+      // Plan 19 — propagate skills regardless of onProjectPluginActivated presence
+      await propagatePluginSkills(projectId, row.plugin_id, pluginLoader).catch(err =>
+        console.warn(`[skills] propagate failed for plugin "${row.plugin_id}":`, err),
+      )
+    }
+
+    // Plan 19 — sync FS-sourced skills for this project (scan /skills/, upsert cache)
+    try {
+      const { getSkillLoader } = await import('../skills/loader.ts')
+      await getSkillLoader(projectId).syncFilesystem()
+    } catch (err) {
+      console.warn(`[skills] FS sync failed for project "${projectId}":`, err)
     }
 
     // Dynamic provider: resolves the model from modelCache at run-time
@@ -159,7 +215,13 @@ export class JikuRuntimeManager {
       providers: { [DYNAMIC_PROVIDER_ID]: dynamicProviderDef },
       default_provider: DYNAMIC_PROVIDER_ID,
       runtime_id: projectId,
+      tool_hooks: buildToolHooks(projectId),
     })
+
+    // Plan 19 — wire compaction + finalize hooks for memory.flush / memory.reflection enqueue
+    const { buildCompactionHook, buildFinalizeHook } = await import('../memory/hooks.ts')
+    runtime.setCompactionHook(buildCompactionHook(projectId))
+    runtime.setFinalizeHook(buildFinalizeHook(projectId))
 
     await runtime.boot()
 
@@ -495,12 +557,31 @@ export class JikuRuntimeManager {
     const loader = this._pluginLoader
     if (!loader) return
     await loader.activatePlugin(projectId, pluginId, config)
+    // Plan 19 — propagate any skills the plugin registered during setup.
+    await propagatePluginSkills(projectId, pluginId, loader)
+    // Plan 18 — hot-register: immediately refresh agents' tool sets.
+    await this.syncProjectTools(projectId)
   }
 
   async deactivatePlugin(projectId: string, pluginId: string): Promise<void> {
     const loader = this._pluginLoader
     if (!loader) return
     await loader.deactivatePlugin(projectId, pluginId)
+    // Plan 19 — remove/deactivate skills contributed by this plugin for this project.
+    const { getSkillLoader } = await import('../skills/loader.ts')
+    await getSkillLoader(projectId).unregisterPluginSkills(pluginId).catch(err =>
+      console.warn(`[skills] unregisterPluginSkills failed for ${pluginId}:`, err),
+    )
+    // Plan 18 — hot-unregister: re-sync so plugin tools disappear from all agents without restart.
+    await this.syncProjectTools(projectId)
+  }
+
+  /**
+   * Plan 18 — force unregister of browser tools for a project (e.g. when CDP
+   * connection dropped). Re-syncs all agents so stale browser tools disappear.
+   */
+  async unregisterBrowserTools(projectId: string): Promise<void> {
+    await this.syncProjectTools(projectId)
   }
 
   // ─── Run ──────────────────────────────────────────────────────────────────
@@ -557,8 +638,28 @@ export class JikuRuntimeManager {
     const cacheKey = `${params.agent_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     this.modelCache.set(cacheKey, buildProvider(modelInfo))
 
+    // Plan 18 — enrich caller with per-member plugin permissions + superadmin flag.
+    let enrichedCaller = params.caller
+    try {
+      const callerUserId = params.caller.user_id
+      if (callerUserId) {
+        const [grantedPerms, membership] = await Promise.all([
+          (await import('@jiku-studio/db')).getGrantedPluginPermissions(callerUserId, projectId),
+          (await import('@jiku-studio/db')).getProjectMembership(projectId, callerUserId),
+        ])
+        enrichedCaller = {
+          ...params.caller,
+          granted_plugin_permissions: grantedPerms,
+          is_superadmin: membership?.is_superadmin ?? false,
+        }
+      }
+    } catch (err) {
+      console.warn('[runtime] Failed to load plugin permissions for caller:', err)
+    }
+
     const result = await runtime.run({
       ...params,
+      caller: enrichedCaller,
       provider_id: DYNAMIC_PROVIDER_ID,
       model_id: cacheKey,
       tool_states: toolStates,
@@ -622,3 +723,27 @@ export class JikuRuntimeManager {
 }
 
 export const runtimeManager = new JikuRuntimeManager()
+
+/**
+ * Plan 19 — After a plugin is activated for a project, forward its registered
+ * skills to the project's SkillLoader. This is a no-op if the plugin registered
+ * no skills in `setup()`.
+ */
+async function propagatePluginSkills(
+  projectId: string,
+  pluginId: string,
+  loader: PluginLoader,
+): Promise<void> {
+  const specs = loader.getPluginSkills(pluginId)
+  if (specs.length === 0) return
+  const pluginRoot = loader.getPluginRoot(pluginId)
+  const { getSkillLoader } = await import('../skills/loader.ts')
+  const skillLoader = getSkillLoader(projectId)
+  for (const spec of specs) {
+    try {
+      await skillLoader.registerPluginSkill(pluginId, spec, pluginRoot)
+    } catch (err) {
+      console.warn(`[skills] plugin "${pluginId}" skill "${spec.slug}" failed to register:`, err instanceof Error ? err.message : err)
+    }
+  }
+}

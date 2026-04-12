@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import type { BrowserProjectConfig, BrowserPingResult, BrowserPreviewResult, BrowserStatus } from '@/lib/api'
 import { Button, Input, Label, Separator, Switch } from '@jiku/ui'
 import { toast } from 'sonner'
-import { Activity, CheckCircle2, XCircle, Loader2, Wifi, Globe, RefreshCw, Monitor, ImageOff, Bug, Lock, LockOpen } from 'lucide-react'
+import { Activity, CheckCircle2, XCircle, Loader2, Wifi, Globe, Monitor, ImageOff, Bug, Lock, LockOpen } from 'lucide-react'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -50,7 +50,6 @@ function ProjectBrowserPage({ params }: PageProps) {
   const [initialized, setInitialized] = useState(false)
   const [pingResult, setPingResult] = useState<BrowserPingResult | null>(null)
   const [preview, setPreview] = useState<BrowserPreviewResult | null>(null)
-  const [autoRefresh, setAutoRefresh] = useState(false)
   const previewInFlight = useRef(false)
 
   useEffect(() => {
@@ -115,7 +114,8 @@ function ProjectBrowserPage({ params }: PageProps) {
   // Cleared when the page unmounts, the feature is disabled, or the toggle
   // turns off.
   useEffect(() => {
-    if (!enabled || !autoRefresh || !projectId) return
+    if (!enabled || !projectId) return
+    if (!preview && !previewInFlight.current) previewMutation.mutate()
     const id = setInterval(() => {
       if (!previewInFlight.current) previewMutation.mutate()
     }, 3000)
@@ -123,12 +123,11 @@ function ProjectBrowserPage({ params }: PageProps) {
     // We intentionally exclude `previewMutation` from deps — its identity
     // changes on every render and we don't want to reset the interval.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, autoRefresh, projectId])
+  }, [enabled, projectId])
 
   // Reset preview state when the project or feature toggle changes.
   useEffect(() => {
     setPreview(null)
-    setAutoRefresh(false)
   }, [projectId, enabled])
 
   if (isLoading) {
@@ -287,31 +286,6 @@ function ProjectBrowserPage({ params }: PageProps) {
               <p className="text-xs text-muted-foreground mt-0.5">
                 One-shot screenshot of the current browser state. Useful to confirm what your agents are looking at.
               </p>
-            </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="browser-auto-refresh" className="text-xs text-muted-foreground">Auto refresh</Label>
-                <Switch
-                  id="browser-auto-refresh"
-                  checked={autoRefresh}
-                  onCheckedChange={(v) => {
-                    setAutoRefresh(v)
-                    if (v && !preview && !previewMutation.isPending) previewMutation.mutate()
-                  }}
-                />
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => previewMutation.mutate()}
-                disabled={previewMutation.isPending}
-                className="gap-1.5"
-              >
-                {previewMutation.isPending
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  : <RefreshCw className="w-3.5 h-3.5" />}
-                Refresh
-              </Button>
             </div>
           </div>
 

@@ -14,11 +14,12 @@ import type { UIMessage } from 'ai'
 import type { ChatAttachment, ChatFilePart, AutoReplyRule, AvailabilitySchedule, AgentQueueMode } from '@jiku/types'
 import { env } from '../env.ts'
 import { generateConversationTitle } from '../title/generate.ts'
+import { chatRateLimit } from '../middleware/rate-limit.ts'
 
 const router = Router()
 
 // POST /chat requires full auth
-router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
+router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req, res) => {
   const conversationId = String(req.params['id'])
   const userId = res.locals['user_id'] as string
   const { messages } = req.body as { messages: UIMessage[] }
@@ -195,8 +196,10 @@ router.post('/conversations/:id/chat', authMiddleware, async (req, res) => {
             createUsageLog({
               agent_id: agent.id,
               conversation_id: conversationId,
+              project_id: agent.project_id,
               user_id: userId,
               mode: 'chat',
+              source: 'chat',
               provider_id: snapshotProviderId,
               model_id: snapshotModelId,
               input_tokens: data.input_tokens ?? 0,

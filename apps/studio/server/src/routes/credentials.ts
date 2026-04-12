@@ -5,9 +5,12 @@ import { requirePermission, loadPerms } from '../middleware/permission.ts'
 import { encryptFields } from '../credentials/encryption.ts'
 import { getAllAdapters } from '../credentials/adapters.ts'
 import { formatCredential, testCredential } from '../credentials/service.ts'
+import { credentialRateLimit } from '../middleware/rate-limit.ts'
+import { audit, auditContext } from '../audit/logger.ts'
 
 const router = Router()
 router.use(authMiddleware)
+router.use(credentialRateLimit)
 
 router.get('/credentials/adapters', (req, res) => {
   const group_id = req.query['group_id'] as string | undefined
@@ -29,6 +32,7 @@ router.post('/companies/:slug/credentials', async (req, res) => {
   const { name, description, adapter_id, group_id, fields, metadata } = req.body as { name: string; description?: string; adapter_id: string; group_id: string; fields?: Record<string, string>; metadata?: Record<string, string> }
   const fields_encrypted = fields && Object.keys(fields).length > 0 ? encryptFields(fields) : null
   const cred = await createCredential({ name, description: description ?? null, group_id, adapter_id, scope: 'company', scope_id: company.id, fields_encrypted, metadata: metadata ?? {}, created_by: userId })
+  audit.secretCreate({ ...auditContext(req), company_id: company.id }, cred.id, cred.name)
   res.status(201).json({ credential: formatCredential(cred) })
 })
 
@@ -47,6 +51,7 @@ router.post('/projects/:pid/credentials', requirePermission('settings:write'), a
   const { name, description, adapter_id, group_id, fields, metadata } = req.body as { name: string; description?: string; adapter_id: string; group_id: string; fields?: Record<string, string>; metadata?: Record<string, string> }
   const fields_encrypted = fields && Object.keys(fields).length > 0 ? encryptFields(fields) : null
   const cred = await createCredential({ name, description: description ?? null, group_id, adapter_id, scope: 'project', scope_id: project.id, fields_encrypted, metadata: metadata ?? {}, created_by: userId })
+  audit.secretCreate({ ...auditContext(req), project_id: project.id }, cred.id, cred.name)
   res.status(201).json({ credential: formatCredential(cred) })
 })
 
@@ -106,6 +111,10 @@ router.delete('/credentials/:id', async (req, res) => {
   const existing = await getCredentialById(req.params['id']!)
   if (!existing) { res.status(404).json({ error: 'Credential not found' }); return }
   await deleteCredential(req.params['id']!)
+  const ctx = auditContext(req)
+  if (existing.scope === 'project') ctx.project_id = existing.scope_id
+  else ctx.company_id = existing.scope_id
+  audit.secretDelete(ctx, existing.id, existing.name)
   res.json({ ok: true })
 })
 

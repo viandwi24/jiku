@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ResolvedMemoryConfig } from '@/lib/api'
-import { Button, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch, cn } from '@jiku/ui'
+import { Button, CredentialSelector, Input, Label, ModelSelector, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Slider, Switch, cn } from '@jiku/ui'
+import type { CredentialAdapter } from '@/lib/api'
+import { CronExpressionInput } from '@/components/cron/cron-expression-input'
 import { toast } from 'sonner'
 
 const EMBEDDING_PROVIDERS = [
@@ -23,6 +25,7 @@ const SUB_TABS = [
   { id: 'scoring', label: 'Scoring' },
   { id: 'core', label: 'Core' },
   { id: 'semantic', label: 'Semantic Search' },
+  { id: 'dreaming', label: 'Dreaming' },
 ] as const
 
 type SubTab = typeof SUB_TABS[number]['id']
@@ -323,6 +326,10 @@ export function MemoryConfig({ projectId }: MemoryConfigProps) {
             )}
           </>
         )}
+
+        {activeTab === 'dreaming' && (
+          <DreamingTab projectId={projectId} cfg={cfg} patchCfg={patchCfg} />
+        )}
       </div>
 
       {/* Save — always visible at bottom */}
@@ -413,5 +420,168 @@ function EmbeddingCredentialPicker({ projectId, adapterId, value, onChange }: {
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────
+// Plan 19 — Dreaming tab
+// ──────────────────────────────────────────────────────────────
+
+const DEFAULT_DREAMING = {
+  enabled: false,
+  credential_id: null as string | null,
+  model_id: '',
+  light: { enabled: true,  cron: '0 */6 * * *', credential_id: null as string | null, model_id: '' },
+  deep:  { enabled: true,  cron: '0 3 * * *',   credential_id: null as string | null, model_id: '' },
+  rem:   { enabled: false, cron: '0 5 * * 0',   credential_id: null as string | null, model_id: '', min_pattern_strength: 0.75 },
+}
+
+function DreamingTab({ projectId, cfg, patchCfg }: {
+  projectId: string
+  cfg: ResolvedMemoryConfig
+  patchCfg: (u: (p: ResolvedMemoryConfig) => ResolvedMemoryConfig) => void
+}) {
+  const existing = (cfg as ResolvedMemoryConfig & { dreaming?: typeof DEFAULT_DREAMING }).dreaming
+  const d = {
+    ...DEFAULT_DREAMING,
+    ...(existing ?? {}),
+    light: { ...DEFAULT_DREAMING.light, ...(existing?.light ?? {}) },
+    deep:  { ...DEFAULT_DREAMING.deep,  ...(existing?.deep  ?? {}) },
+    rem:   { ...DEFAULT_DREAMING.rem,   ...(existing?.rem   ?? {}) },
+  }
+
+  const patch = (mut: (prev: typeof d) => typeof d) =>
+    patchCfg(p => ({ ...(p as ResolvedMemoryConfig), dreaming: mut(d) } as ResolvedMemoryConfig))
+
+  const runNow = async (phase: 'light' | 'deep' | 'rem') => {
+    try {
+      await api.memoryConfig.triggerDream(projectId, phase)
+      toast.success(`Queued ${phase} dream`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to queue dream')
+    }
+  }
+
+  // Shared credential + model picker (default for all phases).
+  // Keys match the agent LLM page so react-query dedupes across tabs + pages and
+  // we don't burn credit in the Plan 18 credentialRateLimit (30/min/user).
+  const { data: adaptersData } = useQuery({
+    queryKey: ['credentials-adapters', 'provider-model'],
+    queryFn: () => api.credentials.adapters('provider-model'),
+    staleTime: 5 * 60_000,
+  })
+  const { data: availableCredsData } = useQuery({
+    queryKey: ['available-credentials', projectId],
+    queryFn: () => api.credentials.available(projectId, 'provider-model'),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  })
+  const availableCreds = availableCredsData?.credentials ?? []
+  const selectedCred = availableCreds.find(c => c.id === d.credential_id)
+  const selectedAdapter = adaptersData?.adapters.find((a: CredentialAdapter) => a.adapter_id === selectedCred?.adapter_id)
+  const modelsForAdapter = selectedAdapter?.models ?? []
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-sm font-semibold">Dreaming</h3>
+        <p className="text-xs text-muted-foreground mt-1">
+          Background memory consolidation. <strong>Light</strong> clusters recent entries every few
+          hours. <strong>Deep</strong> synthesizes patterns daily and decays memory health.
+          <strong> REM</strong> (weekly) finds cross-topic meta-insights.
+          Save changes to reschedule crons without a restart.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between rounded-md border p-3">
+        <div>
+          <Label className="text-sm font-medium">Enable dreaming</Label>
+          <p className="text-xs text-muted-foreground">Master switch. Individual phases also need their own toggle.</p>
+        </div>
+        <Switch checked={d.enabled} onCheckedChange={v => patch(p => ({ ...p, enabled: v }))} />
+      </div>
+
+      {d.enabled && (
+        <>
+          {/* Default model — used by every phase unless it overrides */}
+          <div className="rounded-md border p-3 space-y-3">
+            <div>
+              <Label className="text-sm font-medium">Default LLM</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Credential + model used by all phases unless they override below. Pick a provider-model credential.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Credential</Label>
+              <CredentialSelector
+                credentials={availableCreds}
+                value={d.credential_id}
+                onChange={(id) => patch(p => ({ ...p, credential_id: id, model_id: '' }))}
+              />
+            </div>
+
+            {selectedCred && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Model</Label>
+                <ModelSelector
+                  models={modelsForAdapter}
+                  value={d.model_id}
+                  onChange={(v) => patch(p => ({ ...p, model_id: v }))}
+                />
+                {modelsForAdapter.length === 0 && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Adapter has no preset models — type the exact model id supported by your provider.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Per-phase schedule */}
+          <div className="space-y-3">
+            {(['light', 'deep', 'rem'] as const).map(phase => {
+              const pc = d[phase]
+              return (
+                <div key={phase} className="rounded-md border p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-sm font-medium capitalize">{phase}</Label>
+                      <p className="text-[11px] text-muted-foreground">
+                        {phase === 'light' && 'Consolidate duplicates among recent tool/flush memories.'}
+                        {phase === 'deep' && 'Daily episodic + top semantic → procedural/semantic. Decays health.'}
+                        {phase === 'rem' && 'Weekly cross-topic patterns → reflective. Off by default (expensive).'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" type="button" onClick={() => runNow(phase)}>
+                        Run now
+                      </Button>
+                      <Switch
+                        checked={pc.enabled}
+                        onCheckedChange={v => patch(p => ({ ...p, [phase]: { ...p[phase], enabled: v } }))}
+                      />
+                    </div>
+                  </div>
+
+                  {pc.enabled && (
+                    <>
+                      <Separator />
+                      <div className="space-y-1">
+                        <Label className="text-xs">Cron (UTC)</Label>
+                        <CronExpressionInput
+                          value={pc.cron}
+                          onChange={v => patch(p => ({ ...p, [phase]: { ...p[phase], cron: v } }))}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
   )
 }

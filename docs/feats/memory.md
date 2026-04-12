@@ -183,3 +183,66 @@ Vector embedding search via Qdrant. When enabled, memories are embedded on save 
 - Embedding is fire-and-forget; new memories may not be immediately searchable
 - DB migration for `agent_memories` requires `bun run db:push`
 - LLM auto-extraction removed — agents must explicitly call memory tools to persist facts
+
+---
+
+## Plan 19 — Memory Learning Loop (2026-04-12)
+
+### Memory types
+Each memory row now carries:
+- `memory_type`: `episodic | semantic | procedural | reflective` (default `semantic`, backward compat)
+- `score_health`: 0..1 float, boosted by retrieval (+0.05, capped), decayed by deep dreaming (*0.98)
+- `source_type`: `tool | reflection | dream | flush` — tracks how the row was produced
+
+Low-health dream-origin rows are purged; user-written `tool` rows are preserved.
+
+### Background Jobs Contract (HARD RULE)
+
+Reflection / dreaming / flush work runs out-of-band via `background_jobs` — it must **never** block the user response stream.
+
+1. Runner MUST close its stream before enqueue is called.
+2. `enqueueAsync()` only `INSERT`s a row to `background_jobs`; handlers run in the worker loop (tick 5s).
+3. `BackgroundWorker` claims jobs with `SELECT ... FOR UPDATE SKIP LOCKED` — safe under multiple ticks.
+4. Idempotency keys prevent duplicates: `flush:<conversation>:<hash>`, `reflection:<conversation>:<turns>`.
+5. Worker failures retry up to `max_attempts` with 30s delay; terminal failures leave `status='failed'` with error text.
+
+### Flush hook (compaction)
+`AgentRunner` fires `CompactionHook` whenever `compactMessages()` produces a summary. Studio's hook enqueues `memory.flush` → handler embeds, dedups (cosine ≥ 0.9), inserts episodic memory scoped to the conversation caller.
+
+### Reflection hook (finalize)
+After stream close, `FinalizeHook` fires → enqueues `memory.reflection` (only when the agent opts in via `AgentMemoryConfig.reflection.enabled`). Handler runs a small LLM that extracts at most one insight ("NONE" is honored), dedups against existing reflective memories, then inserts a `reflective / reflection` memory.
+
+### Dreaming engine
+Per-project cron (`croner`) schedules 3 phases:
+- **Light (every 6h):** cluster last-2d `tool`/`flush` memories by embedding similarity ≥ 0.85, consolidate each cluster into one `semantic / dream` memory.
+- **Deep (daily):** synthesize last-7d episodic + top-health semantic into `procedural` / `semantic` via `PROC:`/`FACT:` prefixes. Then `bulkDecayHealth(* 0.98)` and `deleteLowHealthDreamMemories(< 0.1)`.
+- **REM (weekly, opt-in):** cross-topic patterns from `semantic` + `procedural` over 30d; emits `reflective / dream` only above `min_pattern_strength`.
+
+Manual trigger: `POST /api/projects/:pid/memory/dream { phase }`.
+
+### Config (project-level)
+`ResolvedMemoryConfig.dreaming` — master toggle + per-phase `{ enabled, cron, model_tier }`; REM also has `min_pattern_strength`. Editing config calls `dreamScheduler.reschedule(projectId)`.
+
+### Config (agent-level)
+`AgentMemoryConfig.reflection` — `{ enabled, model, scope, min_conversation_turns }`. Default off. Scope picks `agent_caller` (per-user) vs `agent_global`.
+
+### Audit events
+`memory.write`, `memory.flush`, `memory.reflection_run`, `memory.dream_run` — all via `audit.*` helpers, routed through `audit_logs` (Plan 18).
+
+### Key files
+
+- `apps/studio/db/src/schema/memories.ts` — added `memory_type`, `score_health`, `source_type`
+- `apps/studio/db/src/schema/background_jobs.ts` — durable queue
+- `apps/studio/db/src/queries/memory.ts` — `bulkDecayHealth`, `deleteLowHealthDreamMemories`, `getMemoriesByType`; `touchMemories` now bumps health
+- `apps/studio/db/src/queries/background_jobs.ts` — `enqueueJob` (idempotent), `claimNextJob` (SKIP LOCKED), lifecycle queries
+- `apps/studio/db/src/migrations/0012_plan19_memory_jobs.sql`
+- `apps/studio/server/src/jobs/worker.ts` — tick loop
+- `apps/studio/server/src/jobs/enqueue.ts` — non-blocking helper
+- `apps/studio/server/src/jobs/handlers/{flush,reflection,dreaming}.ts`
+- `apps/studio/server/src/jobs/dream-scheduler.ts` — croner-based per-project cron
+- `apps/studio/server/src/memory/hooks.ts` — `CompactionHook`/`FinalizeHook` → enqueue
+- `packages/core/src/runner.ts` — `setCompactionHook`, `setFinalizeHook`
+- `packages/core/src/runtime.ts` — propagates hooks to all agent runners
+- `apps/studio/web/components/memory/memory-config.tsx` — Dreaming sub-tab (project `/memory` page → Config tab) with CredentialSelector + ModelSelector + per-phase `CronExpressionInput`
+- `apps/studio/web/components/memory/memory-browser.tsx` — Type + Health columns, clickable detail/edit dialog
+- `apps/studio/web/app/.../agents/[agent]/memory/page.tsx` — Reflection section

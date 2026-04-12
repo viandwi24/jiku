@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import express, { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import {
   getSkillsByProjectId,
@@ -16,6 +16,7 @@ import type { ProjectSkill } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission } from '../middleware/permission.ts'
 import { runtimeManager } from '../runtime/manager.ts'
+import { audit, auditContext } from '../audit/logger.ts'
 import { getFilesystemService } from '../filesystem/service.ts'
 import { skillFsPath } from '../skills/service.ts'
 
@@ -154,6 +155,108 @@ router.delete('/agents/:aid/skills/:sid', requirePermission('agents:write'), asy
   if (agent) await runtimeManager.syncAgent(agent.project_id, agentId)
 
   res.json({ ok: true })
+})
+
+// ── Plan 19 — Skills Loader v2 endpoints ─────────────────────────────────────
+
+/** Refresh the SkillLoader FS cache for a project. */
+router.post('/projects/:pid/skills/refresh', requirePermission('agents:write'), async (req, res) => {
+  const projectId = req.params['pid'] as string
+  try {
+    const { getSkillLoader } = await import('../skills/loader.ts')
+    const snapshot = await getSkillLoader(projectId).syncFilesystem()
+    res.json({ ok: true, count: snapshot.length })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Refresh failed' })
+  }
+})
+
+/**
+ * Import a skill from a public GitHub repo or an uploaded ZIP.
+ * Body:
+ *   { source: 'github', package: 'owner/repo[/subpath][@ref]', overwrite?: boolean }
+ *   { source: 'zip', overwrite?: boolean } + multipart "file" field
+ */
+router.post('/projects/:pid/skills/import', requirePermission('agents:write'), async (req, res) => {
+  const projectId = req.params['pid'] as string
+  try {
+    const { importSkillFromGithub, importSkillFromZipBuffer, parseGithubPackageSpec } = await import('../skills/importer.ts')
+    const body = req.body as { source?: string; package?: string; overwrite?: boolean }
+
+    if (body.source === 'github') {
+      if (!body.package) { res.status(400).json({ error: '`package` is required for github source' }); return }
+      const spec = parseGithubPackageSpec(body.package)
+      const result = await importSkillFromGithub(projectId, { ...spec, overwrite: body.overwrite })
+      audit.skillImport(
+        { ...auditContext(req), project_id: projectId },
+        result.slug,
+        { source: 'github', package: body.package, files_count: result.files_count },
+      )
+      res.json({ result })
+      return
+    }
+
+    res.status(400).json({ error: 'source must be "github" (use /skills/import-zip for ZIP upload)' })
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Import failed' })
+  }
+})
+
+/**
+ * Plan 19 — ZIP upload variant. Expects raw application/zip body up to 20MB.
+ * Separate endpoint so the JSON parser on `/import` is not confused.
+ */
+router.post(
+  '/projects/:pid/skills/import-zip',
+  requirePermission('agents:write'),
+  express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '20mb' }),
+  async (req, res) => {
+    const projectId = req.params['pid'] as string
+    try {
+      const buffer = req.body as Buffer
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        res.status(400).json({ error: 'ZIP body is empty — set Content-Type: application/zip' })
+        return
+      }
+      const overwrite = req.query['overwrite'] === 'true'
+      const { importSkillFromZipBuffer } = await import('../skills/importer.ts')
+      const result = await importSkillFromZipBuffer(projectId, buffer, { overwrite, sourceLabel: 'zip-upload' })
+      audit.skillImport(
+        { ...auditContext(req), project_id: projectId },
+        result.slug,
+        { source: 'zip', files_count: result.files_count },
+      )
+      res.json({ result })
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Import failed' })
+    }
+  },
+)
+
+/** Plan 19 — update agent.skill_access_mode. */
+router.patch('/agents/:aid/skill-access-mode', requirePermission('agents:write'), async (req, res) => {
+  const agentId = req.params['aid'] as string
+  const body = req.body as { mode?: 'manual' | 'all_on_demand' }
+  if (body.mode !== 'manual' && body.mode !== 'all_on_demand') {
+    res.status(400).json({ error: 'mode must be "manual" or "all_on_demand"' })
+    return
+  }
+  const agent = await getAgentById(agentId)
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+  res.locals['project_id'] = agent.project_id
+  try {
+    const { db, agents, eq } = await import('@jiku-studio/db')
+    await db.update(agents).set({ skill_access_mode: body.mode }).where(eq(agents.id, agentId))
+    await runtimeManager.syncAgent(agent.project_id, agentId)
+    audit.skillAssignmentChanged(
+      { ...auditContext(req), project_id: agent.project_id },
+      agentId,
+      { access_mode: body.mode },
+    )
+    res.json({ ok: true, mode: body.mode })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update access mode' })
+  }
 })
 
 export { router as skillsRouter }

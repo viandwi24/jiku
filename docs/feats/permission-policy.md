@@ -2,12 +2,19 @@
 
 ## What it does
 
-Two complementary access control layers:
+Three complementary access control layers, presented together under **Settings → Access Control** (Plan 18 UX consolidation):
 
-1. **Roles & Permissions** (project membership level) — controls which Studio pages and API endpoints a user can access within a project
-2. **Policies & Rules** (agent tool level) — controls which tools each caller can invoke when chatting with or running an agent
+1. **Roles & Permissions** (project membership level) — controls which Studio pages and API endpoints a user can access within a project.
+2. **Policies & Rules** (agent tool level, runtime) — controls which tools each caller can invoke when chatting with or running an agent, with conditional rules (caller attributes, channel, time, etc.).
+3. **Plugin Permissions** (per-member capability grant, Plan 18) — binary grants of plugin-declared capabilities (e.g. `telegram:send_message`), enforced in the core runner before every tool execute against `ToolMeta.required_plugin_permission`.
 
-These are intentionally separate: a user may have `agents:read` permission (can see agents) but still be blocked from calling specific tools by a policy rule.
+All three are visible in the settings sidebar under the "Access Control" group. Sub-pages: Members, Roles, Agent Access, Policies, Plugin Permissions.
+
+**Policies vs Plugin Permissions** — these are not duplicates:
+- Plugin Permissions = "does this member have the key?" (static capability).
+- Policies = "given they have the key, can they use it now, from this channel, on this resource?" (contextual rule).
+
+Both must pass — plugin permission check fires first (in `packages/core/src/runner.ts` before `execute()`), then existing policy rules evaluate as before.
 
 ---
 

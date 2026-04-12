@@ -27,6 +27,18 @@ interface PageProps {
   params: Promise<{ company: string; project: string }>
 }
 
+/** Plan 19 — color-coded tint per usage source so the table scans visually. */
+function sourceBadgeClass(src: string | null | undefined): string {
+  if (!src) return ''
+  if (src === 'chat' || src === 'task') return 'bg-blue-500/10 text-blue-600 border-blue-500/20'
+  if (src === 'reflection') return 'bg-purple-500/10 text-purple-600 border-purple-500/20'
+  if (src.startsWith('dreaming')) return 'bg-indigo-500/10 text-indigo-600 border-indigo-500/20'
+  if (src === 'flush') return 'bg-slate-500/10 text-slate-600 border-slate-500/20'
+  if (src === 'title') return 'bg-teal-500/10 text-teal-600 border-teal-500/20'
+  if (src.startsWith('plugin:')) return 'bg-amber-500/10 text-amber-700 border-amber-500/20'
+  return ''
+}
+
 function formatDate(d: string): string {
   return new Date(d).toLocaleString(undefined, {
     month: 'short', day: 'numeric',
@@ -45,7 +57,7 @@ function RawDataDialog({ log }: { log: ProjectUsageLog }) {
         <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-sm font-mono">
-              Raw Data — {log.agent?.name ?? log.agent_id.slice(0, 8)} / {log.id.slice(0, 8)}
+              Raw Data — {log.agent?.name ?? log.agent_id?.slice(0, 8) ?? 'unknown'} / {log.id.slice(0, 8)}
             </DialogTitle>
           </DialogHeader>
           <div className="flex-1 overflow-auto space-y-4 text-xs font-mono">
@@ -76,6 +88,7 @@ function ProjectUsagePage({ params }: PageProps) {
   // Filters
   const [filterAgent, setFilterAgent] = useState<string>('all')
   const [filterMode, setFilterMode] = useState<string>('all')
+  const [filterSource, setFilterSource] = useState<string>('all')
   const [filterUser, setFilterUser] = useState<string>('all')
   const [search, setSearch] = useState('')
 
@@ -133,22 +146,31 @@ function ProjectUsagePage({ params }: PageProps) {
     return Array.from(set)
   }, [allLogs])
 
+  // Plan 19 — distinct sources (chat, reflection, dreaming.*, etc.)
+  const sources = useMemo(() => {
+    const set = new Set<string>()
+    for (const log of allLogs) if (log.source) set.add(log.source)
+    return Array.from(set).sort()
+  }, [allLogs])
+
   // Apply client-side filters
   const filteredLogs = useMemo(() => {
     return allLogs.filter(log => {
       if (filterAgent !== 'all' && log.agent_id !== filterAgent) return false
       if (filterMode !== 'all' && log.mode !== filterMode) return false
+      if (filterSource !== 'all' && log.source !== filterSource) return false
       if (filterUser !== 'all' && log.user_id !== filterUser) return false
       if (search) {
         const q = search.toLowerCase()
         const agentMatch = log.agent?.name?.toLowerCase().includes(q)
         const userMatch = log.user?.name?.toLowerCase().includes(q) || log.user?.email?.toLowerCase().includes(q)
         const modeMatch = log.mode.toLowerCase().includes(q)
-        if (!agentMatch && !userMatch && !modeMatch) return false
+        const sourceMatch = log.source?.toLowerCase().includes(q)
+        if (!agentMatch && !userMatch && !modeMatch && !sourceMatch) return false
       }
       return true
     })
-  }, [allLogs, filterAgent, filterMode, filterUser, search])
+  }, [allLogs, filterAgent, filterMode, filterSource, filterUser, search])
 
   // Filtered summary
   const filteredSummary = useMemo(() => ({
@@ -157,7 +179,7 @@ function ProjectUsagePage({ params }: PageProps) {
     total_output: filteredLogs.reduce((s, l) => s + l.output_tokens, 0),
   }), [filteredLogs])
 
-  const isFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterUser !== 'all' || search !== ''
+  const isFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterSource !== 'all' || filterUser !== 'all' || search !== ''
   const displaySummary = isFiltered ? filteredSummary : summary
 
   const activeLogs = isFiltered ? filteredLogs : allLogs
@@ -169,6 +191,7 @@ function ProjectUsagePage({ params }: PageProps) {
   function resetFilters() {
     setFilterAgent('all')
     setFilterMode('all')
+    setFilterSource('all')
     setFilterUser('all')
     setSearch('')
   }
@@ -263,6 +286,18 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
+        <Select value={filterSource} onValueChange={setFilterSource}>
+          <SelectTrigger className="h-8 text-xs w-40">
+            <SelectValue placeholder="All sources" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All sources</SelectItem>
+            {sources.map(s => (
+              <SelectItem key={s} value={s}>{s}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         <Select value={filterUser} onValueChange={setFilterUser}>
           <SelectTrigger className="h-8 text-xs w-36">
             <SelectValue placeholder="All users" />
@@ -289,12 +324,14 @@ function ProjectUsagePage({ params }: PageProps) {
           <thead className="bg-muted/50 border-b">
             <tr>
               <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Time</th>
+              <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Source</th>
               <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Agent</th>
               <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">User</th>
               <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Mode</th>
               <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Model</th>
               <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">In (←model)</th>
               <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">Out (→model)</th>
+              <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">Dur</th>
               <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">Est. Cost</th>
               <th className="px-3 py-2" />
             </tr>
@@ -302,14 +339,14 @@ function ProjectUsagePage({ params }: PageProps) {
           <tbody className="divide-y">
             {isLoading && (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-xs text-muted-foreground">
+                <td colSpan={11} className="px-3 py-8 text-center text-xs text-muted-foreground">
                   Loading...
                 </td>
               </tr>
             )}
             {!isLoading && filteredLogs.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-xs text-muted-foreground">
+                <td colSpan={11} className="px-3 py-8 text-center text-xs text-muted-foreground">
                   {isFiltered ? 'No results match the current filters.' : 'No usage logs yet. Start a chat to see data here.'}
                 </td>
               </tr>
@@ -319,8 +356,16 @@ function ProjectUsagePage({ params }: PageProps) {
                 <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                   {formatDate(log.created_at)}
                 </td>
+                <td className="px-3 py-2">
+                  <Badge variant="outline" className={`text-[10px] h-5 ${sourceBadgeClass(log.source)}`}>
+                    {log.source ?? 'chat'}
+                  </Badge>
+                </td>
                 <td className="px-3 py-2 text-xs font-medium">
-                  {log.agent?.name ?? <span className="text-muted-foreground font-normal">{log.agent_id.slice(0, 8)}</span>}
+                  {log.agent?.name ?? (log.agent_id
+                    ? <span className="text-muted-foreground font-normal">{log.agent_id.slice(0, 8)}</span>
+                    : <span className="text-muted-foreground font-normal italic">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-xs">
                   {log.user?.name ?? log.user?.email ?? (
@@ -340,6 +385,9 @@ function ProjectUsagePage({ params }: PageProps) {
                 </td>
                 <td className="px-3 py-2 text-xs text-right font-mono">
                   {formatTokens(log.input_tokens)}
+                </td>
+                <td className="px-3 py-2 text-xs text-right text-muted-foreground font-mono whitespace-nowrap">
+                  {log.duration_ms != null ? `${(log.duration_ms / 1000).toFixed(1)}s` : '—'}
                 </td>
                 <td className="px-3 py-2 text-xs text-right text-muted-foreground font-mono">
                   {estimateCost(log.input_tokens, log.output_tokens, log.model_id, pricingMap)}

@@ -18,6 +18,7 @@ import {
 } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission } from '../middleware/permission.ts'
+import { audit, auditContext } from '../audit/logger.ts'
 
 const router = Router()
 router.use(authMiddleware)
@@ -141,6 +142,11 @@ router.post('/companies/:cid/invitations', async (req, res) => {
     expires_at,
   })
 
+  audit.memberInvite(
+    { ...auditContext(req), company_id: companyId },
+    email,
+    { project_ids: (project_grants ?? []).map(g => g.project_id) },
+  )
   res.status(201).json({ invitation })
 })
 

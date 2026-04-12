@@ -12,6 +12,7 @@ import {
 import { createHmac, randomUUID } from 'crypto'
 import { env } from '../env.ts'
 import busboy from 'busboy'
+import { uploadRateLimit } from '../middleware/rate-limit.ts'
 
 const router = Router()
 
@@ -48,7 +49,7 @@ function verifyProxyToken(token: string): string | null {
 // POST /projects/:pid/attachments/upload
 // Multipart upload. Returns { attachment_id, storage_key, proxy_url }.
 
-router.post('/projects/:pid/attachments/upload', authMiddleware, requirePermission('chats:create'), async (req, res) => {
+router.post('/projects/:pid/attachments/upload', uploadRateLimit, authMiddleware, requirePermission('chats:create'), async (req, res) => {
   const projectId = req.params['pid']
   const userId = res.locals['user_id'] as string
   const { agent_id, conversation_id } = req.query as { agent_id?: string; conversation_id?: string }

@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { SkillItem } from '@/lib/api'
 import { Button, Badge, cn } from '@jiku/ui'
-import { BookOpen, Plus, Trash2, Check, X, AlertCircle, Settings2 } from 'lucide-react'
+import { BookOpen, Plus, Trash2, Check, X, AlertCircle, Settings2, RefreshCw, Download } from 'lucide-react'
 import { FileExplorer } from '@/components/filesystem/file-explorer'
 import { toast } from 'sonner'
 
@@ -19,6 +19,7 @@ export default function ProjectSkillsPage({ params }: PageProps) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null)
   const [creatingSkill, setCreatingSkill] = useState(false)
   const [newSkillName, setNewSkillName] = useState('')
+  const [importOpen, setImportOpen] = useState(false)
 
   const { data: companiesData } = useQuery({
     queryKey: ['companies'],
@@ -76,17 +77,47 @@ export default function ProjectSkillsPage({ params }: PageProps) {
   return (
     <div className="flex h-full overflow-hidden">
       {/* ── Skill list panel ── */}
-      <div className="w-56 shrink-0 border-r flex flex-col">
+      <div className="w-64 shrink-0 border-r flex flex-col">
         <div className="px-3 py-3 border-b flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Skills</span>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-6 w-6"
-            onClick={() => setCreatingSkill(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-0.5">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              title="Rescan /skills folder"
+              onClick={async () => {
+                if (!project?.id) return
+                try {
+                  const r = await api.skills.refresh(project.id)
+                  toast.success(`Synced ${r.count} skill(s)`)
+                  queryClient.invalidateQueries({ queryKey: ['project-skills', project.id] })
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : 'Refresh failed')
+                }
+              }}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              title="Import from GitHub / ZIP"
+              onClick={() => setImportOpen(true)}
+            >
+              <Download className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              title="New skill"
+              onClick={() => setCreatingSkill(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto py-1.5">
@@ -114,8 +145,14 @@ export default function ProjectSkillsPage({ params }: PageProps) {
             >
               <BookOpen className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate flex-1">{skill.name}</span>
+              {skill.source && skill.source !== 'fs' && (
+                <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0" title={skill.source}>plugin</Badge>
+              )}
               {!skill.enabled && (
                 <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">off</Badge>
+              )}
+              {skill.active === false && (
+                <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0" title="Inactive source">inactive</Badge>
               )}
             </button>
           ))}
@@ -200,6 +237,130 @@ export default function ProjectSkillsPage({ params }: PageProps) {
             }}
           />
         )}
+      </div>
+
+      {/* Plan 19 — Import dialog */}
+      {importOpen && project?.id && (
+        <ImportSkillDialog
+          projectId={project.id}
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            setImportOpen(false)
+            queryClient.invalidateQueries({ queryKey: ['project-skills', project.id] })
+            queryClient.invalidateQueries({ queryKey: ['files', project.id] })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────
+// Plan 19 — Import dialog (GitHub / ZIP)
+// ──────────────────────────────────────────────────────────────
+
+function ImportSkillDialog({
+  projectId,
+  onClose,
+  onImported,
+}: {
+  projectId: string
+  onClose: () => void
+  onImported: () => void
+}) {
+  const [source, setSource] = useState<'github' | 'zip'>('github')
+  const [pkg, setPkg] = useState('')
+  const [zipFile, setZipFile] = useState<File | null>(null)
+  const [overwrite, setOverwrite] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const run = async () => {
+    try {
+      setBusy(true)
+      if (source === 'github') {
+        if (!pkg.trim()) { toast.error('Package is required'); return }
+        const { result } = await api.skills.importFromGithub(projectId, { package: pkg.trim(), overwrite })
+        toast.success(`Imported "${result.name}" (${result.files_count} files)`)
+      } else {
+        if (!zipFile) { toast.error('Choose a ZIP file'); return }
+        const { result } = await api.skills.importFromZip(projectId, zipFile, overwrite)
+        toast.success(`Imported "${result.name}" (${result.files_count} files)`)
+      }
+      onImported()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-[480px] max-w-full bg-background border rounded-lg shadow-lg p-5 space-y-4" onClick={e => e.stopPropagation()}>
+        <div>
+          <h2 className="text-sm font-semibold">Import skill</h2>
+          <p className="text-xs text-muted-foreground">From a public GitHub repo or a ZIP file</p>
+        </div>
+
+        <div className="flex gap-2 text-xs">
+          <button
+            onClick={() => setSource('github')}
+            className={cn('flex-1 py-1.5 rounded border', source === 'github' ? 'bg-accent' : 'hover:bg-muted')}
+          >GitHub</button>
+          <button
+            onClick={() => setSource('zip')}
+            className={cn('flex-1 py-1.5 rounded border', source === 'zip' ? 'bg-accent' : 'hover:bg-muted')}
+          >ZIP file</button>
+        </div>
+
+        {source === 'github' && (
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Package</label>
+            <input
+              value={pkg}
+              onChange={e => setPkg(e.target.value)}
+              placeholder="owner/repo/subpath  or  https://skills.sh/owner/repo/subpath"
+              className="w-full h-8 px-2 text-sm font-mono rounded border bg-background"
+              autoFocus
+            />
+            <div className="text-[10px] text-muted-foreground space-y-0.5">
+              <p>Format: <code>owner/repo/&lt;skill-name&gt;</code>. The importer looks up the skill
+              across skills.sh standard locations (<code>skills/</code>, <code>skills/.curated/</code>,
+              <code>.claude/skills/</code>, etc.).</p>
+              <p>Examples:</p>
+              <ul className="list-disc pl-4 space-y-0.5">
+                <li><code>coreyhaines31/marketingskills/marketing-psychology</code></li>
+                <li><code>https://skills.sh/coreyhaines31/marketingskills/marketing-psychology</code></li>
+                <li><code>owner/repo</code> — for single-skill repos with root <code>SKILL.md</code></li>
+                <li>Or paste the full command: <code>npx skills add https://github.com/owner/repo --skill &lt;name&gt;</code></li>
+                <li>Append <code>@v1.2</code> or <code>@branch</code> for a specific ref</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {source === 'zip' && (
+          <div className="space-y-1">
+            <label className="text-xs font-medium">ZIP file</label>
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              onChange={e => setZipFile(e.target.files?.[0] ?? null)}
+              className="w-full text-sm"
+            />
+            <p className="text-[10px] text-muted-foreground">Must contain SKILL.md at the root (or first subfolder)</p>
+          </div>
+        )}
+
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />
+          Overwrite existing skill with the same slug
+        </label>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button size="sm" onClick={run} disabled={busy}>{busy ? 'Importing…' : 'Import'}</Button>
+        </div>
       </div>
     </div>
   )

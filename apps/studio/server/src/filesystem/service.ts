@@ -25,6 +25,7 @@ import { decryptFields } from '../credentials/encryption.ts'
 import { S3FilesystemAdapter, buildS3Adapter } from './adapter.ts'
 import { normalizePath, isAllowedFile, getMimeType, getAncestorPaths } from './utils.ts'
 import type { ProjectFile } from '@jiku-studio/db'
+import { audit } from '../audit/logger.ts'
 
 // Cache validity for content_cache (24 hours)
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -169,6 +170,11 @@ export class FilesystemService {
     await this.upsertAncestorFolders(normalized)
 
     await updateFilesystemStats(this.projectId)
+    audit.fileWrite(
+      { actor_id: userId ?? null, actor_type: userId ? 'user' : 'system', project_id: this.projectId },
+      normalized,
+      sizeBytes,
+    )
     return file
   }
 
@@ -219,6 +225,10 @@ export class FilesystemService {
     })
 
     await updateFilesystemStats(this.projectId)
+    audit.fileDelete(
+      { actor_id: null, actor_type: 'system', project_id: this.projectId },
+      normalized,
+    )
   }
 
   async deleteFolder(folderPath: string): Promise<number> {

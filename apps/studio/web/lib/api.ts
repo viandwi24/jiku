@@ -206,6 +206,11 @@ export const api = {
       return request<{ memories: MemoryItem[] }>(`/api/projects/${projectId}/memories${q ? `?${q}` : ''}`)
     },
     delete: (id: string) => request<{ success: boolean }>(`/api/memories/${id}`, { method: 'DELETE' }),
+    update: (id: string, body: { content?: string; importance?: 'low' | 'medium' | 'high'; visibility?: 'private' | 'agent_shared' | 'project_shared' }) =>
+      request<{ memory: MemoryItem }>(`/api/memories/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
   },
 
   memoryConfig: {
@@ -225,6 +230,19 @@ export const api = {
       }),
     getAgentResolved: (agentId: string) =>
       request<{ resolved: ResolvedMemoryConfig; project_config: ResolvedMemoryConfig; agent_config: AgentMemoryConfig | null }>(`/api/agents/${agentId}/memory-config/resolved`),
+    // Plan 19
+    triggerDream: (projectId: string, phase: 'light' | 'deep' | 'rem') =>
+      request<{ ok: true; phase: string }>(`/api/projects/${projectId}/memory/dream`, {
+        method: 'POST',
+        body: JSON.stringify({ phase }),
+      }),
+    listJobs: (projectId: string, params?: { status?: string; type?: string }) => {
+      const qs = new URLSearchParams()
+      if (params?.status) qs.set('status', params.status)
+      if (params?.type) qs.set('type', params.type)
+      const q = qs.toString()
+      return request<{ jobs: Array<{ id: string; type: string; status: string; attempts: number; scheduled_at: string; completed_at: string | null; error: string | null; created_at: string }> }>(`/api/projects/${projectId}/jobs${q ? `?${q}` : ''}`)
+    },
   },
 
   persona: {
@@ -653,6 +671,34 @@ export const api = {
       request<{ assignment: AgentSkillAssignment }>(`/api/agents/${agentId}/skills/${skillId}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
     removeSkill: (agentId: string, skillId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}/skills/${skillId}`, { method: 'DELETE' }),
+
+    // Plan 19
+    refresh: (projectId: string) =>
+      request<{ ok: true; count: number }>(`/api/projects/${projectId}/skills/refresh`, { method: 'POST' }),
+    importFromGithub: (projectId: string, body: { package: string; overwrite?: boolean }) =>
+      request<{ result: { slug: string; name: string; files_count: number; source_package: string } }>(
+        `/api/projects/${projectId}/skills/import`,
+        { method: 'POST', body: JSON.stringify({ source: 'github', ...body }) },
+      ),
+    importFromZip: async (projectId: string, file: File, overwrite = false) => {
+      const url = `/api/projects/${projectId}/skills/import-zip${overwrite ? '?overwrite=true' : ''}`
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file,
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? `ZIP import failed (${res.status})`)
+      }
+      return (await res.json()) as { result: { slug: string; name: string; files_count: number; source_package: string } }
+    },
+    setAgentAccessMode: (agentId: string, mode: 'manual' | 'all_on_demand') =>
+      request<{ ok: true; mode: string }>(`/api/agents/${agentId}/skill-access-mode`, {
+        method: 'PATCH',
+        body: JSON.stringify({ mode }),
+      }),
   },
 
   mcpServers: {
@@ -676,6 +722,78 @@ export const api = {
     reset: (agentId: string, toolId: string) =>
       request<{ ok: boolean }>(`/api/agents/${agentId}/tools/${encodeURIComponent(toolId)}/state`, { method: 'DELETE' }),
   },
+
+  auditLogs: {
+    list: (projectId: string, params: {
+      page?: number
+      per_page?: number
+      event_type?: string
+      actor_id?: string
+      resource_type?: string
+      from?: string
+      to?: string
+    } = {}) => {
+      const qs = new URLSearchParams()
+      for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') qs.set(k, String(v))
+      return request<{ logs: AuditLogEntry[]; total: number; page: number; per_page: number }>(
+        `/api/projects/${projectId}/audit-logs?${qs.toString()}`,
+      )
+    },
+    get: (projectId: string, id: string) =>
+      request<{ log: AuditLogEntry }>(`/api/projects/${projectId}/audit-logs/${id}`),
+    exportUrl: (projectId: string, params: Record<string, string | undefined> = {}) => {
+      const qs = new URLSearchParams()
+      for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v)
+      return `${BASE_URL}/api/projects/${projectId}/audit-logs/export?${qs.toString()}`
+    },
+  },
+
+  pluginPermissions: {
+    listProject: (projectId: string) =>
+      request<{ grants: PluginPermissionGrant[] }>(`/api/projects/${projectId}/plugin-permissions`),
+    listMember: (projectId: string, userId: string) =>
+      request<{ grants: PluginPermissionGrant[] }>(`/api/projects/${projectId}/members/${userId}/plugin-permissions`),
+    replaceMember: (projectId: string, userId: string, grants: Array<{ plugin_id: string; permission: string }>) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/members/${userId}/plugin-permissions`, {
+        method: 'PUT',
+        body: JSON.stringify({ grants }),
+      }),
+    grant: (projectId: string, body: { user_id: string; plugin_id: string; permission: string }) =>
+      request<{ grant: PluginPermissionGrant }>(`/api/projects/${projectId}/plugin-permissions/grant`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    revoke: (projectId: string, id: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/plugin-permissions/${id}`, { method: 'DELETE' }),
+  },
+}
+
+export interface AuditLogEntry {
+  id: string
+  project_id: string | null
+  company_id: string | null
+  actor_id: string | null
+  actor_type: string
+  event_type: string
+  resource_type: string
+  resource_id: string | null
+  resource_name: string | null
+  metadata: Record<string, unknown>
+  ip_address: string | null
+  user_agent: string | null
+  created_at: string
+  actor: { id: string; name: string; email: string } | null
+}
+
+export interface PluginPermissionGrant {
+  id: string
+  project_id: string
+  membership_id: string
+  plugin_id: string
+  permission: string
+  granted_by: string | null
+  created_at: string
+  user?: { id: string; name: string; email: string } | null
 }
 
 // Types
@@ -839,6 +957,8 @@ export interface Agent {
   auto_replies?: AutoReplyRule[] | null
   /** Availability schedule */
   availability_schedule?: AvailabilitySchedule | null
+  /** Plan 19 — skill access resolution mode */
+  skill_access_mode?: 'manual' | 'all_on_demand' | null
   created_at: string | null
 }
 
@@ -911,14 +1031,19 @@ export interface ProjectUsageLog extends UsageLog {
 
 export interface UsageLog {
   id: string
-  agent_id: string
-  conversation_id: string
+  // Plan 19 — agent/conversation nullable for background LLM calls.
+  agent_id: string | null
+  conversation_id: string | null
+  project_id: string | null
   user_id: string | null
   mode: string
+  /** 'chat' | 'task' | 'title' | 'reflection' | 'dreaming.light|deep|rem' | 'flush' | 'plugin:<id>' | 'custom' */
+  source: string
   provider_id: string | null
   model_id: string | null
   input_tokens: number
   output_tokens: number
+  duration_ms: number | null
   raw_system_prompt: string | null
   raw_messages: unknown | null
   created_at: string
@@ -1137,6 +1262,10 @@ export interface MemoryItem {
   importance: 'low' | 'medium' | 'high'
   visibility: 'private' | 'agent_shared' | 'project_shared'
   source: 'agent' | 'extraction'
+  // Plan 19
+  memory_type?: 'episodic' | 'semantic' | 'procedural' | 'reflective'
+  source_type?: 'tool' | 'reflection' | 'dream' | 'flush'
+  score_health?: number
   access_count: number
   last_accessed: string | null
   expires_at: string | null
@@ -1164,6 +1293,15 @@ export interface ResolvedMemoryConfig {
     credential_id: string | null
     dimensions: number
   }
+  // Plan 19 — dreaming engine (project-level)
+  dreaming?: {
+    enabled: boolean
+    credential_id: string | null
+    model_id: string
+    light: { enabled: boolean; cron: string; credential_id: string | null; model_id: string }
+    deep:  { enabled: boolean; cron: string; credential_id: string | null; model_id: string }
+    rem:   { enabled: boolean; cron: string; credential_id: string | null; model_id: string; min_pattern_strength: number }
+  }
 }
 
 export type AgentMemoryConfig = {
@@ -1177,6 +1315,13 @@ export type AgentMemoryConfig = {
   core?: Partial<ResolvedMemoryConfig['core']>
   extraction?: Partial<ResolvedMemoryConfig['extraction']>
   embedding?: Partial<ResolvedMemoryConfig['embedding']>
+  // Plan 19 — per-agent post-run reflection override
+  reflection?: {
+    enabled?: boolean
+    model?: string
+    scope?: 'agent_caller' | 'agent_global'
+    min_conversation_turns?: number
+  }
 }
 
 export interface PersonaTraits {
@@ -1406,6 +1551,12 @@ export interface SkillItem {
   tags: string[]
   entrypoint: string
   enabled: boolean
+  // Plan 19
+  source?: string           // 'fs' | `plugin:<id>`
+  plugin_id?: string | null
+  active?: boolean
+  manifest?: unknown
+  last_synced_at?: string | null
   created_at: string
   updated_at: string
 }

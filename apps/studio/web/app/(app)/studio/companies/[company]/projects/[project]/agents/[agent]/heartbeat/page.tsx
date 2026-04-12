@@ -11,6 +11,7 @@ import {
   Switch,
   Textarea,
 } from '@jiku/ui'
+import { CronExpressionInput } from '@/components/cron/cron-expression-input'
 import { toast } from 'sonner'
 import { Activity, Play } from 'lucide-react'
 
@@ -134,16 +135,7 @@ export default function HeartbeatPage({ params }: PageProps) {
       {/* Schedule */}
       <div className="space-y-2">
         <Label className="text-xs font-medium">Schedule (cron expression)</Label>
-        <Input
-          value={cron}
-          onChange={e => setCron(e.target.value)}
-          placeholder="0 * * * *"
-          className="font-mono text-sm"
-          disabled={!enabled}
-        />
-        <p className="text-xs text-muted-foreground">
-          5-field cron: minute hour day month weekday. E.g. <code className="font-mono">0 * * * *</code> = every hour.
-        </p>
+        <CronExpressionInput value={cron} onChange={setCron} disabled={!enabled} />
 
         {hbData && (
           <div className="flex gap-4 text-xs text-muted-foreground pt-1">

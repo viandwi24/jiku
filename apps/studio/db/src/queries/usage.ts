@@ -1,4 +1,4 @@
-import { eq, desc, inArray, sql } from 'drizzle-orm'
+import { eq, desc, or, inArray, sql } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { usage_logs, agents } from '../schema/index.ts'
 import type { NewUsageLog } from '../schema/index.ts'
@@ -49,16 +49,27 @@ export async function getUsageCountByAgent(agentId: string) {
   return result[0]?.count ?? 0
 }
 
+/**
+ * Plan 19 — includes rows scoped directly to the project (background LLM calls:
+ * reflection, dreaming, flush, plugin-invoked) plus legacy rows linked via agent.
+ */
+function projectUsageWhere(projectId: string, agentIds: string[]) {
+  if (agentIds.length === 0) return eq(usage_logs.project_id, projectId)
+  return or(
+    eq(usage_logs.project_id, projectId),
+    inArray(usage_logs.agent_id, agentIds),
+  )!
+}
+
 export async function getUsageLogsByProject(projectId: string, limit = 100, offset = 0) {
   const projectAgents = await db.query.agents.findMany({
     where: eq(agents.project_id, projectId),
     columns: { id: true },
   })
   const agentIds = projectAgents.map(a => a.id)
-  if (agentIds.length === 0) return []
 
   return db.query.usage_logs.findMany({
-    where: inArray(usage_logs.agent_id, agentIds),
+    where: projectUsageWhere(projectId, agentIds),
     orderBy: [desc(usage_logs.created_at)],
     limit,
     offset,
@@ -76,7 +87,6 @@ export async function getUsageSummaryByProject(projectId: string) {
     columns: { id: true },
   })
   const agentIds = projectAgents.map(a => a.id)
-  if (agentIds.length === 0) return { total_input: 0, total_output: 0, total_runs: 0 }
 
   const result = await db
     .select({
@@ -85,7 +95,7 @@ export async function getUsageSummaryByProject(projectId: string) {
       total_runs: sql<number>`count(*)`.mapWith(Number),
     })
     .from(usage_logs)
-    .where(inArray(usage_logs.agent_id, agentIds))
+    .where(projectUsageWhere(projectId, agentIds))
 
   return result[0] ?? { total_input: 0, total_output: 0, total_runs: 0 }
 }
@@ -96,11 +106,10 @@ export async function getUsageCountByProject(projectId: string) {
     columns: { id: true },
   })
   const agentIds = projectAgents.map(a => a.id)
-  if (agentIds.length === 0) return 0
 
   const result = await db
     .select({ count: sql<number>`count(*)`.mapWith(Number) })
     .from(usage_logs)
-    .where(inArray(usage_logs.agent_id, agentIds))
+    .where(projectUsageWhere(projectId, agentIds))
   return result[0]?.count ?? 0
 }

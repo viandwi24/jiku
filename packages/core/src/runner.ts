@@ -27,6 +27,7 @@ import type {
   ResolvedMemoryConfig,
   AgentMemory,
   PersonaSeed,
+  ToolHooks,
 } from '@jiku/types'
 import type { JikuUIMessage, JikuUIMessageStreamWriter } from './types.ts'
 import { resolveScope } from './resolver/scope.ts'
@@ -95,7 +96,39 @@ function makeWriter(sdkWriter: JikuUIMessageStreamWriter): JikuStreamWriter {
   }
 }
 
+/**
+ * Plan 19 — Hook fired when compaction produces a summary.
+ * Called fire-and-forget AFTER the summary is persisted but BEFORE the stream opens.
+ * Studio wires this to enqueue a `memory.flush` background job.
+ */
+export interface CompactionHook {
+  (info: {
+    conversation_id: string
+    agent_id: string
+    summary: string
+    removed_count: number
+  }): void
+}
+
+/**
+ * Plan 19 — Hook fired when `run()` finalizes (stream closed, response sent).
+ * Studio wires this to enqueue a `memory.reflection` job when reflection is enabled.
+ * MUST be fire-and-forget — do not await inside the handler.
+ */
+export interface FinalizeHook {
+  (info: {
+    conversation_id: string
+    agent_id: string
+    mode: string
+    turn_count: number
+  }): void
+}
+
 export class AgentRunner {
+  private toolHooks?: ToolHooks
+  private compactionHook?: CompactionHook
+  private finalizeHook?: FinalizeHook
+
   constructor(
     private agent: AgentDefinition,
     private plugins: PluginLoader,
@@ -108,6 +141,20 @@ export class AgentRunner {
     private skillSection?: string | null,
     private skillHint?: string | null,
   ) {}
+
+  setToolHooks(hooks: ToolHooks | undefined): void {
+    this.toolHooks = hooks
+  }
+
+  /** Plan 19 */
+  setCompactionHook(hook: CompactionHook | undefined): void {
+    this.compactionHook = hook
+  }
+
+  /** Plan 19 */
+  setFinalizeHook(hook: FinalizeHook | undefined): void {
+    this.finalizeHook = hook
+  }
 
   /**
    * Check whether conversation history has exceeded the compaction threshold.
@@ -220,6 +267,18 @@ export class AgentRunner {
         compactSummary = result.summary
         compactRemovedCount = result.removed_count
         compactTokenSaved = result.token_saved
+        // Plan 19 — fire compaction hook fire-and-forget
+        try {
+          this.compactionHook?.({
+            conversation_id,
+            agent_id: this.agent.meta.id,
+            summary: result.summary,
+            removed_count: result.removed_count,
+          })
+        } catch (err) {
+          // Hook must never interrupt the run
+          console.warn('[runner] compaction hook error:', err)
+        }
       }
     }
 
@@ -422,6 +481,8 @@ export class AgentRunner {
 
         // Build AI SDK tools map
         const aiTools: ToolSet = {}
+        const toolHooks = this.toolHooks
+        const agentId = this.agent.meta.id
         for (const resolvedTool of modeTools) {
           const toolCtx: ToolContext = {
             runtime: runtimeCtx,
@@ -434,6 +495,27 @@ export class AgentRunner {
             writer: jikuWriter,
           }
 
+          const hookInfo = {
+            tool_id: resolvedTool.resolved_id,
+            tool_name: resolvedTool.tool_name,
+            plugin_id: resolvedTool.plugin_id,
+            caller,
+            agent_id: agentId,
+          }
+
+          // Plan 18 — enforce plugin-granted permission before executing.
+          const enforcePermission = () => {
+            const required = resolvedTool.meta.required_plugin_permission
+            if (!required) return
+            if (caller.is_superadmin) return
+            const granted = caller.granted_plugin_permissions ?? []
+            if (!granted.includes(required)) {
+              const reason = `Permission '${required}' required to use tool '${resolvedTool.resolved_id}'`
+              void toolHooks?.onBlocked?.({ ...hookInfo, reason })
+              throw new Error(reason)
+            }
+          }
+
           if (resolvedTool.executeStream) {
             // Plan 15.1: Streaming tool — yield progress chunks
             const streamExec = resolvedTool.executeStream
@@ -442,21 +524,37 @@ export class AgentRunner {
               description: resolvedTool.meta.description,
               inputSchema: toInputSchema(resolvedTool.input),
               execute: async (args: unknown) => {
-                const gen = streamExec(args, toolCtx)
-                let finalValue: unknown
-                for await (const chunk of gen) {
-                  jikuWriter.write('jiku-tool-data', { tool_id: toolId, data: chunk })
+                enforcePermission()
+                void toolHooks?.onInvoke?.({ ...hookInfo, args })
+                try {
+                  const gen = streamExec(args, toolCtx)
+                  let finalValue: unknown
+                  for await (const chunk of gen) {
+                    jikuWriter.write('jiku-tool-data', { tool_id: toolId, data: chunk })
+                  }
+                  const result = await gen.return(undefined)
+                  finalValue = result.value
+                  return finalValue
+                } catch (error) {
+                  void toolHooks?.onError?.({ ...hookInfo, args, error })
+                  throw error
                 }
-                const result = await gen.return(undefined)
-                finalValue = result.value
-                return finalValue
               },
             })
           } else {
             aiTools[resolvedTool.tool_name] = tool({
               description: resolvedTool.meta.description,
               inputSchema: toInputSchema(resolvedTool.input),
-              execute: async (args: unknown) => resolvedTool.execute(args, toolCtx),
+              execute: async (args: unknown) => {
+                enforcePermission()
+                void toolHooks?.onInvoke?.({ ...hookInfo, args })
+                try {
+                  return await resolvedTool.execute(args, toolCtx)
+                } catch (error) {
+                  void toolHooks?.onError?.({ ...hookInfo, args, error })
+                  throw error
+                }
+              },
             })
           }
         }
@@ -542,6 +640,18 @@ export class AgentRunner {
         // Note: LLM extraction removed (Plan 15 decision).
         // Memory is saved explicitly via agent tool calls (memory_core_append, etc.)
         // This avoids duplicate memories and saves token costs.
+
+        // Plan 19 — fire finalize hook fire-and-forget (reflection enqueue)
+        try {
+          this.finalizeHook?.({
+            conversation_id,
+            agent_id: this.agent.meta.id,
+            mode,
+            turn_count: steps.length,
+          })
+        } catch (err) {
+          console.warn('[runner] finalize hook error:', err)
+        }
       },
 
       onError: (err: unknown) => {
@@ -651,6 +761,8 @@ export class AgentRunner {
       memorySection = formatMemorySection(memoryCtx, userName) || undefined
     }
 
+    // Order must match buildSystemPrompt() in resolver/prompt.ts so the preview
+    // reflects the actual system prompt layout.
     const segments: ContextSegment[] = [
       {
         source: 'base_prompt',
@@ -674,6 +786,14 @@ export class AgentRunner {
             token_estimate: estimateTokens(this.skillSection),
           }]
         : []),
+      ...(memorySection
+        ? [{
+            source: 'memory' as const,
+            label: 'Memory',
+            content: memorySection,
+            token_estimate: estimateTokens(memorySection),
+          }]
+        : []),
       {
         source: 'mode',
         label: `Mode: ${mode}`,
@@ -686,18 +806,12 @@ export class AgentRunner {
         content: userContextText,
         token_estimate: estimateTokens(userContextText),
       },
-      ...pluginSegments.map((seg, i) => ({
-        source: 'plugin' as const,
-        label: `Plugin Segment ${i + 1}`,
-        content: seg,
-        token_estimate: estimateTokens(seg),
-      })),
-      ...(memorySection
+      ...(this.skillHint
         ? [{
-            source: 'memory' as const,
-            label: 'Memory',
-            content: memorySection,
-            token_estimate: estimateTokens(memorySection),
+            source: 'skill' as const,
+            label: 'Skills (on-demand hint)',
+            content: this.skillHint,
+            token_estimate: estimateTokens(this.skillHint),
           }]
         : []),
       ...(toolHintsText
@@ -708,6 +822,12 @@ export class AgentRunner {
             token_estimate: estimateTokens(toolHintsText),
           }]
         : []),
+      ...pluginSegments.map((seg, i) => ({
+        source: 'plugin' as const,
+        label: `Plugin Segment ${i + 1}`,
+        content: seg,
+        token_estimate: estimateTokens(seg),
+      })),
     ]
 
     const totalTokens = segments.reduce((acc, s) => acc + s.token_estimate, 0)

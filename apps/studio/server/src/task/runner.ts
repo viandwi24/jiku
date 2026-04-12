@@ -1,6 +1,7 @@
-import { createTaskConversation, updateConversation, getConversationById, getMessages } from '@jiku-studio/db'
+import { createTaskConversation, updateConversation, getConversationById, getMessages, getAgentById } from '@jiku-studio/db'
 import { runtimeManager } from '../runtime/manager.ts'
 import { buildProgressTool } from './progress-tool.ts'
+import { recordLLMUsage } from '../usage/tracker.ts'
 import type { CallerContext } from '@jiku/types'
 
 /** Build a system CallerContext (no real user) for task/heartbeat runs */
@@ -75,13 +76,45 @@ export async function runTaskConversation(
     // Drain the stream fully
     const reader = result.stream.getReader()
     let outputText = ''
+    let usageInput = 0
+    let usageOutput = 0
+    let providerId: string | null = null
+    let modelId: string | null = null
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      if (value && 'type' in value && value.type === 'text-delta') {
-        outputText += (value as { delta?: string }).delta ?? ''
+      if (value && 'type' in value) {
+        const v = value as { type: string; delta?: string; data?: unknown }
+        if (v.type === 'text-delta') {
+          outputText += v.delta ?? ''
+        } else if (v.type === 'data-jiku-usage') {
+          const d = v.data as { input_tokens?: number; output_tokens?: number } | undefined
+          if (d) {
+            usageInput = d.input_tokens ?? 0
+            usageOutput = d.output_tokens ?? 0
+          }
+        } else if (v.type === 'data-jiku-meta') {
+          const d = v.data as { provider_id?: string; model_id?: string } | undefined
+          providerId = d?.provider_id ?? providerId
+          modelId = d?.model_id ?? modelId
+        }
       }
+    }
+
+    if (usageInput > 0 || usageOutput > 0) {
+      const agent = await getAgentById(agentId).catch(() => null)
+      recordLLMUsage({
+        source: 'task',
+        mode: 'task',
+        project_id: agent?.project_id ?? projectId,
+        agent_id: agentId,
+        conversation_id: conversationId,
+        provider: providerId,
+        model: modelId,
+        input_tokens: usageInput,
+        output_tokens: usageOutput,
+      })
     }
 
     // Check metadata for output set by task_complete tool

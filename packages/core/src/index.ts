@@ -1,5 +1,6 @@
 export { JikuRuntime } from './runtime.ts'
 export { AgentRunner, JikuAccessError } from './runner.ts'
+export type { CompactionHook, FinalizeHook } from './runner.ts'
 export { PluginLoader } from './plugins/loader.ts'
 export { PluginCircularDepError } from './plugins/dependency.ts'
 export { discoverPluginsFromFolder, type DiscoveredPlugin, type DiscoverOptions } from './plugins/discover.ts'
@@ -16,3 +17,8 @@ export {
   formatMemorySection,
   extractMemoriesPostRun,
 } from './memory/index.ts'
+// Plan 19 Workstream B — Skills v2
+export { parseSkillDoc, hashManifestSource, resolveEntrypoint } from './skills/manifest.ts'
+export type { ParsedSkillDoc } from './skills/manifest.ts'
+export { checkSkillEligibility } from './skills/eligibility.ts'
+export { SkillRegistry } from './skills/registry.ts'

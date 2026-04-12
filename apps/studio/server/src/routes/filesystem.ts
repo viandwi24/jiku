@@ -22,6 +22,7 @@ import {
 import { invalidateFilesystemCache } from '../filesystem/factory.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { normalizePath, isAllowedFile, getMimeType } from '../filesystem/utils.ts'
+import { uploadRateLimit } from '../middleware/rate-limit.ts'
 
 const router = Router()
 router.use(authMiddleware)
@@ -125,8 +126,13 @@ router.get('/projects/:pid/files/content', requirePermission('agents:read'), asy
   try {
     const fs = await getFilesystemService(projectId)
     if (!fs) return res.status(503).json({ error: 'Filesystem not configured' })
-    const content = await fs.read(filePath)
-    return res.json({ path: normalizePath(filePath), content })
+    const result = await fs.read(filePath)
+    return res.json({
+      path: normalizePath(filePath),
+      content: result.content,
+      version: result.version,
+      cached: result.cached,
+    })
   } catch (err) {
     return handleFsError(res, err)
   }
@@ -292,7 +298,7 @@ router.delete('/projects/:pid/files/folder', requirePermission('agents:read'), a
 // ─── Upload (multipart) ───────────────────────────────────────────────────────
 
 // POST /projects/:pid/files/upload
-router.post('/projects/:pid/files/upload', requirePermission('agents:read'), (req, res) => {
+router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('agents:read'), (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = normalizePath((req.query['path'] as string) ?? '/')
 

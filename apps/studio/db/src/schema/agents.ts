@@ -37,6 +37,13 @@ export const agents = pgTable('agents', {
   /** Whether this agent can be used as the target of cron tasks. */
   cron_task_enabled:    boolean('cron_task_enabled').notNull().default(true),
   /**
+   * Plan 19 — how this agent consumes skills.
+   *   'manual'        = explicit per-skill assignment via agent_skills (current behavior)
+   *   'all_on_demand' = every eligible active project/plugin skill is available on-demand; agent_skills
+   *                     rows with mode='always' still pin to system prompt.
+   */
+  skill_access_mode:    varchar('skill_access_mode', { length: 20 }).notNull().default('manual'),
+  /**
    * Queue mode for handling messages while agent is busy.
    * 'off'       = reject/drop (current behavior)
    * 'queue'     = buffer silently, process FIFO

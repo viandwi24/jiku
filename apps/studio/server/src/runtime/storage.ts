@@ -94,6 +94,9 @@ function toAgentMemory(row: {
   importance: string
   visibility: string
   source: string
+  memory_type?: string
+  score_health?: number
+  source_type?: string
   access_count: number
   last_accessed: Date | null
   expires_at: Date | null
@@ -112,6 +115,9 @@ function toAgentMemory(row: {
     importance: row.importance as AgentMemory['importance'],
     visibility: row.visibility as AgentMemory['visibility'],
     source: row.source as AgentMemory['source'],
+    memory_type: (row.memory_type ?? 'semantic') as AgentMemory['memory_type'],
+    score_health: row.score_health ?? 1.0,
+    source_type: (row.source_type ?? 'tool') as AgentMemory['source_type'],
     access_count: row.access_count,
     last_accessed: row.last_accessed,
     expires_at: row.expires_at,
@@ -227,7 +233,7 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
 
   async saveMemory(memory: Omit<AgentMemory,
     'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'
-  >): Promise<AgentMemory> {
+  > & Partial<Pick<AgentMemory, 'memory_type' | 'score_health' | 'source_type'>>): Promise<AgentMemory> {
     const row = await dbSaveMemory({
       project_id: memory.runtime_id,
       agent_id: memory.agent_id,
@@ -239,6 +245,9 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
       importance: memory.importance,
       visibility: memory.visibility,
       source: memory.source,
+      memory_type: memory.memory_type ?? 'semantic',
+      score_health: memory.score_health ?? 1.0,
+      source_type: memory.source_type ?? 'tool',
       expires_at: memory.expires_at ?? undefined,
     })
     const saved = toAgentMemory(row)
@@ -269,7 +278,7 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
   }
 
   async updateMemory(id: string, data: Partial<Pick<AgentMemory,
-    'content' | 'importance' | 'visibility' | 'expires_at'
+    'content' | 'importance' | 'visibility' | 'expires_at' | 'score_health' | 'memory_type'
   >>): Promise<void> {
     await dbUpdateMemory(id, data)
   }

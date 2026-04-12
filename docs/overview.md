@@ -2,7 +2,7 @@
 
 > Dokumen ini memberi gambaran menyeluruh tentang codebase Jiku untuk siapa pun — developer baru, kontributor, product owner, ataupun sekedar pembaca yang ingin memahami sistem. Baca dokumen ini dulu sebelum masuk ke detail teknis lain.
 >
-> **Tanggal analisis:** 2026-04-12
+> **Tanggal analisis:** 2026-04-12 (update pasca Plan 19 — memory learning loop & skills v2)
 > **Branch:** main
 
 ---
@@ -76,10 +76,11 @@ Express.js 5 + Hono 4 sebagai API layer. Pusat koordinasi semua subsistem.
 | **Credentials** | Enkripsi AES untuk API key (Anthropic, OpenAI, OpenRouter). |
 | **Filesystem** | Virtual filesystem backed by S3/MinIO/RustFS. UUID-keyed, LRU cache (500 entries, 5min TTL), content cache ≤50KB, tsvector search + ILIKE fallback, async cleanup worker. Revisi v2 shipped 2026-04-10 (Plan 16). |
 | **Browser** | Bridge ke Vercel `agent-browser` (Rust CDP client) di dalam Docker container. 33 action: navigate, click, fill, screenshot, cookies, tabs, eval, batch. Per-project mutex + per-agent tab affinity. |
-| **Memory** | Memori persisten agent dengan 4 scope (agent_self, agent_caller, agent_global, runtime_global) dan 2 tier (core, extended). Scoring: keyword 0.5 + recency 0.3 + access 0.2. Ekstraksi memory async oleh LLM pasca-run. |
-| **Cron** | Scheduler berbasis `croner` untuk task mode. |
+| **Memory** | Memori persisten agent dengan 4 scope (agent_self, agent_caller, agent_global, runtime_global), 2 tier (core, extended), **4 type** (episodic/semantic/procedural/reflective), dan health score yang decay lewat dreaming. Hybrid scoring: keyword + semantic (Qdrant) + recency + access. Learning loop: compaction flush, post-run reflection, 3-phase dreaming engine (light/deep/REM). See Plan 15 + 19. |
+| **Cron** | Scheduler berbasis `croner` untuk task mode + dreaming phases. |
+| **Background jobs** | Durable job queue (`background_jobs` table) + `BackgroundWorker` (5s tick, SKIP LOCKED pickup, retry). Dipakai memory.flush, memory.reflection, memory.dream. Fire-and-forget contract — tidak pernah memblok user response. |
 | **Connectors** | Webhook inbound (Telegram + custom channel), tool `connector_send` & `connector_list`. |
-| **Skills** | Knowledge base agent yang disimpan di filesystem virtual di path `/skills/{slug}/`. |
+| **Skills** | FS-first skill packages di `/skills/{slug}/SKILL.md` (YAML frontmatter, skills.sh compatible). Union registry across FS + plugin sources; per-agent access mode (`manual` vs `all_on_demand`); progressive-disclosure XML hint; GitHub tarball + ZIP import (`npx skills add` URL form supported); eligibility check (`requires.{os,bins,env,permissions,config}`). See Plan 19 Workstream B. |
 | **Policies** | Rule-based access control — dicek setiap tool invocation. |
 | **MCP** | Model Context Protocol server integration. |
 
@@ -134,15 +135,15 @@ Fitur-fitur yang sudah live (lihat juga `docs/feats/*.md`):
 2. **Browser Automation** — 33 action lewat CDP; screenshot jadi attachment; live preview + debug panel di Settings.
 3. **Chat Attachments** — upload gambar ke S3, per-conversation, gallery viewer dengan minimap.
 4. **Filesystem** — virtual disk `/`, tools list/read/write/move/delete/search. Backed by S3.
-5. **Memory System** — 4 scope × 2 tier, scoring hybrid, ekstraksi async.
+5. **Memory System** — 4 scope × 2 tier × 4 type, hybrid scoring (keyword + semantic/Qdrant + recency + access), health decay, reflection + dreaming loops.
 6. **Persona** — identitas agent yang immutable, terpisah dari memory.
 7. **Permissions & Policies** — rule data-driven, enforce per tool call, bisa di-update tanpa restart.
 8. **Cron Tasks** — jadwalkan task dengan cron expression, trigger manual juga bisa.
 9. **Task Heartbeat & Delegation** — task mode otonom, agent bisa delegasikan pakai tool `run_task`.
-10. **Skills** — knowledge base files yang auto-seed saat agent dibuat.
+10. **Skills** — FS-first packages dengan YAML frontmatter (skills.sh compatible). Import dari GitHub / ZIP / `npx skills add` command. Plugin dapat contribute skill via `ctx.skills.register()`. Per-agent access mode + progressive-disclosure XML injection + eligibility gating.
 11. **Connectors** — webhook inbound (Telegram, custom).
 12. **Plugins Marketplace UI** — lihat/aktifkan plugin per project.
-13. **Usage Monitoring** — tracking token & cost per agent.
+13. **Usage Monitoring** — tracking token & cost per agent + per project + per source (chat, task, title, reflection, dreaming.*, flush, plugin:*). Setiap LLM call wajib lewat `recordLLMUsage()`. Raw system_prompt + messages disimpan untuk debug.
 
 ---
 
@@ -209,11 +210,14 @@ Company → Project → Agent → Conversation (chat | task)
 
 ---
 
-## 9. Pekerjaan Terbaru (State per 2026-04-10)
+## 9. Pekerjaan Terbaru (State per 2026-04-12)
 
-- **Plan 16 v2 — Filesystem Production-Scale** (2026-04-10): UUID-based S3 keys (move/rename = 0 S3 ops), LRU cache service, tabel `project_folders` untuk list O(1), optimistic locking, async cleanup & migration worker.
-- **Plan 13/33 — Browser Rebuild** (2026-04-09): ganti Playwright headless dengan CDP bridge via Vercel agent-browser; Docker hardened (no-sandbox, dbus, readiness probe); live preview + debug panel; per-project mutex + per-agent tab affinity.
-- Sebelumnya: cron task system, usage monitor, connector_list tool, conversation title generation + soft delete, task delegation, route security audit, chat attachments, skills integration (Plan 14).
+- **Plan 19 — Memory Learning Loop + Skills Loader v2** (2026-04-12): memory typing + health, durable background job queue, compaction flush hook, post-run reflection, 3-phase dreaming engine, FS-first skills with YAML frontmatter (skills.sh compatible), plugin `ctx.skills.register()`, GitHub/ZIP import, per-agent access mode, progressive-disclosure XML hint, universal `recordLLMUsage()` tracker. See `docs/plans/impl-reports/19-memory-skills-implementation-report.md`.
+- **Plan 18 — Production Hardening** (2026-04-12): rate limiting, broad audit_logs table, per-member plugin permission grants, tool hot-unregister, settings nav refactor (vertical sidebar + Access Control grouping).
+- **Plan 17 — Plugin UI System** (2026-04-12): isolated bundles (tsup + dynamic URL import), auto-discovery gateway, Studio host anchor (`@jiku-plugin/studio`), signed-URL asset serving, `apps/cli` (commander + Ink).
+- **Plan 16 v2 — Filesystem Production-Scale** (2026-04-10): UUID-based S3 keys, LRU cache, project_folders table, optimistic locking, async cleanup/migration worker.
+- **Plan 13/33 — Browser Rebuild** (2026-04-09): CDP bridge via Vercel agent-browser; hardened Docker; live preview + debug panel.
+- Sebelumnya: cron tasks, usage monitor, connector_list, title generation + soft delete, task delegation, route security audit, chat attachments, skills integration (Plan 14).
 
 Cek `docs/builder/current.md` untuk konteks aktif, `docs/builder/changelog.md` untuk history lengkap.
 
@@ -237,19 +241,25 @@ Cek `docs/builder/current.md` untuk konteks aktif, `docs/builder/changelog.md` u
 - **Attachments ≠ project_files** — attachment itu gambar ephemeral di chat, project_files itu virtual filesystem persisten.
 - **Content cache threshold 50 KB** — file lebih besar selalu round-trip ke S3.
 - **Tool parts format berbeda** DB (`tool-invocation`) vs UI (`dynamic-tool`) — konversi via `dbPartsToUIParts()`.
-- **Skills files source-of-truth-nya di filesystem**, bukan DB.
+- **Skills files source-of-truth-nya di filesystem**, bukan DB. DB `project_skills` adalah cache — manifest dibangun ulang dari SKILL.md saat `syncFilesystem()`.
 - **Concurrent write butuh `expected_version`** (optimistic locking).
+- **Setiap LLM call WAJIB `recordLLMUsage()`** — kalau skip, dashboard biaya akan under-report tanpa warning.
+- **Cron input di UI WAJIB pakai `CronExpressionInput`** — tidak boleh `<Input>` polos, user butuh preview "at 01:01"/"every hour" realtime.
+- **Background jobs kontrak non-blocking**: runner close stream dulu, baru enqueue. `enqueue()` hanya INSERT ke `background_jobs`, tidak pernah jalanin handler inline.
+- **`fs.read()` return `{ content, version, cached }`**, bukan string — selalu unwrap `.content` saat passing ke consumer yang expect string.
 
 ---
 
 ## 12. Limitasi Saat Ini & Rencana Ke Depan
 
-- Memory search masih keyword-based — belum ada embedding/vector search.
+- `skill_exec_file` deferred — butuh sandboxed runtime (JS/TS/Python). Rencana plan terpisah.
+- Skill import private repo — butuh GitHub PAT, belum di-wire.
+- Per-phase credential/model override di Dreaming UI belum diekspos (schema sudah support).
+- Skill marketplace browse (katalog skills.sh di dalam app) — follow-up.
 - `StreamRegistry` in-memory — hilang kalau server restart.
 - Belum ada WebSocket (hanya HTTP SSE).
 - Message belum di-encrypt (cukup untuk MVP).
-- Belum ada rate limiting.
-- Tool browser tidak bisa unregister tanpa restart.
+- Dreaming effectiveness benchmark 10k-memory scale belum diverifikasi.
 
 ---
 

@@ -78,7 +78,7 @@ export default defineMountable(Dashboard)
 | **Path traversal guard** | `resolve()` + prefix check. |
 | **CORS + nosniff** | `Access-Control-Allow-Origin: *`, `Cross-Origin-Resource-Policy: cross-origin`, `X-Content-Type-Options: nosniff`. |
 
-Full threat model + operator checklist: [`docs/plugin-dev/security.md`](../../plugin-dev/security.md).
+Full threat model + operator checklist: [`docs/dev/plugin/security.md`](../../dev/plugin/security.md).
 
 ### Developer tooling (`jiku` CLI)
 
@@ -185,11 +185,11 @@ Run via `bun run jiku ...` from anywhere in the workspace.
 
 ### Docs (new / updated)
 
-- `docs/plugin-dev/overview.md` — flow, directory layout, minimal plugin, build/run via CLI.
-- `docs/plugin-dev/cli.md` — full `jiku` CLI reference.
-- `docs/plugin-dev/context-api.md` — `ctx.*` reference including `ctx.studio.api`.
-- `docs/plugin-dev/slots.md` — slot contract table + fase-1 wiring status.
-- `docs/plugin-dev/security.md` — threat model, controls, do-not-do checklist, operator setup.
+- `docs/dev/plugin/overview.md` — flow, directory layout, minimal plugin, build/run via CLI.
+- `docs/dev/plugin/cli.md` — full `jiku` CLI reference.
+- `docs/dev/plugin/context-api.md` — `ctx.*` reference including `ctx.studio.api`.
+- `docs/dev/plugin/slots.md` — slot contract table + fase-1 wiring status.
+- `docs/dev/plugin/security.md` — threat model, controls, do-not-do checklist, operator setup.
 - `docs/feats/plugin-ui.md` — feature doc.
 - `docs/builder/current.md` + `changelog.md` updated.
 

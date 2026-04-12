@@ -11,7 +11,8 @@
     "ai": "^6.0.145",
     "zod": "3.25.76",
     "zod-to-json-schema": "^3.25.2",
-    "hookable": "^6.1.0"
+    "hookable": "^6.1.0",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

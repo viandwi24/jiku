@@ -4,6 +4,7 @@ import { requirePermission, loadPerms } from '../middleware/permission.ts'
 import {
   listProjectMemories,
   deleteMemory,
+  updateMemory,
   getMemoryById,
   getAgentById,
   getProjectById,
@@ -73,6 +74,43 @@ router.delete('/memories/:id', authMiddleware, async (req, res) => {
   }
 })
 
+/**
+ * PATCH /memories/:id
+ * Update editable fields of a memory row. Plan 19: content, importance, visibility.
+ */
+router.patch('/memories/:id', authMiddleware, async (req, res) => {
+  const memoryId = req.params['id']! as string
+  const body = req.body as {
+    content?: string
+    importance?: 'low' | 'medium' | 'high'
+    visibility?: 'private' | 'agent_shared' | 'project_shared'
+  }
+  try {
+    const memory = await getMemoryById(memoryId)
+    if (!memory) { res.status(404).json({ error: 'Memory not found' }); return }
+    res.locals['project_id'] = memory.project_id
+    const result = await loadPerms(req, res)
+    if (!result) { res.status(400).json({ error: 'Project context required' }); return }
+    const { resolved } = result
+    if (!resolved.granted) { res.status(403).json({ error: 'Not a member' }); return }
+    if (!resolved.isSuperadmin && !resolved.permissions.includes('memory:write')) {
+      res.status(403).json({ error: 'Missing permission: memory:write' }); return
+    }
+
+    const updates: Record<string, unknown> = {}
+    if (typeof body.content === 'string' && body.content.trim().length > 0) updates['content'] = body.content.trim()
+    if (body.importance) updates['importance'] = body.importance
+    if (body.visibility) updates['visibility'] = body.visibility
+    if (Object.keys(updates).length === 0) { res.status(400).json({ error: 'No updatable fields provided' }); return }
+
+    await updateMemory(memoryId, updates)
+    const fresh = await getMemoryById(memoryId)
+    res.json({ memory: fresh })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update memory' })
+  }
+})
+
 // ──────────────────────────────────────────────────────────────
 // Memory Config — Project level
 // ──────────────────────────────────────────────────────────────
@@ -114,6 +152,12 @@ router.patch('/projects/:pid/memory-config', authMiddleware, requirePermission('
     // Clear embedding service cache so next memory save picks up new config
     const { clearEmbeddingCache } = await import('../memory/embedding.ts')
     clearEmbeddingCache(projectId)
+
+    // Plan 19 — reschedule dreaming cron if config changed
+    const { dreamScheduler } = await import('../jobs/dream-scheduler.ts')
+    dreamScheduler.reschedule(projectId).catch(err =>
+      console.warn('[memory] dream scheduler reschedule failed:', err),
+    )
 
     res.json({ config: merged })
   } catch (err) {
@@ -190,5 +234,46 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   }
   return result
 }
+
+// ──────────────────────────────────────────────────────────────
+// Plan 19 — Dreaming manual trigger
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * POST /projects/:pid/memory/dream
+ * Body: { phase: 'light' | 'deep' | 'rem' }
+ */
+router.post('/projects/:pid/memory/dream', authMiddleware, requirePermission('settings:write'), async (req, res) => {
+  const projectId = req.params['pid']! as string
+  const phase = (req.body as { phase?: string } | null)?.phase
+  if (phase !== 'light' && phase !== 'deep' && phase !== 'rem') {
+    res.status(400).json({ error: 'phase must be one of: light, deep, rem' })
+    return
+  }
+  try {
+    const { triggerDreamNow } = await import('../jobs/dream-scheduler.ts')
+    await triggerDreamNow(projectId, phase)
+    res.json({ ok: true, phase })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to trigger dream' })
+  }
+})
+
+/**
+ * GET /projects/:pid/jobs
+ * List recent background jobs for this project (debug).
+ */
+router.get('/projects/:pid/jobs', authMiddleware, requirePermission('settings:read'), async (req, res) => {
+  const projectId = req.params['pid']! as string
+  const status = (req.query['status'] as string | undefined) ?? undefined
+  const type = (req.query['type'] as string | undefined) ?? undefined
+  try {
+    const { listJobs } = await import('@jiku-studio/db')
+    const jobs = await listJobs({ project_id: projectId, status, type, limit: 100 })
+    res.json({ jobs })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list jobs' })
+  }
+})
 
 export { router as memoryRouter }

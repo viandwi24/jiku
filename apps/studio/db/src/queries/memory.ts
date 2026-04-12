@@ -80,6 +80,9 @@ export async function saveMemory(data: SaveMemoryData): Promise<AgentMemoryRow> 
       importance: data.importance ?? 'medium',
       visibility: data.visibility ?? 'private',
       source: data.source ?? 'agent',
+      memory_type: data.memory_type ?? 'semantic',
+      score_health: data.score_health ?? 1.0,
+      source_type: data.source_type ?? 'tool',
       expires_at: data.expires_at,
     })
     .returning()
@@ -88,7 +91,7 @@ export async function saveMemory(data: SaveMemoryData): Promise<AgentMemoryRow> 
 
 export async function updateMemory(
   id: string,
-  data: Partial<Pick<AgentMemoryRow, 'content' | 'importance' | 'visibility' | 'expires_at'>>,
+  data: Partial<Pick<AgentMemoryRow, 'content' | 'importance' | 'visibility' | 'expires_at' | 'score_health' | 'memory_type'>>,
 ): Promise<void> {
   await db
     .update(agent_memories)
@@ -107,8 +110,59 @@ export async function touchMemories(ids: string[]): Promise<void> {
     .set({
       access_count: sql`${agent_memories.access_count} + 1`,
       last_accessed: new Date(),
+      // Plan 19: retrieval bumps health, capped at 1.0
+      score_health: sql`LEAST(1.0, ${agent_memories.score_health} + 0.05)`,
     })
     .where(inArray(agent_memories.id, ids))
+}
+
+/** Plan 19: Multiply every memory's score_health by decay_factor. */
+export async function bulkDecayHealth(projectId: string, decayFactor: number): Promise<number> {
+  const result = await db
+    .update(agent_memories)
+    .set({ score_health: sql`${agent_memories.score_health} * ${decayFactor}` })
+    .where(eq(agent_memories.project_id, projectId))
+    .returning({ id: agent_memories.id })
+  return result.length
+}
+
+/** Plan 19: Hard-delete low-health dream-generated memories (avoids cascade loss of user-written memories). */
+export async function deleteLowHealthDreamMemories(projectId: string, threshold = 0.1): Promise<number> {
+  const result = await db
+    .delete(agent_memories)
+    .where(and(
+      eq(agent_memories.project_id, projectId),
+      eq(agent_memories.source_type, 'dream'),
+      lt(agent_memories.score_health, threshold),
+    ))
+    .returning({ id: agent_memories.id })
+  return result.length
+}
+
+/** Plan 19: Memory type filter for dreaming & reflection queries. */
+export async function getMemoriesByType(params: {
+  project_id: string
+  memory_types: string[]
+  source_types?: string[]
+  since?: Date
+  limit?: number
+}): Promise<AgentMemoryRow[]> {
+  const conds = [
+    eq(agent_memories.project_id, params.project_id),
+    inArray(agent_memories.memory_type, params.memory_types),
+  ]
+  if (params.source_types && params.source_types.length > 0) {
+    conds.push(inArray(agent_memories.source_type, params.source_types))
+  }
+  if (params.since) {
+    conds.push(sql`${agent_memories.created_at} >= ${params.since}`)
+  }
+  const q = db
+    .select()
+    .from(agent_memories)
+    .where(and(...conds))
+    .orderBy(desc(agent_memories.score_health), desc(agent_memories.created_at))
+  return params.limit ? q.limit(params.limit) : q
 }
 
 export async function listProjectMemories(params: {

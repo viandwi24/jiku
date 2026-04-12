@@ -1,7 +1,18 @@
 ## Backlog
 
+### Plan 19 follow-ups
+- [ ] Sandboxed `skill_exec_file` runtime (separate plan — needs JS/TS/Python sandbox)
+- [ ] Private-repo skill import via GitHub PAT (credentials vault integration)
+- [ ] Expose per-phase credential/model override in Dreaming UI (schema already supports)
+- [ ] Skill marketplace browse — catalog from skills.sh inside app
+- [ ] Per-caller permission grant surface so `requires.permissions` in manifests actually gates at runtime (currently `grantedPermissions` passed as empty Set)
+- [ ] `skill.source_changed` audit event emission on plugin activate/deactivate (currently reserved, not emitted)
+- [ ] Dreaming effectiveness benchmark at 10k-memory scale
+- [ ] Usage page: `agent_id=null` filter (background-only view)
+- [ ] Memory browser: add `source_type` column to the table (currently only shown via Type badge tooltip)
+
 ### Plan 17 follow-ups
-- [ ] Plan 18 — third-party plugin sandboxing (iframe origin isolation, code signing, per-publisher keys, per-user permission grants, bundle SRI)
+- [ ] Third-party plugin sandboxing (iframe origin isolation, code signing, per-publisher keys, bundle SRI) — deferred from original Plan 18 scope; current Plan 18 implements per-user permission grants but not iframe isolation
 - [ ] Wire `ctx.files.*` to filesystem service (currently stubbed — returns empty)
 - [ ] Wire `ctx.secrets.*` to credentials vault (currently throws)
 - [ ] Implement `ctx.api.stream` (SSE streaming from plugin server to UI)
@@ -27,6 +38,8 @@
 
 ## Done
 
+- [x] Plan 19 — Memory Learning Loop + Skills Loader v2: memory typing (episodic/semantic/procedural/reflective) + health decay, durable `background_jobs` queue + `BackgroundWorker` (SKIP LOCKED, retry), compaction-flush hook, post-run reflection (opt-in per agent), 3-phase dreaming engine (light/deep/REM) with explicit credential+model picker, FS-first skills with YAML frontmatter (skills.sh compatible), plugin `ctx.skills.register()` API, progressive-disclosure XML hint, per-agent access mode (`manual`/`all_on_demand`), eligibility gate, GitHub tarball + ZIP import (accepts `npx skills add` URL form), universal `recordLLMUsage()` usage tracker (all sources), usage page source filter + duration column + color-coded badges, memory browser Type/Health columns + clickable detail/edit dialog, FK names shortened in plugin_granted_permissions, `fs.read` unwrap fix, `refetchOnWindowFocus: false` globally, credential rate limit 30→120/min, deleted orphan `settings/memory` page — completed 2026-04-12. See `docs/plans/impl-reports/19-memory-skills-implementation-report.md`.
+- [x] Plan 18 — Production Hardening: rate limiting (5-layer `express-rate-limit`), broad `audit_logs` table + `audit.*` helper + settings/audit UI with CSV export, plugin policy enforcement via `ToolMeta.required_plugin_permission` + `plugin_granted_permissions` + core runner `ToolHooks`, tool hot-unregister on plugin activate/deactivate, plugin-permissions admin UI, and settings navigation refactor (vertical sidebar with Access Control group) — completed 2026-04-12. See `docs/plans/impl-reports/18-production-hardening-report.md`.
 - [x] Plan 17 — Plugin UI System (full): isolated runtime (tsup bundles + dynamic URL import + own React), auto-discovery loader, `apps/cli` (commander + Ink), `@jiku-plugin/studio` host anchor via native contributes/depends, signed-URL + rate-limit + prod .map gate on asset router, `jiku.analytics` demo plugin, Active Plugins tab split into System/Project sections, jiku.connector merged into Studio anchor, jiku.telegram switched to `depends: [StudioPlugin]` — completed 2026-04-12. See `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.
 - [x] Plan 16 — Cron Task System: full end-to-end (DB schema, scheduler, tools, REST API, web UI, expression preview) — completed 2026-04-07
 - [x] Memory System (Plan 8): core types, relevance scoring, builder, extraction, DB schema, server tools + routes, web browser + config UI — completed 2026-04-05

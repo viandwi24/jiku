@@ -28,9 +28,14 @@ import { skillsRouter } from './routes/skills.ts'
 import { cronTasksRouter } from './routes/cron-tasks.ts'
 import { mcpServersRouter } from './routes/mcp-servers.ts'
 import { toolStatesRouter } from './routes/tool-states.ts'
+import { auditRouter } from './routes/audit.ts'
+import { pluginPermissionsRouter } from './routes/plugin-permissions.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { startBrowserTabCleanup } from './browser/tab-manager.ts'
 import { startStorageCleanupWorker } from './filesystem/worker.ts'
+import { backgroundWorker } from './jobs/worker.ts'
+import { registerAllJobHandlers } from './jobs/register.ts'
+import { dreamScheduler } from './jobs/dream-scheduler.ts'
 import { seedPluginRegistry } from './plugins/seed.ts'
 import { NarrationPlugin } from './plugins/narration.ts'
 import { connectorRegistry } from './connectors/registry.ts'
@@ -39,11 +44,15 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkDbConnection, seedPermissions, getAllProjects, deleteExpiredMemories } from '@jiku-studio/db'
 import { env } from './env.ts'
+import { globalRateLimit } from './middleware/rate-limit.ts'
 
 const app = express()
 
 app.use(cors())
 app.use(express.json())
+
+// Plan 18 — global rate limit on all API routes (keyed by user_id fallback IP).
+app.use('/api', globalRateLimit)
 
 // Attachments router must be registered FIRST — the inline endpoint (/api/attachments/:id/inline)
 // uses a query-string token instead of Authorization header, so it must not be intercepted by
@@ -83,6 +92,8 @@ app.use('/api', skillsRouter)
 app.use('/api', cronTasksRouter)
 app.use('/api', mcpServersRouter)
 app.use('/api', toolStatesRouter)
+app.use('/api', auditRouter)
+app.use('/api', pluginPermissionsRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -124,7 +135,11 @@ async function bootstrap() {
   const __filename = fileURLToPath(import.meta.url)
   const PLUGINS_ROOT = join(dirname(__filename), '..', '..', '..', '..', 'plugins')
   const discovered = await discoverPluginsFromFolder(PLUGINS_ROOT)
-  for (const p of discovered) sharedLoader.register(p.def)
+  for (const p of discovered) {
+    sharedLoader.register(p.def)
+    // Plan 19 — record plugin root for skill folder spec resolution
+    sharedLoader.setPluginRoot(p.def.meta.id, p.dir)
+  }
   console.log(`[jiku] Plugin discovery: ${discovered.length} plugin(s) from ${PLUGINS_ROOT}`)
 
   // Internal Studio-only plugins (not auto-discovered; these carry Studio
@@ -171,11 +186,20 @@ async function bootstrap() {
   // Filesystem S3 cleanup worker — processes deferred object deletions every 30s.
   startStorageCleanupWorker()
 
+  // Plan 19 — durable background job queue (reflection, dreaming, flush).
+  registerAllJobHandlers()
+  backgroundWorker.start()
+  dreamScheduler.bootstrap().catch((err) =>
+    console.warn('[jiku] Dream scheduler bootstrap error:', err),
+  )
+
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
 }
 
 async function shutdown() {
+  dreamScheduler.stopAll()
+  backgroundWorker.stop()
   await runtimeManager.stopAll()
   console.log('[jiku] Studio Server stopped')
   process.exit(0)

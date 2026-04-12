@@ -17,6 +17,7 @@ import { buildBrowserTools } from '../browser/tool.ts'
 import { browserTabManager } from '../browser/tab-manager.ts'
 import { invalidateFilesystemCache } from '../filesystem/factory.ts'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
+import { buildBinaryFileHints } from '../plugins/ui/fileViewAdapterRegistry.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
 import { buildSkillTools } from '../skills/tools.ts'
@@ -139,7 +140,7 @@ export class JikuRuntimeManager {
     let filesystemTools: ToolDefinition[] = []
     const fsCfg = await getFilesystemConfig(projectId)
     if (fsCfg?.enabled && fsCfg.credential_id) {
-      filesystemTools = buildFilesystemTools(projectId)
+      filesystemTools = buildFilesystemTools(projectId, buildBinaryFileHints())
       console.log(`[filesystem] Project ${projectId} filesystem tools enabled`)
     }
 

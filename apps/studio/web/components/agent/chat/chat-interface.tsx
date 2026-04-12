@@ -90,15 +90,21 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
       headers: () => ({
         Authorization: `Bearer ${getToken() ?? ''}`,
       }),
-      prepareSendMessagesRequest: ({ id, messages }) => ({
-        body: {
-          id,
-          messages,
-          agent_id: agentId,
-          project_id: projectId,
-          company_id: companyId,
-        },
-      }),
+      prepareSendMessagesRequest: ({ id, messages }) => {
+        // Only send the last user message — the server loads conversation history
+        // from the DB itself. Sending all messages would grow the request body
+        // unboundedly as the conversation gets longer.
+        const lastUser = [...messages].reverse().find(m => m.role === 'user')
+        return {
+          body: {
+            id,
+            messages: lastUser ? [lastUser] : [],
+            agent_id: agentId,
+            project_id: projectId,
+            company_id: companyId,
+          },
+        }
+      },
     }),
     onFinish: () => {
       qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })

@@ -70,8 +70,30 @@ router.get('/projects/:pid/plugins/active', requirePermission('plugins:read'), a
   const project = await getProjectById(projectId)
   if (!project) { res.status(404).json({ error: 'Project not found' }); return }
 
-  const enabled = await getEnabledProjectPlugins(projectId)
-  res.json({ plugins: enabled })
+  const [allPlugins, projectPlugins] = await Promise.all([
+    getAllPluginRows(),
+    getEnabledProjectPlugins(projectId),
+  ])
+
+  const projectPluginMap = new Map(projectPlugins.map(p => [p.plugin_id, p]))
+
+  // System plugins (project_scope=false) are always active for every project.
+  // Project-scoped plugins are only active if explicitly enabled.
+  const active = allPlugins
+    .filter(p => !p.project_scope || projectPluginMap.has(p.id))
+    .map(p => {
+      const pp = projectPluginMap.get(p.id)
+      return {
+        id: pp?.id ?? `system:${p.id}`,
+        project_id: projectId,
+        plugin_id: p.id,
+        enabled: true,
+        config: pp?.config ?? {},
+        activated_at: pp?.activated_at ?? null,
+      }
+    })
+
+  res.json({ plugins: active })
 })
 
 router.post('/projects/:pid/plugins/:pluginId/enable', requirePermission('plugins:write'), async (req, res) => {

@@ -7,20 +7,11 @@ import type { FilesystemEntry, FilesystemFileEntry } from '@/lib/api'
 import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@jiku/ui'
 import { toast } from 'sonner'
 import {
-  Folder, FileText, ChevronRight, Upload, Plus, Trash2, Download,
+  Folder, FileText, ChevronRight, Upload, Plus,
   RefreshCw, Loader2, Search, Copy, X, Save, Eye,
-  MoreHorizontal, Pencil, FolderOpen,
+  MoreHorizontal, Pencil, FolderOpen, Trash2,
 } from 'lucide-react'
-import dynamic from 'next/dynamic'
-
-const CodeEditor = dynamic(() => import('@/app/(app)/studio/companies/[company]/projects/[project]/disk/code-editor'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-      Loading editor...
-    </div>
-  ),
-})
+import { FileDetailPanel } from './file-detail-panel'
 
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -391,77 +382,25 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
         )}
       </div>
 
-      {/* ── Right panel: editor ── */}
+      {/* ── Right panel: file detail ── */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {selectedFile ? (
-          <>
-            <div className="flex items-center gap-2 px-3 py-2 border-b shrink-0">
-              <span className="text-sm font-medium truncate flex-1">{selectedFile.path}</span>
-              {isDirty && <span className="text-xs text-amber-500 shrink-0">Unsaved</span>}
-              <div className="flex items-center gap-1 shrink-0">
-                <a
-                  href={api.filesystem.proxyUrl(projectId, selectedFile.path, 'preview')}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Preview"
-                >
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
-                    <Eye className="w-3.5 h-3.5" />
-                  </Button>
-                </a>
-                <a
-                  href={api.filesystem.proxyUrl(projectId, selectedFile.path, 'download')}
-                  download={selectedFile.name}
-                  title="Download"
-                >
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
-                    <Download className="w-3.5 h-3.5" />
-                  </Button>
-                </a>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-red-500 hover:text-red-600"
-                  title="Delete file"
-                  onClick={() => {
-                    if (!confirm(`Delete "${selectedFile.name}"?`)) return
-                    deleteMutation.mutate(selectedFile.path)
-                  }}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7 px-3 text-xs"
-                  onClick={handleSave}
-                  disabled={writeMutation.isPending || !isDirty}
-                >
-                  {writeMutation.isPending
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : <><Save className="w-3.5 h-3.5 mr-1" />Save</>}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => { setSelectedFile(null); setIsDirty(false) }}
-                >
-                  <X className="w-3.5 h-3.5" />
-                </Button>
-              </div>
-            </div>
-
-            <CodeEditor
-              filePath={selectedFile.path}
-              value={editorContent}
-              onChange={(v) => { setEditorContent(v); setIsDirty(true) }}
-            />
-          </>
+          <FileDetailPanel
+            projectId={projectId}
+            file={selectedFile}
+            content={editorContent}
+            isDirty={isDirty}
+            isSaving={writeMutation.isPending}
+            onContentChange={(v) => { setEditorContent(v); setIsDirty(true) }}
+            onSave={handleSave}
+            onDelete={() => deleteMutation.mutate(selectedFile.path)}
+            onClose={() => { setSelectedFile(null); setIsDirty(false) }}
+          />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
             <div className="text-center space-y-2">
               <FileText className="w-8 h-8 mx-auto text-muted-foreground/40" />
-              <p>Select a file to edit</p>
+              <p>Select a file to view</p>
             </div>
           </div>
         )}

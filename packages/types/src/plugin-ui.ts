@@ -13,6 +13,10 @@ export type PluginUISlotId =
   | 'conversation.panel.right'
   | 'command.palette.item'
   | 'global.modal'
+  /** File view adapter: renders a file in a custom view.
+   *  meta: { label: string, extensions: string[] }
+   *  mount receives extra keys: projectId, path, filename, content */
+  | 'file.view.adapter'
 
 export interface PluginUIEntry {
   slot: PluginUISlotId

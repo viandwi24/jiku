@@ -337,7 +337,13 @@ router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('a
           const check = isAllowedFile(filename, content.length)
           if (!check.allowed) return reject(new ValidationError(check.reason!))
           try {
-            const file = await fs.write(filePath, content.toString('utf-8'))
+            // Binary formats are stored base64-encoded so they can be faithfully
+            // retrieved later (e.g. xlsx parsing). Text files are stored as-is.
+            const BINARY_EXTS = new Set(['.xlsx', '.xls', '.ods', '.docx', '.doc', '.pptx', '.ppt', '.odp', '.odt', '.pdf'])
+            const textContent = BINARY_EXTS.has(ext)
+              ? `__b64__:${content.toString('base64')}`
+              : content.toString('utf-8')
+            const file = await fs.write(filePath, textContent)
             resolve({ file })
           } catch (err) {
             reject(err)

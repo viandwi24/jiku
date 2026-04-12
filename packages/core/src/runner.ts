@@ -448,6 +448,9 @@ export class AgentRunner {
       agent: { id: this.agent.meta.id, name: this.agent.meta.name, mode },
       conversation_id,
       run_id,
+      // project_id mirrors runtimeId so tools can access the project filesystem
+      // without needing a separate injection mechanism.
+      project_id: this.runtimeId,
       ...this.plugins.resolveProviders(caller),
     }
 

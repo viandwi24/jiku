@@ -116,6 +116,38 @@ export class FilesystemService {
     return { content, version: file.version, cached: false }
   }
 
+  // ─── readBinary ─────────────────────────────────────────────────────────
+  // Returns the raw file bytes. For files uploaded as base64 (binary formats
+  // like .xlsx, .xls, .ods), decodes the __b64__: prefix and returns the
+  // original bytes. For text files, returns UTF-8 encoded bytes.
+
+  async readBinary(filePath: string): Promise<Buffer | null> {
+    try {
+      const normalized = normalizePath(filePath)
+      const file = await getFileByPath(this.projectId, normalized)
+      if (!file) return null
+
+      // Check content_cache first for base64-encoded files
+      if (file.content_cache?.startsWith('__b64__:')) {
+        return Buffer.from(file.content_cache.slice(8), 'base64')
+      }
+
+      const key = await this.ensureModernKey(file)
+      const buffer = await this.adapter.download(key)
+
+      // Detect base64-encoded binary content
+      const prefix = buffer.slice(0, 8).toString('utf-8')
+      if (prefix === '__b64__:') {
+        const b64 = buffer.slice(8).toString('utf-8')
+        return Buffer.from(b64, 'base64')
+      }
+
+      return buffer
+    } catch {
+      return null
+    }
+  }
+
   // ─── write ──────────────────────────────────────────────────────────────
 
   async write(filePath: string, content: string, options: WriteOptions = {}): Promise<ProjectFile> {

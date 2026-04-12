@@ -8,10 +8,12 @@ import type {
   PluginHttpAPI,
   PluginEventsAPI,
   PluginConnectorAPI,
+  PluginFileViewAdapterAPI,
   ConnectorAdapter,
 } from '@jiku-plugin/studio'
 import { registerPluginRoute } from './http-registry.ts'
 import { publish } from './event-bus.ts'
+import { registerFileViewAdapter } from './fileViewAdapterRegistry.ts'
 
 function makeHttp(pluginId: string): PluginHttpAPI {
   return {
@@ -47,12 +49,19 @@ function makeConnector(baseCtx: BasePluginContext): PluginConnectorAPI {
   }
 }
 
+function makeFileViewAdapters(pluginId: string): PluginFileViewAdapterAPI {
+  return {
+    register: (spec) => registerFileViewAdapter(pluginId, spec),
+  }
+}
+
 export function extendPluginContext(pluginId: string, baseCtx: BasePluginContext): BasePluginContext {
   const extended = {
     ...baseCtx,
     http: makeHttp(pluginId),
     events: makeEvents(pluginId),
     connector: makeConnector(baseCtx),
+    fileViewAdapters: makeFileViewAdapters(pluginId),
   }
   return extended as BasePluginContext
 }

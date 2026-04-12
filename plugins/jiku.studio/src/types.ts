@@ -22,6 +22,8 @@ export interface PluginHttpHandlerCtx {
   req: any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   res: any
+  /** Read a raw project file as Buffer. Injected by the Studio server. */
+  readProjectFile?: (path: string) => Promise<Buffer | null>
 }
 
 export type PluginHttpHandlerFn = (ctx: PluginHttpHandlerCtx) => Promise<unknown> | unknown
@@ -37,6 +39,21 @@ export interface PluginHttpAPI {
 export interface PluginEventsAPI {
   /** Emit to project-scoped subscribers. `projectId` is required server-side. */
   emit: (topic: string, payload?: unknown, opts?: { projectId?: string }) => void
+}
+
+/** Spec for a plugin-contributed file view adapter. */
+export interface FileViewAdapterSpec {
+  /** Unique ID for this adapter, e.g. `jiku.sheet.spreadsheet` */
+  id: string
+  /** Display label in the "View as" selector */
+  label: string
+  /** Lowercase file extensions this adapter handles, e.g. `['.csv', '.xlsx']` */
+  extensions: string[]
+}
+
+/** Plugin API for registering file view adapters. */
+export interface PluginFileViewAdapterAPI {
+  register: (spec: FileViewAdapterSpec) => void
 }
 
 /** Browser-side: direct passthrough to any Studio REST endpoint as the current user. */

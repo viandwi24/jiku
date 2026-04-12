@@ -1,10 +1,9 @@
-// Thin wrapper around tsup's programmatic API. Each plugin must have its own
-// tsup.config.ts; we just spawn `bunx tsup` inside its folder to honor it.
-// Doing it via child_process avoids coupling the CLI to every plugin's
-// specific config shape.
+// Thin wrapper around tsup. Each plugin must have its own tsup.config.ts.
+// We run `bun run build` (which resolves tsup from the plugin's own
+// node_modules) rather than `bunx tsup` — bunx downloads tsup to a temp dir
+// that cannot find the plugin's peer deps (e.g. typescript).
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export interface BuildResult {
@@ -16,20 +15,22 @@ export interface BuildResult {
   stderr: string
 }
 
-async function hasTsupConfig(dir: string): Promise<boolean> {
-  for (const name of ['tsup.config.ts', 'tsup.config.js', 'tsup.config.mjs']) {
-    try { await stat(join(dir, name)); return true } catch { /* try next */ }
-  }
-  return false
+async function hasBuildScript(dir: string): Promise<boolean> {
+  try {
+    const pkgPath = join(dir, 'package.json')
+    const { readFile } = await import('node:fs/promises')
+    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8')) as { scripts?: Record<string, string> }
+    return typeof pkg.scripts?.build === 'string'
+  } catch { return false }
 }
 
 export async function buildPlugin(id: string, dir: string): Promise<BuildResult> {
-  if (!(await hasTsupConfig(dir))) {
-    return { id, dir, ok: false, code: null, duration_ms: 0, stderr: `No tsup.config.* found in ${dir}` }
+  if (!(await hasBuildScript(dir))) {
+    return { id, dir, ok: false, code: null, duration_ms: 0, stderr: `No "build" script in ${dir}/package.json` }
   }
   const start = Date.now()
   return new Promise(resolve => {
-    const child = spawn('bunx', ['tsup'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('bun', ['run', 'build'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
     let stderr = ''
     child.stderr?.on('data', chunk => { stderr += chunk.toString() })
     child.stdout?.on('data', () => { /* swallow per-plugin noise; surface only on fail */ })
@@ -49,14 +50,14 @@ export interface WatchHandle {
   stop(): void
 }
 
-/** Spawn `bunx tsup --watch` — returns a handle so callers can kill on demand. */
+/** Spawn `bun run build:watch` — returns a handle so callers can kill on demand. */
 export async function watchPlugin(
   id: string,
   dir: string,
   onLine: (line: string) => void,
 ): Promise<WatchHandle | null> {
-  if (!(await hasTsupConfig(dir))) return null
-  const proc = spawn('bunx', ['tsup', '--watch'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+  if (!(await hasBuildScript(dir))) return null
+  const proc = spawn('bun', ['run', 'build:watch'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
   const forward = (buf: Buffer) => {
     for (const l of buf.toString().split('\n')) { if (l.trim()) onLine(l) }
   }

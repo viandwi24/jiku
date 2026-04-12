@@ -49,7 +49,7 @@ import { globalRateLimit } from './middleware/rate-limit.ts'
 const app = express()
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
 
 // Plan 18 — global rate limit on all API routes (keyed by user_id fallback IP).
 app.use('/api', globalRateLimit)

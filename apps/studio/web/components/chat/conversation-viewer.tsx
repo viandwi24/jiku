@@ -307,6 +307,16 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       headers: () => ({
         Authorization: `Bearer ${getToken() ?? ''}`,
       }),
+      prepareSendMessagesRequest: ({ id, messages }) => {
+        // Only send the last user message — server loads history from DB.
+        const lastUser = [...messages].reverse().find(m => m.role === 'user')
+        return {
+          body: {
+            id,
+            messages: lastUser ? [lastUser] : [],
+          },
+        }
+      },
     }),
   })
 

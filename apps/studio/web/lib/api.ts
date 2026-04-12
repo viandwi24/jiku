@@ -492,7 +492,6 @@ export const api = {
       if (ext) qs.set('ext', ext)
       return request<{ files: FilesystemFileEntry[]; count: number }>(`/api/projects/${projectId}/files/search?${qs}`)
     },
-    /** Returns a proxied URL to stream/download/preview a file. No auth token needed from server side — but we pass it as query param here. */
     proxyUrl: (projectId: string, filePath: string, mode: 'inline' | 'download' | 'preview' = 'inline') => {
       const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
       const qs = new URLSearchParams({ path: filePath, mode })

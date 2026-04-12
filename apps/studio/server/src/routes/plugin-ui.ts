@@ -29,6 +29,7 @@ import { resolvePluginRoute, listPluginRoutes } from '../plugins/ui/http-registr
 import { subscribe } from '../plugins/ui/event-bus.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { recordApiCall, recordToolInvoke, recordError, getPluginMetrics } from '../plugins/ui/metrics.ts'
+import { getFilesystemService } from '../filesystem/service.ts'
 
 const router = Router()
 router.use(authMiddleware)
@@ -201,8 +202,21 @@ router.use(async (req, res, next) => {
 
   const userId = res.locals['user_id'] as string
   const start = Date.now()
+
+  // Inject a readProjectFile helper so plugins can read raw file bytes without
+  // importing server internals directly.
+  const readProjectFile = async (filePath: string): Promise<Buffer | null> => {
+    try {
+      const fs = await getFilesystemService(projectId)
+      if (!fs) return null
+      return await fs.readBinary(filePath)
+    } catch {
+      return null
+    }
+  }
+
   try {
-    const out = await handler({ projectId, userId, pluginId, req, res })
+    const out = await handler({ projectId, userId, pluginId, req, res, readProjectFile })
     const duration = Date.now() - start
     recordApiCall(pluginId, duration, true)
     // If the handler already responded (called res.send/res.json), don't double-send.

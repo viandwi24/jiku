@@ -76,6 +76,15 @@ See that impl report for the final architecture, security model, and
 deferred follow-ups (third-party sandboxing, `ctx.files`/`ctx.secrets`/
 `ctx.api.stream` wiring).
 
+**Dokploy image** (`infra/dokploy/Dockerfile`): added a `plugin-builder`
+stage between `deps` and `web-builder` that runs `bun run jiku plugin
+build`, so `plugins/*/dist/ui/*.js` ships inside the final image. Server
+auto-discovery + asset router work out-of-the-box on deploy. The `deps`
+stage lists every workspace `package.json` — including the new
+`@jiku-plugin/studio`, `@jiku/plugin-analytics`, `@jiku/cli` — and removes
+`jiku.connector` (deleted). Root `.dockerignore` added to skip host
+`node_modules` / `dist` / `.next` during `COPY . .`.
+
 ## 2026-04-10 — Plan 16-FS-Revision-V2: Filesystem production-scale revision
 
 **Shipped:** All 8 phases of the filesystem revision. Plan 14's virtual filesystem

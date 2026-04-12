@@ -229,6 +229,34 @@ bun run jiku
 
 ---
 
+## Deployment (Dokploy / Docker)
+
+`infra/dokploy/Dockerfile` runs plugin UI builds as part of the image pipeline. Multi-stage flow:
+
+```
+base           — oven/bun:1 + supervisor + node
+  ↓
+deps           — copy every workspace package.json + bun install
+  ↓
+plugin-builder — COPY . . && bun run jiku plugin build       ← Plan 17 step
+  ↓
+web-builder    — cd apps/studio/web && bun run build
+  ↓
+runner         — node_modules + source + built plugin dist + built .next
+                 → supervisord starts server + web
+```
+
+The CLI is workspace-aware and runs from `/app`. Because cwd is the workspace root, `jiku plugin build` with no id builds **all** plugins with UI entries. The resulting `plugins/*/dist/ui/*.js` files ship in the final image and are served by the asset router at runtime. No runtime build step — the image already contains the bundles.
+
+Operator notes:
+- The `deps` stage lists every workspace `package.json` — adding a new plugin folder requires adding its COPY line so bun can resolve `workspace:*`.
+- `NODE_ENV=production` is set in `plugin-builder` + `runner`. The asset router refuses `.map` files when that's set.
+- `apps/cli/package.json` is included in the image so operators can `docker exec <app> bun run jiku plugin list` for live diagnostics.
+- `JWT_SECRET` must be a strong random value — signed asset URLs rely on it.
+- DB migrations (`db:push`) are intentionally NOT run at image build time. Run them as a pre-deploy step in Dokploy (or via `docker exec <app> cd apps/studio/db && bun run db:push`).
+
+---
+
 ## Security quick-reference
 
 - Asset URLs are signed with 10-min TTL HMAC. Unsigned / expired / mismatched URLs return `401`.

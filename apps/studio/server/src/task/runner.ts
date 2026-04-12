@@ -80,6 +80,7 @@ export async function runTaskConversation(
     let usageOutput = 0
     let providerId: string | null = null
     let modelId: string | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[] } | null = null
 
     while (true) {
       const { done, value } = await reader.read()
@@ -88,6 +89,8 @@ export async function runTaskConversation(
         const v = value as { type: string; delta?: string; data?: unknown }
         if (v.type === 'text-delta') {
           outputText += v.delta ?? ''
+        } else if (v.type === 'data-jiku-run-snapshot') {
+          runSnapshot = v.data as { system_prompt: string; messages: unknown[] }
         } else if (v.type === 'data-jiku-usage') {
           const d = v.data as { input_tokens?: number; output_tokens?: number } | undefined
           if (d) {
@@ -114,6 +117,8 @@ export async function runTaskConversation(
         model: modelId,
         input_tokens: usageInput,
         output_tokens: usageOutput,
+        raw_system_prompt: runSnapshot?.system_prompt ?? null,
+        raw_messages: runSnapshot?.messages ?? null,
       })
     }
 

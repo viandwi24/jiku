@@ -14,6 +14,8 @@ services:
       - CDP_PORT=9222
       - NOVNC_PORT=6080
     shm_size: "2gb"
+    volumes:
+      - chrome-data:/data/chrome-data
     expose:
       - "9222"   # CDP — reached internally by the app service
       - "6080"   # noVNC web viewer — exposed via Traefik
@@ -26,6 +28,9 @@ services:
       - "traefik.http.routers.jiku-browser.entrypoints=websecure"
       - "traefik.http.routers.jiku-browser.tls.certresolver=letsencrypt"
       - "traefik.http.services.jiku-browser.loadbalancer.server.port=6080"
+
+volumes:
+  chrome-data:
 
 networks:
   dokploy-network:

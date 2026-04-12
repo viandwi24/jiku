@@ -155,7 +155,7 @@ export async function getMemoriesByType(params: {
     conds.push(inArray(agent_memories.source_type, params.source_types))
   }
   if (params.since) {
-    conds.push(sql`${agent_memories.created_at} >= ${params.since}`)
+    conds.push(sql`${agent_memories.created_at} >= ${params.since.toISOString()}`)
   }
   const q = db
     .select()

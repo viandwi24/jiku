@@ -18,13 +18,42 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@jiku/ui'
-import { BarChart2, RefreshCw, Search, X } from 'lucide-react'
+import { BarChart2, RefreshCw, Search, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { aggregateByAgent, aggregateByDay, buildPricingMap, estimateCost, estimateTotalCost, formatTokens } from '@/lib/usage'
 import { AgentUsageBarChart, TokenUsageAreaChart } from '@/components/usage/usage-charts'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
+}
+
+const PAGE_SIZE = 50
+
+type DateRange = 'today' | 'week' | 'month' | 'year' | 'all'
+
+function getSince(range: DateRange): string | undefined {
+  if (range === 'all') return undefined
+  const now = new Date()
+  if (range === 'today') {
+    const d = new Date(now)
+    d.setHours(0, 0, 0, 0)
+    return d.toISOString()
+  }
+  if (range === 'week') {
+    const d = new Date(now)
+    d.setDate(d.getDate() - 7)
+    return d.toISOString()
+  }
+  if (range === 'month') {
+    const d = new Date(now)
+    d.setMonth(d.getMonth() - 1)
+    return d.toISOString()
+  }
+  if (range === 'year') {
+    const d = new Date(now)
+    d.setFullYear(d.getFullYear() - 1)
+    return d.toISOString()
+  }
 }
 
 /** Plan 19 — color-coded tint per usage source so the table scans visually. */
@@ -83,9 +112,11 @@ function RawDataDialog({ log }: { log: ProjectUsageLog }) {
 function ProjectUsagePage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const [page, setPage] = useState(0)
-  const pageSize = 100
 
-  // Filters
+  // Date range (server-side)
+  const [dateRange, setDateRange] = useState<DateRange>('month')
+
+  // Client-side filters
   const [filterAgent, setFilterAgent] = useState<string>('all')
   const [filterMode, setFilterMode] = useState<string>('all')
   const [filterSource, setFilterSource] = useState<string>('all')
@@ -105,9 +136,11 @@ function ProjectUsagePage({ params }: PageProps) {
   })
   const projectId = projectsData?.id
 
+  const since = getSince(dateRange)
+
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['project-usage', projectId, page],
-    queryFn: () => api.projects.usage(projectId!, { limit: pageSize, offset: page * pageSize }),
+    queryKey: ['project-usage', projectId, page, dateRange],
+    queryFn: () => api.projects.usage(projectId!, { limit: PAGE_SIZE, offset: page * PAGE_SIZE, since }),
     enabled: !!projectId,
     refetchInterval: 5000,
   })
@@ -122,8 +155,9 @@ function ProjectUsagePage({ params }: PageProps) {
   const allLogs = data?.logs ?? []
   const summary = data?.summary
   const total = data?.total ?? 0
+  const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  // Derive filter options from data
+  // Derive filter options from loaded page
   const agents = useMemo(() => {
     const map = new Map<string, string>()
     for (const log of allLogs) {
@@ -146,14 +180,13 @@ function ProjectUsagePage({ params }: PageProps) {
     return Array.from(set)
   }, [allLogs])
 
-  // Plan 19 — distinct sources (chat, reflection, dreaming.*, etc.)
   const sources = useMemo(() => {
     const set = new Set<string>()
     for (const log of allLogs) if (log.source) set.add(log.source)
     return Array.from(set).sort()
   }, [allLogs])
 
-  // Apply client-side filters
+  // Client-side filters on top of server-paginated data
   const filteredLogs = useMemo(() => {
     return allLogs.filter(log => {
       if (filterAgent !== 'all' && log.agent_id !== filterAgent) return false
@@ -172,23 +205,21 @@ function ProjectUsagePage({ params }: PageProps) {
     })
   }, [allLogs, filterAgent, filterMode, filterSource, filterUser, search])
 
-  // Filtered summary
   const filteredSummary = useMemo(() => ({
     total_runs: filteredLogs.length,
     total_input: filteredLogs.reduce((s, l) => s + l.input_tokens, 0),
     total_output: filteredLogs.reduce((s, l) => s + l.output_tokens, 0),
   }), [filteredLogs])
 
-  const isFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterSource !== 'all' || filterUser !== 'all' || search !== ''
-  const displaySummary = isFiltered ? filteredSummary : summary
-
-  const activeLogs = isFiltered ? filteredLogs : allLogs
+  const isClientFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterSource !== 'all' || filterUser !== 'all' || search !== ''
+  const displaySummary = isClientFiltered ? filteredSummary : summary
+  const activeLogs = isClientFiltered ? filteredLogs : allLogs
   const totalTokens = (displaySummary?.total_input ?? 0) + (displaySummary?.total_output ?? 0)
   const estimatedCost = useMemo(() => estimateTotalCost(activeLogs, pricingMap), [activeLogs, pricingMap])
   const dailyData = useMemo(() => aggregateByDay(activeLogs), [activeLogs])
   const agentData = useMemo(() => aggregateByAgent(activeLogs), [activeLogs])
 
-  function resetFilters() {
+  function resetClientFilters() {
     setFilterAgent('all')
     setFilterMode('all')
     setFilterSource('all')
@@ -196,7 +227,10 @@ function ProjectUsagePage({ params }: PageProps) {
     setSearch('')
   }
 
-  const totalPages = Math.ceil(total / pageSize)
+  function handleDateRange(range: DateRange) {
+    setDateRange(range)
+    setPage(0) // reset to first page when date range changes
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -210,33 +244,52 @@ function ProjectUsagePage({ params }: PageProps) {
             Token usage across all agents in this project.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
-          <RefreshCw className={cn('h-3.5 w-3.5 mr-1.5', isFetching && 'animate-spin')} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Date range tabs */}
+          <div className="flex items-center border rounded-md overflow-hidden text-xs">
+            {(['today', 'week', 'month', 'year', 'all'] as DateRange[]).map((range) => (
+              <button
+                key={range}
+                onClick={() => handleDateRange(range)}
+                className={cn(
+                  'px-3 py-1.5 transition-colors',
+                  dateRange === range
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted/50 text-muted-foreground',
+                )}
+              >
+                {range === 'today' ? 'Today' : range === 'week' ? 'Last 7d' : range === 'month' ? 'Last 30d' : range === 'year' ? 'Last year' : 'All time'}
+              </button>
+            ))}
+          </div>
+          <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
+            <RefreshCw className={cn('h-3.5 w-3.5 mr-1.5', isFetching && 'animate-spin')} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Summary cards */}
       {displaySummary && (
         <div className="grid grid-cols-5 gap-3">
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Total Runs {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Total Runs {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{displaySummary.total_runs.toLocaleString()}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Token In ←model {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Token In ←model {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{formatTokens(displaySummary.total_output)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Token Out →model {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Token Out →model {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{formatTokens(displaySummary.total_input)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Total Tokens {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Total Tokens {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{formatTokens(totalTokens)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Estimated Cost {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Estimated Cost {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{estimatedCost}</p>
           </div>
         </div>
@@ -310,8 +363,8 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
-        {isFiltered && (
-          <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={resetFilters}>
+        {isClientFiltered && (
+          <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={resetClientFilters}>
             <X className="h-3.5 w-3.5 mr-1" />
             Clear
           </Button>
@@ -347,7 +400,7 @@ function ProjectUsagePage({ params }: PageProps) {
             {!isLoading && filteredLogs.length === 0 && (
               <tr>
                 <td colSpan={11} className="px-3 py-8 text-center text-xs text-muted-foreground">
-                  {isFiltered ? 'No results match the current filters.' : 'No usage logs yet. Start a chat to see data here.'}
+                  {isClientFiltered ? 'No results match the current filters.' : 'No usage logs yet. Start a chat to see data here.'}
                 </td>
               </tr>
             )}
@@ -402,24 +455,40 @@ function ProjectUsagePage({ params }: PageProps) {
       </div>
 
       {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            Showing page {page + 1} of {totalPages}
-            {isFiltered && ` — ${filteredLogs.length} of ${allLogs.length} filtered`}
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>
+          {total > 0
+            ? `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, total)} of ${total.toLocaleString()} entries`
+            : '0 entries'}
+          {isClientFiltered && ` — ${filteredLogs.length} shown after filter`}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            size="icon"
+            variant="outline"
+            className="h-7 w-7"
+            disabled={page === 0}
+            onClick={() => setPage(0)}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </Button>
+          <span className="px-2 text-xs">
+            Page {page + 1} / {Math.max(totalPages, 1)}
           </span>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
-              Previous
-            </Button>
-            <Button size="sm" variant="outline" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>
-              Next
-            </Button>
-          </div>
+          <Button
+            size="icon"
+            variant="outline"
+            className="h-7 w-7"
+            disabled={page >= totalPages - 1}
+            onClick={() => setPage(p => p + 1)}
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Button>
         </div>
-      )}
+      </div>
     </div>
   )
 }
+
 import { withPermissionGuard } from '@/components/permissions/permission-guard'
 export default withPermissionGuard(ProjectUsagePage, 'settings:read')

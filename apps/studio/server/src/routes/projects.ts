@@ -55,12 +55,14 @@ router.patch('/projects/:pid', requirePermission('settings:write'), async (req, 
 
 router.get('/projects/:pid/usage', requirePermission('settings:read'), async (req, res) => {
   const projectId = req.params['pid']!
-  const limit = Math.min(Number(req.query['limit'] ?? 100), 500)
+  const limit = Math.min(Number(req.query['limit'] ?? 50), 500)
   const offset = Number(req.query['offset'] ?? 0)
+  const sinceParam = req.query['since'] as string | undefined
+  const since = sinceParam ? new Date(sinceParam) : undefined
   const [logs, summary, total] = await Promise.all([
-    getUsageLogsByProject(projectId, limit, offset),
-    getUsageSummaryByProject(projectId),
-    getUsageCountByProject(projectId),
+    getUsageLogsByProject(projectId, limit, offset, since),
+    getUsageSummaryByProject(projectId, since),
+    getUsageCountByProject(projectId, since),
   ])
   res.json({ logs, summary, total })
 })

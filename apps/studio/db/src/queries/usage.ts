@@ -1,4 +1,4 @@
-import { eq, desc, or, inArray, sql } from 'drizzle-orm'
+import { eq, desc, or, inArray, sql, and, gte } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { usage_logs, agents } from '../schema/index.ts'
 import type { NewUsageLog } from '../schema/index.ts'
@@ -53,23 +53,26 @@ export async function getUsageCountByAgent(agentId: string) {
  * Plan 19 — includes rows scoped directly to the project (background LLM calls:
  * reflection, dreaming, flush, plugin-invoked) plus legacy rows linked via agent.
  */
-function projectUsageWhere(projectId: string, agentIds: string[]) {
-  if (agentIds.length === 0) return eq(usage_logs.project_id, projectId)
-  return or(
-    eq(usage_logs.project_id, projectId),
-    inArray(usage_logs.agent_id, agentIds),
-  )!
+function projectUsageWhere(projectId: string, agentIds: string[], since?: Date) {
+  const baseCondition = agentIds.length === 0
+    ? eq(usage_logs.project_id, projectId)
+    : or(eq(usage_logs.project_id, projectId), inArray(usage_logs.agent_id, agentIds))!
+  if (!since) return baseCondition
+  return and(baseCondition, gte(usage_logs.created_at, since))!
 }
 
-export async function getUsageLogsByProject(projectId: string, limit = 100, offset = 0) {
+async function getProjectAgentIds(projectId: string) {
   const projectAgents = await db.query.agents.findMany({
     where: eq(agents.project_id, projectId),
     columns: { id: true },
   })
-  const agentIds = projectAgents.map(a => a.id)
+  return projectAgents.map(a => a.id)
+}
 
+export async function getUsageLogsByProject(projectId: string, limit = 50, offset = 0, since?: Date) {
+  const agentIds = await getProjectAgentIds(projectId)
   return db.query.usage_logs.findMany({
-    where: projectUsageWhere(projectId, agentIds),
+    where: projectUsageWhere(projectId, agentIds, since),
     orderBy: [desc(usage_logs.created_at)],
     limit,
     offset,
@@ -81,13 +84,8 @@ export async function getUsageLogsByProject(projectId: string, limit = 100, offs
   })
 }
 
-export async function getUsageSummaryByProject(projectId: string) {
-  const projectAgents = await db.query.agents.findMany({
-    where: eq(agents.project_id, projectId),
-    columns: { id: true },
-  })
-  const agentIds = projectAgents.map(a => a.id)
-
+export async function getUsageSummaryByProject(projectId: string, since?: Date) {
+  const agentIds = await getProjectAgentIds(projectId)
   const result = await db
     .select({
       total_input: sql<number>`coalesce(sum(${usage_logs.input_tokens}), 0)`.mapWith(Number),
@@ -95,21 +93,16 @@ export async function getUsageSummaryByProject(projectId: string) {
       total_runs: sql<number>`count(*)`.mapWith(Number),
     })
     .from(usage_logs)
-    .where(projectUsageWhere(projectId, agentIds))
+    .where(projectUsageWhere(projectId, agentIds, since))
 
   return result[0] ?? { total_input: 0, total_output: 0, total_runs: 0 }
 }
 
-export async function getUsageCountByProject(projectId: string) {
-  const projectAgents = await db.query.agents.findMany({
-    where: eq(agents.project_id, projectId),
-    columns: { id: true },
-  })
-  const agentIds = projectAgents.map(a => a.id)
-
+export async function getUsageCountByProject(projectId: string, since?: Date) {
+  const agentIds = await getProjectAgentIds(projectId)
   const result = await db
     .select({ count: sql<number>`count(*)`.mapWith(Number) })
     .from(usage_logs)
-    .where(projectUsageWhere(projectId, agentIds))
+    .where(projectUsageWhere(projectId, agentIds, since))
   return result[0]?.count ?? 0
 }

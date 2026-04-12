@@ -55,10 +55,11 @@ export const api = {
       request<{ project: Project }>(`/api/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (companyId: string, projectId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/projects/${projectId}`, { method: 'DELETE' }),
-    usage: (projectId: string, params?: { limit?: number; offset?: number }) => {
+    usage: (projectId: string, params?: { limit?: number; offset?: number; since?: string }) => {
       const qs = new URLSearchParams()
       if (params?.limit) qs.set('limit', String(params.limit))
       if (params?.offset) qs.set('offset', String(params.offset))
+      if (params?.since) qs.set('since', params.since)
       return request<{ logs: ProjectUsageLog[]; summary: UsageSummary; total: number }>(`/api/projects/${projectId}/usage?${qs}`)
     },
   },

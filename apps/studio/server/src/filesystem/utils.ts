@@ -90,3 +90,20 @@ const MIME_MAP: Record<string, string> = {
 export function getMimeType(ext: string): string {
   return MIME_MAP[ext.toLowerCase()] ?? 'text/plain'
 }
+
+// ─── Plan 16: folder path helpers ─────────────────────────────────────────
+
+/**
+ * Returns all ancestor folder paths for a file path, from shallowest to
+ * deepest. The file's own name is excluded.
+ *
+ * Example: '/a/b/c/d.ts' → ['/a', '/a/b', '/a/b/c']
+ */
+export function getAncestorPaths(filePath: string): string[] {
+  const parts = filePath.split('/').filter(Boolean)
+  const ancestors: string[] = []
+  for (let i = 1; i < parts.length; i++) {
+    ancestors.push('/' + parts.slice(0, i).join('/'))
+  }
+  return ancestors
+}

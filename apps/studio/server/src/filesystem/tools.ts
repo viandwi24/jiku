@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { ToolDefinition, ToolStreamChunk } from '@jiku/types'
-import { getFilesystemService } from './service.ts'
+import { getFilesystemService } from './factory.ts'
 
 /**
  * Build filesystem tools for a project.
@@ -59,8 +59,9 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
-          const content = await fs.read(path)
-          return { path, content }
+          // Plan 16: read() now returns { content, version, cached }
+          const result = await fs.read(path)
+          return { path, content: result.content, version: result.version, cached: result.cached }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'File not found' }
         }
@@ -80,14 +81,18 @@ export function buildFilesystemTools(projectId: string): ToolDefinition[] {
       input: z.object({
         path: z.string().describe("Full file path, e.g. '/src/utils/helper.ts'"),
         content: z.string().describe('File content to write'),
+        expected_version: z.number().int().optional().describe(
+          'Optimistic lock. Pass the version value from a previous fs_read response. ' +
+          'If the file was modified since, the write will be rejected with a conflict error.',
+        ),
       }),
       execute: async (args: unknown) => {
-        const { path, content } = args as { path: string; content: string }
+        const { path, content, expected_version } = args as { path: string; content: string; expected_version?: number }
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
-          const file = await fs.write(path, content)
-          return { success: true, path: file.path, size_bytes: file.size_bytes }
+          const file = await fs.write(path, content, { expectedVersion: expected_version })
+          return { success: true, path: file.path, size_bytes: file.size_bytes, version: file.version }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Write failed' }
         }

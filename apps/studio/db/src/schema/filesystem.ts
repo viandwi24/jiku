@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, integer, bigint, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { projects } from './projects.ts'
 import { users } from './users.ts'
 
@@ -30,6 +31,20 @@ export const project_files = pgTable('project_files', {
   size_bytes:    integer('size_bytes').notNull().default(0),
   mime_type:     varchar('mime_type', { length: 100 }).notNull().default('text/plain'),
   content_cache: text('content_cache'),           // null if file > 50 KB
+
+  // Plan 16 — cache invalidation + optimistic locking
+  content_version:   integer('content_version').notNull().default(1),
+  cache_valid_until: timestamp('cache_valid_until'),
+  version:           integer('version').notNull().default(1),
+  content_hash:      text('content_hash'),         // SHA-256, for dedup check
+
+  // Plan 16 — search optimization (generated column, auto-maintained by Postgres)
+  // NOTE: search_vector (TSVECTOR) + GIN index are added via manual migration SQL
+  // because Drizzle lacks a native tsvector column type. See migration file.
+  name_lower:        text('name_lower').generatedAlwaysAs(
+    sql`lower(${sql.raw('name')})`,
+  ),
+
   created_by:    uuid('created_by').references(() => users.id),
   updated_by:    uuid('updated_by').references(() => users.id),
   created_at:    timestamp('created_at').defaultNow().notNull(),
@@ -39,6 +54,7 @@ export const project_files = pgTable('project_files', {
   index('idx_files_folder').on(t.project_id, t.folder_path),
   index('idx_files_extension').on(t.project_id, t.extension),
   index('idx_files_updated').on(t.project_id, t.updated_at),
+  index('idx_files_name_lower').on(t.project_id, t.name_lower),
   uniqueIndex('uq_files_project_path').on(t.project_id, t.path),
 ])
 

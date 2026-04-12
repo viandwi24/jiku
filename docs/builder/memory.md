@@ -375,6 +375,20 @@ Plan 13 (OpenClaw port) is replaced by `packages/browser/`. Key conventions:
 
 **Browser container logs:** `packages/browser/docker/entrypoint.sh` writes per-process logs into `/var/log/jiku-browser/{xvfb,fluxbox,chromium,nginx-error,x11vnc}.log` inside the container. When debugging "Chromium doesn't appear in noVNC", `docker exec <id> tail /var/log/jiku-browser/chromium.log` is the fastest path to the actual error.
 
+## Plan 16 — Filesystem Revision V2
+
+**S3 keys are UUID-based and immutable:** `adapter.buildKeyFromId(fileId)` produces `objects/{2-char-prefix}/{fileId}`. The key never changes after file creation — `move()` and rename only update DB metadata (path, name, folder_path), not the S3 key. Legacy keys (`projects/{projectId}{path}`) are migrated lazily on first read via `ensureModernKey()`. Detection: `S3FilesystemAdapter.isLegacyKey(key)` checks `key.startsWith('projects/')`.
+
+**FilesystemService is LRU-cached in `factory.ts`:** `getFilesystemService(projectId)` caches the constructed service (adapter + decrypted credential) per project, max 500 entries, TTL 5min. All consumers import from `service.ts` which re-exports from `factory.ts`. Call `invalidateFilesystemCache(projectId)` when config changes (PATCH /config, manager.sleep, credential rotation).
+
+**`project_folders` table replaces virtual folder derivation:** `list()` queries `project_folders` for subfolders (index on `project_id, parent_path`) instead of fetching ALL file paths and deriving subfolders in application code. `write()` auto-upserts ancestor folders via `getAncestorPaths()`. `deleteFolder()` cleans up folder entries.
+
+**File deletion is tombstone-based:** `delete()` removes the DB row immediately and enqueues the `storage_key` into `storage_cleanup_queue`. `StorageCleanupWorker` (started from `index.ts`, runs every 30s) processes pending entries with retry (max 3 attempts).
+
+**`read()` returns `{ content, version, cached }`:** `version` enables optimistic locking in `fs_write` (via `expected_version`). `cached` tells the agent whether content came from DB cache or S3. Cache validity: `cache_valid_until` (24h TTL) + `content_version` bump on every write.
+
+**tsvector search uses a generated column + GIN index:** `search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', name || ' ' || path)) STORED` is added via manual SQL migration (Drizzle lacks native tsvector type). `searchFiles()` tries `search_vector @@ to_tsquery('simple', query || ':*')` first, falls back to ILIKE if the column doesn't exist. Prefix-only (not substring like `%query%`), but complemented by `name_lower` B-tree index for `LIKE lower(query)%` patterns.
+
 **Chromium DNS rebinding protection requires an HTTP proxy in front of CDP:** Chromium's DevTools HTTP handler rejects every `/json/*` request whose `Host` header is not `localhost`, `127.0.0.1`, or an IP address — error message: `"Host header is specified and is not an IP address or localhost."`. This breaks every cross-container CDP call, because the inbound `Host` header is the chrome service's docker compose alias (e.g. `bitorex-...-chrome-1`). The previous design used `socat` for the 9222→19222 forward, which is purely TCP and passes the Host header through unchanged — so it worked locally (`localhost:9222`) but silently failed in production (Dokploy). The fix in `packages/browser/docker/{Dockerfile,nginx.conf,entrypoint.sh}` is **nginx-light** as the public listener on 9222: it forwards to `127.0.0.1:19222` and unconditionally `proxy_set_header Host "localhost"`. nginx also handles the WebSocket upgrade for the CDP socket. **Never** replace the nginx step with a TCP-only forwarder again.
 
 ## ToolOutput renders content[] arrays with image support

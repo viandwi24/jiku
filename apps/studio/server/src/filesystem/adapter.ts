@@ -24,9 +24,34 @@ export class S3FilesystemAdapter {
     this.config = config
   }
 
+  /**
+   * Legacy key format — encodes the virtual path into the S3 key.
+   * Still needed by `persistContentToAttachment()` (Plan 33) which stores
+   * attachments under a different prefix (`jiku/attachments/...`).
+   *
+   * @deprecated For filesystem files, use `buildKeyFromId()` instead.
+   */
   buildKey(projectId: string, virtualPath: string): string {
-    // e.g. projects/abc123/src/index.ts
     return `projects/${projectId}${virtualPath}`
+  }
+
+  /**
+   * Plan 16 — UUID-based key with entropy prefix for S3 partition spread.
+   *
+   * Format: `objects/{2-char-prefix}/{fileId}`
+   * The 2-char prefix is derived from the first 2 hex chars of the UUID
+   * (which is already random), producing 256 prefixes for even S3 partition
+   * distribution. The key NEVER changes after creation — move/rename only
+   * touches DB metadata, not S3.
+   */
+  buildKeyFromId(fileId: string): string {
+    const prefix = fileId.replace(/-/g, '').substring(0, 2)
+    return `objects/${prefix}/${fileId}`
+  }
+
+  /** Returns true if the storage key uses the old path-encoded format. */
+  static isLegacyKey(storageKey: string): boolean {
+    return storageKey.startsWith('projects/')
   }
 
   async upload(key: string, content: string | Buffer, mimeType: string): Promise<void> {

@@ -10,6 +10,8 @@ import { conversations, messages } from './conversations.ts'
 import { credentials, agent_credentials } from './credentials.ts'
 import { usage_logs } from './usage_logs.ts'
 import { project_filesystem_config, project_files } from './filesystem.ts'
+import { project_folders } from './filesystem-folders.ts'
+import { filesystem_migrations } from './filesystem-migrations.ts'
 import { project_attachments } from './attachments.ts'
 import { project_roles, project_memberships, invitations, superadmin_transfers } from './acl.ts'
 import { cron_tasks } from './cron_tasks.ts'
@@ -59,6 +61,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   agents: many(agents),
   filesystem_config: many(project_filesystem_config),
   files: many(project_files),
+  folders: many(project_folders),
   project_roles: many(project_roles),
   project_memberships: many(project_memberships),
 }))
@@ -94,6 +97,15 @@ export const projectFilesRelations = relations(project_files, ({ one }) => ({
   project: one(projects, { fields: [project_files.project_id], references: [projects.id] }),
   created_by_user: one(users, { fields: [project_files.created_by], references: [users.id] }),
   updated_by_user: one(users, { fields: [project_files.updated_by], references: [users.id] }),
+}))
+
+// Plan 16: new table relations
+export const projectFoldersRelations = relations(project_folders, ({ one }) => ({
+  project: one(projects, { fields: [project_folders.project_id], references: [projects.id] }),
+}))
+
+export const filesystemMigrationsRelations = relations(filesystem_migrations, ({ }) => ({
+  // No FK relations — project_id is not a FK (project may be deleted mid-migration)
 }))
 
 export const agentsRelations = relations(agents, ({ one, many }) => ({

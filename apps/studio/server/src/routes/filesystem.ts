@@ -19,6 +19,7 @@ import {
   ValidationError,
   ConflictError,
 } from '../filesystem/service.ts'
+import { invalidateFilesystemCache } from '../filesystem/factory.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { normalizePath, isAllowedFile, getMimeType } from '../filesystem/utils.ts'
 
@@ -81,6 +82,8 @@ router.patch('/projects/:pid/filesystem/config', requirePermission('settings:wri
       ...(body.credential_id !== undefined ? { credential_id: body.credential_id } : {}),
       ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
     })
+    // Invalidate the cached FilesystemService (credential/adapter may have changed)
+    invalidateFilesystemCache(projectId)
     // Sync project tools so agents pick up filesystem changes immediately
     runtimeManager.syncProjectTools(projectId).catch(() => {})
     return res.json({ config, migration_needed: false })
@@ -356,7 +359,8 @@ router.post('/projects/:pid/files/upload', requirePermission('agents:read'), (re
 
 // POST /projects/:pid/filesystem/migrate
 // Body: { credential_id, adapter_id, action: 'migrate' | 'reset' }
-// Copies all files to new adapter (or resets DB), then applies new config.
+// Plan 16: 'migrate' is now async — returns { job_id } immediately.
+// 'reset' is still synchronous (just deletes DB rows).
 router.post('/projects/:pid/filesystem/migrate', requirePermission('settings:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const body = req.body as {
@@ -370,25 +374,70 @@ router.post('/projects/:pid/filesystem/migrate', requirePermission('settings:wri
   }
 
   try {
-    let config, result
     if (body.action === 'migrate') {
-      result = await migrateFilesystemAdapter(projectId, body.credential_id, body.adapter_id)
-      config = await upsertFilesystemConfig(projectId, {
+      // Plan 16: async migration — create job row, fire and forget
+      const { db: dbClient, filesystem_migrations, getFilesystemConfig: getFsCfg } = await import('@jiku-studio/db')
+      const { runFilesystemMigration } = await import('../filesystem/migration-job.ts')
+
+      const oldConfig = await getFsCfg(projectId)
+      const [migration] = await dbClient.insert(filesystem_migrations).values({
+        project_id: projectId,
+        from_credential_id: oldConfig?.credential_id ?? null,
+        to_credential_id: body.credential_id,
+      }).returning()
+
+      // Update config immediately so the project uses the new adapter
+      await upsertFilesystemConfig(projectId, {
         adapter_id: body.adapter_id,
         credential_id: body.credential_id,
       })
+      invalidateFilesystemCache(projectId)
+      runtimeManager.syncProjectTools(projectId).catch(() => {})
+
+      // Run migration in background
+      runFilesystemMigration(migration.id).catch(err =>
+        console.error(`[fs-migration] background job failed:`, err),
+      )
+
+      return res.json({ ok: true, job_id: migration.id, status: 'pending' })
     } else {
+      // Reset — synchronous, just wipe
       const deleted = await deleteAllProjectFiles(projectId)
-      config = await upsertFilesystemConfig(projectId, {
+      const config = await upsertFilesystemConfig(projectId, {
         adapter_id: body.adapter_id,
         credential_id: body.credential_id,
       })
       await updateFilesystemStats(projectId)
-      result = { migrated: 0, failed: 0, errors: [], deleted }
+      invalidateFilesystemCache(projectId)
+      runtimeManager.syncProjectTools(projectId).catch(() => {})
+      return res.json({ ok: true, config, deleted })
     }
-    // Sync project tools so agents pick up new adapter immediately
-    runtimeManager.syncProjectTools(projectId).catch(() => {})
-    return res.json({ ok: true, config, ...result })
+  } catch (err) {
+    return handleFsError(res, err)
+  }
+})
+
+// GET /projects/:pid/filesystem/migrate/:id — poll migration progress
+router.get('/projects/:pid/filesystem/migrate/:id', requirePermission('settings:read'), async (req, res) => {
+  try {
+    const { db: dbClient, filesystem_migrations } = await import('@jiku-studio/db')
+    const { eq } = await import('drizzle-orm')
+    const migration = await dbClient.query.filesystem_migrations.findFirst({
+      where: eq(filesystem_migrations.id, req.params['id']!),
+    })
+    if (!migration) {
+      return res.status(404).json({ error: 'Migration not found' })
+    }
+    return res.json({
+      id: migration.id,
+      status: migration.status,
+      total_files: migration.total_files,
+      migrated_files: migration.migrated_files,
+      failed_files: migration.failed_files,
+      error_message: migration.error_message,
+      started_at: migration.started_at,
+      completed_at: migration.completed_at,
+    })
   } catch (err) {
     return handleFsError(res, err)
   }

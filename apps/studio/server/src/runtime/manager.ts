@@ -15,6 +15,7 @@ import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, bui
 import { systemTools } from '../system/tools.ts'
 import { buildBrowserTools } from '../browser/tool.ts'
 import { browserTabManager } from '../browser/tab-manager.ts'
+import { invalidateFilesystemCache } from '../filesystem/factory.ts'
 import { buildFilesystemTools } from '../filesystem/tools.ts'
 import { getFilesystemConfig } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
@@ -291,6 +292,9 @@ export class JikuRuntimeManager {
     // Drop browser tab tracking — the next wakeUp() starts from a clean
     // chromium state, so any cached tab indexes would be wrong anyway.
     browserTabManager.dropProject(projectId)
+    // Drop cached FilesystemService — credential may change between
+    // sleep/wakeUp cycles.
+    invalidateFilesystemCache(projectId)
   }
 
   // ─── Smart sync methods ───────────────────────────────────────────────────

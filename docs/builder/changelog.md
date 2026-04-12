@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-04-10 — Plan 16-FS-Revision-V2: Filesystem production-scale revision
+
+**Shipped:** All 8 phases of the filesystem revision. Plan 14's virtual filesystem
+was functional but had scaling bottlenecks. This revision addresses them with
+zero downtime — all changes are additive and backward compatible.
+
+**Key changes (from Plan 16-FS-Revision-V2 architecture document):**
+
+1. **UUID-based S3 keys** — `objects/{2-char-prefix}/{fileId}` instead of
+   `projects/{projectId}{path}`. Move/rename now does 0 S3 ops (DB-only
+   metadata update). Legacy files migrate lazily on first read.
+2. **LRU-cached FilesystemService** — new `factory.ts` caches constructed
+   services per project (max 500, TTL 5min). Eliminates repeated AES decrypt
+   + S3Client construction on every tool call.
+3. **`project_folders` table** — explicit folder tracking replaces the
+   O(total_files) `extractImmediateSubfolders()` derivation. `list()` now
+   does two parallel index lookups instead of a full scan.
+4. **Content cache with version + TTL** — `content_version` bumped on
+   write, `cache_valid_until` set to 24h. `read()` checks validity before
+   using cached content.
+5. **tsvector search** — `search_vector` generated column + GIN index
+   (zero-extension, built-in Postgres). Falls back to ILIKE if migration
+   hasn't run yet.
+6. **Optimistic locking** — `version` column + `expected_version` parameter
+   on `fs_write`. Concurrent writes are detected and rejected with
+   ConflictError.
+7. **Storage cleanup queue** — `storage_cleanup_queue` table + 30s
+   background worker. File deletion is instant (DB row removed), S3 cleanup
+   is deferred and retried up to 3x.
+8. **Async migration** — `filesystem_migrations` table +
+   `runFilesystemMigration()` background job. POST /migrate returns
+   `{ job_id }` immediately; GET /migrate/:id polls progress.
+
+**New files:**
+- `apps/studio/server/src/filesystem/factory.ts` — LRU cache factory
+- `apps/studio/server/src/filesystem/worker.ts` — StorageCleanupWorker
+- `apps/studio/server/src/filesystem/migration-job.ts` — async migration job
+- `apps/studio/db/src/schema/filesystem-folders.ts`
+- `apps/studio/db/src/schema/filesystem-cleanup.ts`
+- `apps/studio/db/src/schema/filesystem-migrations.ts`
+- `apps/studio/db/src/migrations/0009_filesystem_revision_v2.sql`
+
+**Modified files:**
+- `apps/studio/db/src/schema/filesystem.ts` — new columns on project_files
+- `apps/studio/db/src/schema/relations.ts` — new table relations
+- `apps/studio/db/src/schema/index.ts` — export new tables
+- `apps/studio/server/src/filesystem/adapter.ts` — `buildKeyFromId()`, `isLegacyKey()`
+- `apps/studio/server/src/filesystem/service.ts` — full rewrite of write/move/delete/list/read/search
+- `apps/studio/server/src/filesystem/tools.ts` — expected_version, version+cached response
+- `apps/studio/server/src/filesystem/utils.ts` — `getAncestorPaths()`
+- `apps/studio/server/src/routes/filesystem.ts` — invalidation hooks, async migration + polling
+- `apps/studio/server/src/runtime/manager.ts` — filesystem cache invalidation in sleep()
+- `apps/studio/server/src/index.ts` — start StorageCleanupWorker
+
+**Pending:** `bun run db:push` + manual migration SQL for tsvector + backfill.
+
+---
+
 ## 2026-04-09 — Browser: max_tabs is per-project configurable
 
 **Added:** `BrowserProjectConfig.max_tabs` (range 2..50, default 10) lets each

@@ -1,13 +1,13 @@
 import nodePath from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { eq, and, like, or, sql } from 'drizzle-orm'
+import { db } from '@jiku-studio/db'
 import {
   getFilesystemConfig,
   getFileByPath,
   listFiles,
-  listAllPathsUnderFolder,
   searchFiles,
   upsertFile,
-  deleteFileById,
-  deleteFilesByIds,
   getFilesUnderFolder,
   updateFilePath,
   updateFilesystemStats,
@@ -16,14 +16,28 @@ import {
   deleteAllProjectFiles,
   getCredentialById,
 } from '@jiku-studio/db'
+import {
+  project_files,
+  project_folders,
+  storage_cleanup_queue,
+} from '@jiku-studio/db'
 import { decryptFields } from '../credentials/encryption.ts'
 import { S3FilesystemAdapter, buildS3Adapter } from './adapter.ts'
-import { normalizePath, extractImmediateSubfolders, isAllowedFile, getMimeType } from './utils.ts'
+import { normalizePath, isAllowedFile, getMimeType, getAncestorPaths } from './utils.ts'
 import type { ProjectFile } from '@jiku-studio/db'
+
+// Cache validity for content_cache (24 hours)
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 export type FilesystemEntry =
   | { type: 'folder'; path: string; name: string }
   | { type: 'file' } & ProjectFile
+
+export interface WriteOptions {
+  userId?: string
+  /** Pass the version from a previous fs_read to enable optimistic locking. */
+  expectedVersion?: number
+}
 
 export class FilesystemService {
   constructor(
@@ -31,39 +45,80 @@ export class FilesystemService {
     private adapter: S3FilesystemAdapter,
   ) {}
 
+  // ─── list ───────────────────────────────────────────────────────────────
+
   async list(folderPath = '/'): Promise<FilesystemEntry[]> {
     const normalizedFolder = normalizePath(folderPath)
 
-    const [files, allPaths] = await Promise.all([
+    // Plan 16: two parallel index lookups instead of O(total_files) derivation
+    const [files, subfolders] = await Promise.all([
       listFiles(this.projectId, normalizedFolder),
-      listAllPathsUnderFolder(this.projectId, normalizedFolder),
+      this.listSubfolders(normalizedFolder),
     ])
-
-    const subfolders = extractImmediateSubfolders(
-      allPaths.map(p => p.path),
-      normalizedFolder,
-    )
 
     return [
       ...subfolders.map(f => ({
         type: 'folder' as const,
-        path: f,
-        name: nodePath.basename(f),
+        path: f.path,
+        name: nodePath.basename(f.path),
       })),
       ...files.map(f => ({ type: 'file' as const, ...f })),
     ]
   }
 
-  async read(filePath: string): Promise<string> {
+  private async listSubfolders(folderPath: string) {
+    const parentPath = folderPath === '/' ? null : folderPath
+    return db
+      .select({ path: project_folders.path })
+      .from(project_folders)
+      .where(
+        and(
+          eq(project_folders.project_id, this.projectId),
+          parentPath === null
+            ? sql`${project_folders.parent_path} IS NULL`
+            : eq(project_folders.parent_path, parentPath),
+        ),
+      )
+      .orderBy(project_folders.path)
+  }
+
+  // ─── read ───────────────────────────────────────────────────────────────
+
+  async read(filePath: string): Promise<{ content: string; version: number; cached: boolean }> {
     const normalized = normalizePath(filePath)
     const file = await getFileByPath(this.projectId, normalized)
     if (!file) throw new NotFoundError(`File not found: ${filePath}`)
-    if (file.content_cache !== null) return file.content_cache
-    const buffer = await this.adapter.download(file.storage_key)
-    return buffer.toString('utf-8')
+
+    // Plan 16: check cache validity (version + TTL)
+    const cacheValid =
+      file.content_cache !== null &&
+      file.cache_valid_until !== null &&
+      new Date(file.cache_valid_until) > new Date()
+
+    if (cacheValid) {
+      return { content: file.content_cache!, version: file.version, cached: true }
+    }
+
+    // Cache miss or expired — fetch from S3
+    const key = await this.ensureModernKey(file)
+    const buffer = await this.adapter.download(key)
+    const content = buffer.toString('utf-8')
+
+    // Refresh cache for small files
+    if (file.size_bytes <= 50_000) {
+      await db.update(project_files).set({
+        content_cache: content,
+        cache_valid_until: new Date(Date.now() + CACHE_TTL_MS),
+      }).where(eq(project_files.id, file.id))
+    }
+
+    return { content, version: file.version, cached: false }
   }
 
-  async write(filePath: string, content: string, userId?: string): Promise<ProjectFile> {
+  // ─── write ──────────────────────────────────────────────────────────────
+
+  async write(filePath: string, content: string, options: WriteOptions = {}): Promise<ProjectFile> {
+    const { userId, expectedVersion } = options
     const normalized = normalizePath(filePath)
     const filename = nodePath.basename(normalized)
     const folder = nodePath.dirname(normalized)
@@ -73,12 +128,30 @@ export class FilesystemService {
     const check = isAllowedFile(filename, sizeBytes)
     if (!check.allowed) throw new ValidationError(check.reason!)
 
-    const storageKey = this.adapter.buildKey(this.projectId, normalized)
     const mimeType = getMimeType(ext)
+    const existing = await getFileByPath(this.projectId, normalized)
 
+    // Plan 16: optimistic locking
+    if (expectedVersion !== undefined && existing) {
+      if (existing.version !== expectedVersion) {
+        throw new ConflictError(
+          `File was modified (current version: ${existing.version}, expected: ${expectedVersion}). ` +
+          `Read the file again to get the latest version.`,
+        )
+      }
+    }
+
+    // Plan 16: UUID-based key — immutable after creation. On update, reuse
+    // the existing storage_key (content is overwritten in-place in S3).
+    const fileId = existing?.id ?? randomUUID()
+    const storageKey = existing?.storage_key ?? this.adapter.buildKeyFromId(fileId)
+
+    // Upload content to S3 (same key for both create and update)
     await this.adapter.upload(storageKey, content, mimeType)
 
+    // DB upsert
     const file = await upsertFile({
+      id: existing ? undefined : fileId,
       project_id: this.projectId,
       path: normalized,
       name: filename,
@@ -92,9 +165,14 @@ export class FilesystemService {
       updated_by: userId ?? null,
     })
 
+    // Plan 16: upsert ancestor folders into project_folders
+    await this.upsertAncestorFolders(normalized)
+
     await updateFilesystemStats(this.projectId)
     return file
   }
+
+  // ─── move ───────────────────────────────────────────────────────────────
 
   async move(fromPath: string, toPath: string): Promise<void> {
     const from = normalizePath(fromPath)
@@ -106,78 +184,168 @@ export class FilesystemService {
     const existing = await getFileByPath(this.projectId, to)
     if (existing) throw new ConflictError(`File already exists at: ${toPath}`)
 
-    const newKey = this.adapter.buildKey(this.projectId, to)
-    const content = await this.adapter.download(file.storage_key)
-    await this.adapter.upload(newKey, content, file.mime_type)
-    await this.adapter.delete(file.storage_key)
-
+    // Plan 16: zero S3 operations — storage_key is UUID-based and does NOT
+    // change on move/rename. Only DB metadata (path, name, folder_path,
+    // extension) is updated. This is atomic (single UPDATE statement).
     const filename = nodePath.basename(to)
     await updateFilePath(file.id, {
       path: to,
       name: filename,
       folder_path: nodePath.dirname(to),
       extension: nodePath.extname(filename).toLowerCase(),
-      storage_key: newKey,
+      // storage_key intentionally NOT included — immutable after file creation
     })
+
+    // Upsert ancestor folders for the new path
+    await this.upsertAncestorFolders(to)
   }
+
+  // ─── delete ─────────────────────────────────────────────────────────────
 
   async delete(filePath: string): Promise<void> {
     const normalized = normalizePath(filePath)
     const file = await getFileByPath(this.projectId, normalized)
     if (!file) throw new NotFoundError(`File not found: ${filePath}`)
-    await this.adapter.delete(file.storage_key)
-    await deleteFileById(file.id)
+
+    // Plan 16: tombstone pattern — delete DB row immediately, enqueue S3
+    // cleanup for the background worker. This decouples the fast user-facing
+    // operation from the potentially slow/flaky S3 delete.
+    await db.transaction(async (tx) => {
+      await tx.delete(project_files).where(eq(project_files.id, file.id))
+      await tx.insert(storage_cleanup_queue).values({
+        storage_key: file.storage_key,
+        project_id: this.projectId,
+      })
+    })
+
     await updateFilesystemStats(this.projectId)
   }
 
   async deleteFolder(folderPath: string): Promise<number> {
     const normalized = normalizePath(folderPath)
     const files = await getFilesUnderFolder(this.projectId, normalized)
-    await Promise.all(files.map(f => this.adapter.delete(f.storage_key)))
-    await deleteFilesByIds(files.map(f => f.id))
+    if (files.length === 0) return 0
+
+    // Enqueue all S3 keys for background cleanup + delete DB rows
+    await db.transaction(async (tx) => {
+      // Enqueue S3 keys
+      for (const f of files) {
+        await tx.insert(storage_cleanup_queue).values({
+          storage_key: f.storage_key,
+          project_id: this.projectId,
+        })
+      }
+      // Delete file rows
+      await tx.delete(project_files).where(
+        sql`${project_files.id} IN (${sql.join(files.map(f => sql`${f.id}`), sql`, `)})`,
+      )
+      // Clean up folder entries
+      await tx.delete(project_folders).where(
+        and(
+          eq(project_folders.project_id, this.projectId),
+          or(
+            eq(project_folders.path, normalized),
+            like(project_folders.path, `${normalized}/%`),
+          ),
+        ),
+      )
+    })
+
     await updateFilesystemStats(this.projectId)
     return files.length
   }
 
+  // ─── search ─────────────────────────────────────────────────────────────
+
   async search(query: string, extension?: string): Promise<ProjectFile[]> {
-    return searchFiles(this.projectId, query, extension)
+    // Plan 16: try tsvector first (GIN index), fall back to ILIKE if
+    // search_vector column doesn't exist yet (migration not applied).
+    try {
+      const results = await db.execute<ProjectFile>(sql`
+        SELECT id, project_id, path, name, extension, size_bytes, mime_type,
+               folder_path, storage_key, content_cache, version, content_version,
+               cache_valid_until, content_hash, created_by, updated_by,
+               created_at, updated_at
+        FROM project_files
+        WHERE project_id = ${this.projectId}
+          AND search_vector @@ to_tsquery('simple', ${query.trim()} || ':*')
+          ${extension ? sql`AND extension = ${extension}` : sql``}
+        ORDER BY updated_at DESC
+        LIMIT 100
+      `)
+      return results.rows as unknown as ProjectFile[]
+    } catch {
+      // Fallback: search_vector column not yet created
+      return searchFiles(this.projectId, query, extension)
+    }
   }
 
   /** Return the S3 adapter for direct streaming (used by proxy route). */
   getAdapter(): S3FilesystemAdapter {
     return this.adapter
   }
+
+  // ─── Internals ──────────────────────────────────────────────────────────
+
+  /**
+   * Plan 16: lazy S3 key migration. Legacy files have path-encoded keys
+   * (`projects/{projectId}{path}`). On first access, we re-upload under a
+   * UUID-based key and enqueue the old key for cleanup.
+   */
+  private async ensureModernKey(file: ProjectFile): Promise<string> {
+    if (!S3FilesystemAdapter.isLegacyKey(file.storage_key)) {
+      return file.storage_key
+    }
+
+    const content = await this.adapter.download(file.storage_key)
+    const newKey = this.adapter.buildKeyFromId(file.id)
+    await this.adapter.upload(newKey, content, file.mime_type)
+
+    // Update DB + enqueue old key for cleanup
+    await updateFileStorageKey(file.id, newKey)
+    await db.insert(storage_cleanup_queue).values({
+      storage_key: file.storage_key,
+      project_id: this.projectId,
+    })
+
+    return newKey
+  }
+
+  /**
+   * Upsert all ancestor folders of a file path into project_folders.
+   * Called after write() and move() to keep the folder table in sync.
+   */
+  private async upsertAncestorFolders(filePath: string): Promise<void> {
+    const ancestors = getAncestorPaths(filePath)
+    for (const ancestor of ancestors) {
+      const parentPath = ancestor === '/' ? null : nodePath.dirname(ancestor) || '/'
+      const depth = ancestor.split('/').filter(Boolean).length
+      await db.insert(project_folders).values({
+        project_id: this.projectId,
+        path: ancestor,
+        parent_path: parentPath === '/' ? null : parentPath,
+        depth,
+      }).onConflictDoNothing()
+    }
+  }
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
+// Plan 16: the factory with LRU cache lives in `factory.ts`. This re-export
+// keeps backward compatibility for all existing consumers that import from
+// `service.ts` (routes, skills, attachments, content persister, etc.).
 
-export async function getFilesystemService(projectId: string): Promise<FilesystemService | null> {
-  const config = await getFilesystemConfig(projectId)
-  if (!config?.enabled || !config.credential_id) return null
-
-  const cred = await getCredentialById(config.credential_id)
-  if (!cred || !cred.fields_encrypted) return null
-
-  const fields = decryptFields(cred.fields_encrypted)
-  const metadata = (cred.metadata ?? {}) as Record<string, string>
-  const adapter = buildS3Adapter(fields, metadata)
-
-  return new FilesystemService(projectId, adapter)
-}
+export { getFilesystemService } from './factory.ts'
 
 /**
  * Migrate all files from the current adapter to a new adapter + config.
- * Copies objects from old S3 adapter to new S3 adapter, then updates
- * the storage_key in DB to point at the new adapter's keys.
- *
- * Returns counts of migrated / failed files.
+ * Plan 16: now uses UUID-based keys for new adapter.
  */
 export async function migrateFilesystemAdapter(
   projectId: string,
   newCredentialId: string,
-  newAdapterId: string,
+  _newAdapterId: string,
 ): Promise<{ migrated: number; failed: number; errors: string[] }> {
-  // Build old adapter from current config
   const oldConfig = await getFilesystemConfig(projectId)
   if (!oldConfig?.credential_id) {
     throw new ValidationError('No existing filesystem configured — nothing to migrate from')
@@ -200,7 +368,6 @@ export async function migrateFilesystemAdapter(
     (newCred.metadata ?? {}) as Record<string, string>,
   )
 
-  // Get all files for the project
   const allFiles = await getAllProjectFiles(projectId)
 
   let migrated = 0
@@ -210,7 +377,8 @@ export async function migrateFilesystemAdapter(
   for (const file of allFiles) {
     try {
       const content = await oldAdapter.download(file.storage_key)
-      const newKey = newAdapter.buildKey(projectId, file.path)
+      // Plan 16: use UUID-based key for the new adapter
+      const newKey = newAdapter.buildKeyFromId(file.id)
       await newAdapter.upload(newKey, content, file.mime_type)
       await updateFileStorageKey(file.id, newKey)
       migrated++
@@ -234,7 +402,6 @@ export async function testFilesystemConnection(projectId: string): Promise<{ ok:
     const fields = decryptFields(cred.fields_encrypted)
     const metadata = (cred.metadata ?? {}) as Record<string, string>
     const adapter = buildS3Adapter(fields, metadata)
-    // Write a small probe object then delete it
     const testKey = `jiku-probe-${projectId}-${Date.now()}`
     await adapter.upload(testKey, 'probe', 'text/plain')
     await adapter.delete(testKey)

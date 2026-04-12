@@ -7,9 +7,18 @@ A follow-up concurrency pass also landed 2026-04-09: per-project mutex +
 per-agent tab affinity + Debug panel in the settings page (ADR-036, see
 impl report's "Concurrency model" section).
 
-## Currently Working On
-- _(nothing active)_ — Plan 33 closed end-to-end. Pick the next item from
-  `docs/builder/tasks.md`.
+## Currently Working On (2026-04-10)
+- **Plan 16-FS-Revision-V2: IMPLEMENTED.** Production-scale filesystem revision.
+  All 8 phases complete:
+  - ✅ Phase 1: DB schema (new columns + 3 new tables + migration + backfill SQL)
+  - ✅ Phase 2: UUID-based S3 keys (move/rename = 0 S3 ops, lazy migration)
+  - ✅ Phase 3: LRU-cached FilesystemService factory (max 500, TTL 5min)
+  - ✅ Phase 4: project_folders table (list() uses index lookup, not full scan)
+  - ✅ Phase 5: tsvector search (GIN index, ILIKE fallback)
+  - ✅ Phase 6: Content cache TTL + version bump
+  - ✅ Phase 7: Optimistic locking (expected_version in fs_write)
+  - ✅ Phase 8: Storage cleanup worker + async migration job
+  - Pending: `bun run db:push` to apply schema + run manual migration SQL
 
 ## Plan 33 — Browser Rebuild — DONE (2026-04-09)
 

@@ -9,11 +9,14 @@ import type {
   PluginEventsAPI,
   PluginConnectorAPI,
   PluginFileViewAdapterAPI,
+  PluginBrowserAdapterAPI,
   ConnectorAdapter,
+  BrowserAdapter,
 } from '@jiku-plugin/studio'
 import { registerPluginRoute } from './http-registry.ts'
 import { publish } from './event-bus.ts'
 import { registerFileViewAdapter } from './fileViewAdapterRegistry.ts'
+import { browserAdapterRegistry } from '../../browser/adapter-registry.ts'
 
 function makeHttp(pluginId: string): PluginHttpAPI {
   return {
@@ -55,6 +58,15 @@ function makeFileViewAdapters(pluginId: string): PluginFileViewAdapterAPI {
   }
 }
 
+/** Wires `ctx.browser.register(adapter)` into the global browser adapter
+ *  registry (Plan 20). Every project resolves adapters out of this registry
+ *  when executing browser tool calls or ping/preview actions. */
+function makeBrowserAdapter(_pluginId: string): PluginBrowserAdapterAPI {
+  return {
+    register: (adapter: BrowserAdapter) => browserAdapterRegistry.register(adapter),
+  }
+}
+
 export function extendPluginContext(pluginId: string, baseCtx: BasePluginContext): BasePluginContext {
   const extended = {
     ...baseCtx,
@@ -62,6 +74,7 @@ export function extendPluginContext(pluginId: string, baseCtx: BasePluginContext
     events: makeEvents(pluginId),
     connector: makeConnector(baseCtx),
     fileViewAdapters: makeFileViewAdapters(pluginId),
+    browser: makeBrowserAdapter(pluginId),
   }
   return extended as BasePluginContext
 }

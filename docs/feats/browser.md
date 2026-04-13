@@ -1,9 +1,19 @@
 # Feature: Browser Automation
 
-> **STATUS: SHIPPED (Plan 33, 2026-04-09).** Plan 13 (OpenClaw port) was
-> abandoned and replaced by `@jiku/browser` — a clean ~600 line CLI bridge to
-> [Vercel agent-browser](https://github.com/vercel-labs/agent-browser) over
-> CDP, plus a hardened Docker container with noVNC.
+> **STATUS: SHIPPED (Plan 20, 2026-04-13).** Plan 33 (single CDP endpoint per
+> project) has been superseded by Plan 20: each project now hosts N
+> **Browser Profiles**, each pinned to a **Browser Adapter** (built-in or
+> plugin-provided). The unified `browser` tool accepts `profile_id?` and
+> routes via the adapter registry.
+>
+> Key pieces:
+> - `@jiku/kit` exports the `BrowserAdapter` abstract class + `defineBrowserAdapter()`.
+> - Studio server holds `browserAdapterRegistry`. Built-in `jiku.browser.vercel`
+>   (existing CDP / Vercel agent-browser) is registered at boot.
+> - Plugins register adapters via `ctx.browser.register(adapter)`. Shipped
+>   plugin: `jiku.camofox` (Firefox with anti-fingerprinting).
+> - Profiles live in `browser_profiles` (migration `0016`); mutex + tab
+>   tracking are keyed by `profile_id`.
 
 This file is the single source of truth for the browser feature across the
 package, the Studio backend, and the Studio UI. For internal package details
@@ -543,3 +553,87 @@ open http://localhost:6080/vnc.html
 | Tests | None | 52 (in `packages/browser/src/tests`) |
 | Config | mode/headless/executable_path/control_port/no_sandbox | cdp_url + timeout_ms + evaluate_enabled + screenshot_as_attachment |
 | Screenshots | base64 inline | persisted as attachments via Plan 33 unified persister |
+
+---
+
+## Plan 20 post-ship hardening (2026-04-13)
+
+### Adapter config UI is Zod-schema-driven
+
+Add Profile modal + per-profile edit form render **from the adapter's Zod
+configSchema**, not hardcoded React per adapter. Backend serializes the schema
+via `unwrapZod()` + field-type extraction; frontend shared `ConfigField`
+component maps: boolean → `Switch`, integer/number → numeric `Input` with
+`min`/`max`/`step` hint, enum → `Select`, string → `Input`. Defaults become
+placeholders, descriptions inline, keys humanized (`timeout_ms` → "Timeout
+(ms)", `cdp_url` → "CDP URL"). Adapter drives UX by writing rich Zod:
+`.describe(...)` + `.default(...)` per field. New adapters get the whole UI
+for free — no frontend code per adapter.
+
+Files:
+- `apps/studio/web/.../browser/config-field.tsx` — shared control
+- `apps/studio/server/src/routes/browser-profiles.ts` → `serializeAdapter()` + `unwrapZod()`
+
+### CamoFox adapter is REST, not CDP
+
+Upstream `jo-inc/camofox-browser` exposes its own REST API on port 9377 — NOT
+CDP (contrary to the initial Plan 20 assumption). `plugins/jiku.camofox` is
+a pure HTTP client with its own session/tab tracking:
+
+- `userId` per profile (configurable via `user_id`, falls back to profile id)
+- `sessionKey` per agent (`agentId`)
+- `tabId` cached in-memory `Map<profileId, Map<agentId, tabId>>`
+
+Supported BrowserActions: `open`, `back`, `forward`, `reload`, `snapshot`,
+`screenshot`, `click`, `fill`, `type`, `press`, `scroll`, `wait`, `get` (url
+and title from snapshot). Unsupported actions throw clear "not supported by
+CamoFox" errors: `pdf`, `eval`, `cookies_*`, `storage`, `batch`, `drag`,
+`upload`, `dblclick`, `hover`, `focus`, `check`, `uncheck`, `select`,
+`scrollintoview`.
+
+### `@jiku/camofox` Docker wrapper package
+
+`packages/camofox/` is the single source of truth for the CamoFox image
+(upstream doesn't publish to any public registry). Dockerfile:
+
+- `FROM node:20-bookworm-slim` + Firefox/Camoufox runtime libs + xvfb
+- `git clone --depth 1 --branch ${CAMOFOX_REF}` upstream, `npm install`
+- `USER node` → `RUN npx camoufox fetch` (bakes Firefox binary into image)
+- `CMD npm start`
+
+Both compose files build from this local context:
+- `apps/studio/server/docker-compose.browser.yml` (host ports for dev)
+- `infra/dokploy/docker-compose.browser.yml` (Traefik labels + `CAMOFOX_DOMAIN`)
+
+Volumes: `camofox-cookies:/home/node/.camofox/cookies` (writable — upstream
+example uses `:ro` for import-only, we keep writable for persistence) +
+`camofox-data:/data/camofox`.
+
+### Custom action registry — `browser_list_actions` + `browser_run_action`
+
+For adapter-specific features that don't fit the shared `BrowserAction` enum
+(CamoFox: youtube_transcript, macros, links, images, downloads, stats,
+cookie import), the `BrowserAdapter` contract now supports:
+
+```ts
+readonly customActions?: readonly BrowserCustomAction[]
+runCustomAction?(actionId, params, ctx): Promise<BrowserAdapterResult>
+```
+
+Two tools emitted globally from `buildBrowserTools()`:
+
+- `browser_list_actions(profile_id?)` → JSON catalog for the profile's adapter
+  with `{id, display_name, description, input_schema, example}` per action.
+- `browser_run_action(profile_id?, action_id, params)` → validates params via
+  `inputSchema.safeParse()`, dispatches to `adapter.runCustomAction()`.
+
+Mirrors the existing `ConnectorAdapter.actions` / `connector_run_action`
+pattern. Tool count stays flat (3 tools: `browser`, `browser_list_actions`,
+`browser_run_action`) regardless of how many adapters or custom actions
+exist. Schemas load on-demand instead of bloating every LLM turn.
+
+CamoFox ships 7 custom actions: `youtube_transcript` (POST /youtube/transcript),
+`links` (GET /tabs/:id/links), `images` (GET /tabs/:id/images), `downloads`
+(GET /tabs/:id/downloads), `macro` (POST /tabs/:id/navigate with `{macro,
+query}`), `stats` (GET /tabs/:id/stats), `import_cookies` (POST
+/sessions/:userId/cookies).

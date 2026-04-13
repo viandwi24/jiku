@@ -34,6 +34,10 @@ export const BROWSER_ACTIONS = [
 ] as const
 
 export const BrowserToolInputSchema = z.object({
+  profile_id: z.string().optional().describe(
+    'ID of the browser profile to use. Omit to route to the project default profile. See tool description for the list of available profiles.',
+  ),
+
   action: z.enum(BROWSER_ACTIONS).describe(
     'The browser action to perform. See the tool description for the list and required fields per action.',
   ),

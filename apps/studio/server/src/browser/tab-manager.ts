@@ -1,158 +1,94 @@
 import { execBrowserCommand } from '@jiku/browser'
-import { getProjectBrowserConfig } from '@jiku-studio/db'
+import { getAllEnabledBrowserProfiles, getBrowserProfile } from '@jiku-studio/db'
 import { browserMutex } from './concurrency.ts'
 import { resolveCdpEndpoint } from './config.ts'
+import type { JikuBrowserVercelConfig } from './adapters/jiku-browser-vercel-types.ts'
 
 /**
  * Per-agent tab affinity tracker for the browser tool.
  *
- * agent-browser operates on a single "active tab" per CDP endpoint. To give
- * each agent its own browsing state (URL, cookies, refs) without spinning up
- * separate containers, we open one chromium tab per agent and `tab_switch`
- * to it before every command. This works as long as every command runs
- * inside the per-project mutex (see `concurrency.ts`) — that's the only way
- * tab indexes stay deterministic.
+ * Each browser PROFILE (not project — Plan 20) is a single CDP endpoint with
+ * one active tab. To give each agent its own browsing state we open one tab
+ * per agent per profile and `tab_switch` before every command. All commands
+ * for a profile run inside the per-profile mutex (see `concurrency.ts`).
  *
  * # State model
  *
- * Each project has a `ProjectTabState` containing an ordered list of tabs.
- * The order MUST mirror chromium's actual tab order (which is the same as
- * the order returned by `tab_list` from agent-browser, by index).
- *
- *   Index 0:    "system" tab — the about:blank that the container opened
- *               at startup. Owned by no agent. Used by /preview.
+ * Each profile has a `ProfileTabState` containing an ordered list of tabs.
+ *   Index 0:    "system" tab — the about:blank the container opened at
+ *               startup. Owned by no agent. Used by /preview.
  *   Index 1..N: agent-owned tabs in creation order.
- *
- * When this module says "open a new tab", the caller (execute.ts) is
- * responsible for actually running `tab_new` against chromium. Our state is
- * kept in sync by mutating the tabs array AFTER the chromium operation
- * succeeds. The mutex guarantees that no two operations interleave, so
- * indexes stay coherent.
- *
- * # Capacity & cleanup
- *
- * - Hard cap: per-project, stored on the `ProjectTabState` (default
- *   `DEFAULT_MAX_TABS_PER_PROJECT = 10`, configurable via
- *   `BrowserProjectConfig.max_tabs` from 2..50). The cap includes the
- *   system tab. When full, the LRU agent tab (excluding system) is evicted
- *   before creating a new one.
- * - Idle eviction: `IDLE_TAB_TIMEOUT_MS` (default 10 minutes). The
- *   `evictIdleTabs()` method finds tabs older than the threshold; the caller
- *   runs `tab_close` for each and then commits the eviction via
- *   `removeTab()`.
- * - Project shutdown: `dropProject()` clears all state for a project.
- *   Caller is expected to have closed the chromium tabs already (or to
- *   accept that the next wakeUp() will see orphan tabs in chromium).
  */
 
-/**
- * Default tab cap per project. Used when `BrowserProjectConfig.max_tabs`
- * isn't set. The user can override this per-project from the settings page.
- */
-export const DEFAULT_MAX_TABS_PER_PROJECT = 10
-/** Lower bound: must allow at least the system tab + one agent tab. */
+export const DEFAULT_MAX_TABS_PER_PROFILE = 10
 export const MIN_MAX_TABS = 2
-/** Upper bound: more than this and chromium starts misbehaving. */
 export const MAX_MAX_TABS = 50
 
-export const IDLE_TAB_TIMEOUT_MS = 10 * 60 * 1000  // 10 minutes
+// Back-compat alias for callers written before Plan 20.
+export const DEFAULT_MAX_TABS_PER_PROJECT = DEFAULT_MAX_TABS_PER_PROFILE
 
-/**
- * One tab as tracked by the manager. `agentId === null` means it's the
- * system tab (index 0).
- */
+export const IDLE_TAB_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+
 export interface TrackedTab {
   agentId: string | null
   lastUsedAt: number
 }
 
-interface ProjectTabState {
+interface ProfileTabState {
   tabs: TrackedTab[]
-  /** True once the system tab (index 0) has been recorded. */
   initialized: boolean
-  /** Per-project hard cap, including the system tab. */
   maxTabs: number
 }
 
 export class BrowserTabManager {
-  private byProject = new Map<string, ProjectTabState>()
+  private byProfile = new Map<string, ProfileTabState>()
 
-  /**
-   * Initialize the project's tab list with a single system tab at index 0.
-   * Idempotent. Called the first time we touch a project.
-   *
-   * `maxTabs` is the per-project cap. If a state already exists with a
-   * different cap (i.e. the user changed the config since the last call),
-   * we update it in place — the new value takes effect on the next
-   * `isAtCapacity()` check. We do NOT proactively evict tabs that exceed
-   * the new (smaller) cap; eviction happens lazily when the next agent
-   * needs a slot.
-   */
   ensureInitialized(
-    projectId: string,
-    maxTabs: number = DEFAULT_MAX_TABS_PER_PROJECT,
-  ): ProjectTabState {
-    let state = this.byProject.get(projectId)
+    profileId: string,
+    maxTabs: number = DEFAULT_MAX_TABS_PER_PROFILE,
+  ): ProfileTabState {
+    let state = this.byProfile.get(profileId)
     if (!state) {
       state = {
         tabs: [{ agentId: null, lastUsedAt: Date.now() }],
         initialized: true,
         maxTabs,
       }
-      this.byProject.set(projectId, state)
+      this.byProfile.set(profileId, state)
     } else if (state.maxTabs !== maxTabs) {
       state.maxTabs = maxTabs
     }
     return state
   }
 
-  /**
-   * Look up the index of an agent's tab. Returns null if the agent has no
-   * tab yet.
-   */
-  getAgentTabIndex(projectId: string, agentId: string): number | null {
-    const state = this.byProject.get(projectId)
+  getAgentTabIndex(profileId: string, agentId: string): number | null {
+    const state = this.byProfile.get(profileId)
     if (!state) return null
     const idx = state.tabs.findIndex(t => t.agentId === agentId)
     return idx >= 0 ? idx : null
   }
 
-  /**
-   * Record that we've just opened a new chromium tab for `agentId`. The
-   * caller MUST have run `tab_new` against chromium first; we assume the
-   * new tab was appended at the end (chromium's default behavior).
-   *
-   * Returns the index of the new tab.
-   */
-  appendTab(projectId: string, agentId: string): number {
-    const state = this.ensureInitialized(projectId)
+  appendTab(profileId: string, agentId: string): number {
+    const state = this.ensureInitialized(profileId)
     state.tabs.push({ agentId, lastUsedAt: Date.now() })
     return state.tabs.length - 1
   }
 
-  /**
-   * Mark an agent's tab as recently used. No-op if the agent has no tab.
-   */
-  touch(projectId: string, agentId: string): void {
-    const state = this.byProject.get(projectId)
+  touch(profileId: string, agentId: string): void {
+    const state = this.byProfile.get(profileId)
     if (!state) return
     const tab = state.tabs.find(t => t.agentId === agentId)
     if (tab) tab.lastUsedAt = Date.now()
   }
 
-  /**
-   * Pick a tab to evict when the project is at capacity. Returns the LRU
-   * agent-owned tab, or null if only the system tab exists. Does NOT mutate
-   * state — the caller closes the chromium tab and then calls `removeTab`.
-   */
-  pickEvictionCandidate(projectId: string): { index: number; agentId: string } | null {
-    const state = this.byProject.get(projectId)
+  pickEvictionCandidate(profileId: string): { index: number; agentId: string } | null {
+    const state = this.byProfile.get(profileId)
     if (!state) return null
     let bestIdx = -1
     let bestTime = Number.POSITIVE_INFINITY
     for (let i = 0; i < state.tabs.length; i++) {
       const t = state.tabs[i]!
-      if (t.agentId === null) continue  // never evict system tab
+      if (t.agentId === null) continue
       if (t.lastUsedAt < bestTime) {
         bestTime = t.lastUsedAt
         bestIdx = i
@@ -162,45 +98,25 @@ export class BrowserTabManager {
     return { index: bestIdx, agentId: state.tabs[bestIdx]!.agentId! }
   }
 
-  /**
-   * Returns true if the project has reached its hard cap and a new agent
-   * cannot get a tab without eviction. Honors the per-project `maxTabs`
-   * stored in state by `ensureInitialized()`.
-   */
-  isAtCapacity(projectId: string): boolean {
-    const state = this.byProject.get(projectId)
+  isAtCapacity(profileId: string): boolean {
+    const state = this.byProfile.get(profileId)
     if (!state) return false
     return state.tabs.length >= state.maxTabs
   }
 
-  /**
-   * Read the configured max for a project, or null if the project has no
-   * tracked state yet (the caller should fall back to the config value or
-   * `DEFAULT_MAX_TABS_PER_PROJECT`).
-   */
-  getMaxTabs(projectId: string): number | null {
-    return this.byProject.get(projectId)?.maxTabs ?? null
+  getMaxTabs(profileId: string): number | null {
+    return this.byProfile.get(profileId)?.maxTabs ?? null
   }
 
-  /**
-   * Remove the tab at `index` from the manager's state. Caller MUST have
-   * already run `tab_close index` against chromium (or accepted the drift).
-   * Indexes after `index` shift down by 1, matching chromium's behavior.
-   */
-  removeTab(projectId: string, index: number): void {
-    const state = this.byProject.get(projectId)
+  removeTab(profileId: string, index: number): void {
+    const state = this.byProfile.get(profileId)
     if (!state) return
     if (index < 0 || index >= state.tabs.length) return
     state.tabs.splice(index, 1)
   }
 
-  /**
-   * Find all tabs whose `lastUsedAt` is older than the threshold. Returns
-   * the slice of `{ index, agentId }` for the caller to close. Does NOT
-   * mutate state.
-   */
-  pickIdleTabs(projectId: string, now: number = Date.now()): Array<{ index: number; agentId: string }> {
-    const state = this.byProject.get(projectId)
+  pickIdleTabs(profileId: string, now: number = Date.now()): Array<{ index: number; agentId: string }> {
+    const state = this.byProfile.get(profileId)
     if (!state) return []
     const stale: Array<{ index: number; agentId: string }> = []
     for (let i = 0; i < state.tabs.length; i++) {
@@ -210,98 +126,95 @@ export class BrowserTabManager {
         stale.push({ index: i, agentId: t.agentId })
       }
     }
-    // Important: return in DESCENDING index order so the caller can splice
-    // safely without re-indexing.
     return stale.sort((a, b) => b.index - a.index)
   }
 
-  /** All projects with at least one tracked tab. */
+  profileIds(): string[] {
+    return Array.from(this.byProfile.keys())
+  }
+
+  /** Back-compat — pre-Plan-20 callers that still think in project IDs. The
+   *  new canonical name is `profileIds()`. */
   projectIds(): string[] {
-    return Array.from(this.byProject.keys())
+    return this.profileIds()
   }
 
-  /**
-   * Drop all state for a project. Used by `runtimeManager.sleep(projectId)`
-   * — at that point the runtime is going away so we don't bother closing
-   * chromium tabs (the next wakeUp will start from fresh state anyway).
-   */
-  dropProject(projectId: string): void {
-    this.byProject.delete(projectId)
+  dropProfile(profileId: string): void {
+    this.byProfile.delete(profileId)
   }
 
-  /** Snapshot of tab counts per project — for debugging / monitoring. */
-  describe(projectId: string): { totalTabs: number; agentTabs: number } | null {
-    const state = this.byProject.get(projectId)
+  /** Back-compat alias. */
+  dropProject(profileId: string): void {
+    this.dropProfile(profileId)
+  }
+
+  describe(profileId: string): { totalTabs: number; agentTabs: number } | null {
+    const state = this.byProfile.get(profileId)
     if (!state) return null
     const agentTabs = state.tabs.filter(t => t.agentId !== null).length
     return { totalTabs: state.tabs.length, agentTabs }
   }
 
-  /**
-   * Read-only snapshot of tracked tabs for a project. Used by the diagnostics
-   * endpoint that powers the settings page debug panel. Returns an empty
-   * array if the project has no tracked state yet.
-   */
-  snapshot(projectId: string): ReadonlyArray<TrackedTab> {
-    const state = this.byProject.get(projectId)
+  snapshot(profileId: string): ReadonlyArray<TrackedTab> {
+    const state = this.byProfile.get(profileId)
     if (!state) return []
-    // Defensive copy so callers cannot mutate our internal state.
     return state.tabs.map(t => ({ ...t }))
   }
 }
 
-/** Singleton shared by execute.ts and the cleanup interval. */
 export const browserTabManager = new BrowserTabManager()
 
 /**
- * Walk every project tracked by the tab manager and close any agent tab
- * that has been idle longer than `IDLE_TAB_TIMEOUT_MS`. Each closure runs
- * inside the per-project mutex so it cannot race with an in-flight agent
- * command.
- *
- * This is best-effort: errors closing tabs in chromium are logged and
- * swallowed. The next time an agent reaches for a stale tab, the manager
- * will recover by re-creating it.
- *
- * Lives here so the tab-manager module owns its own lifecycle and the
- * server bootstrap only has to call `startBrowserTabCleanup()`.
+ * Walk every known profile (both those with tracked tabs and those stored in
+ * the DB) and evict agent tabs that have been idle longer than
+ * `IDLE_TAB_TIMEOUT_MS`. Runs inside the per-profile mutex so it cannot race
+ * with an in-flight command.
  */
 export function startBrowserTabCleanup(intervalMs: number = 60_000): () => void {
   const tick = async () => {
-    for (const projectId of browserTabManager.projectIds()) {
-      const idleTabs = browserTabManager.pickIdleTabs(projectId)
+    // Union of profiles we actively track + profiles in DB that might already
+    // have tabs open. We only care about tracked ones here — untracked
+    // profiles have no state to clean up.
+    const trackedIds = browserTabManager.profileIds()
+    if (trackedIds.length === 0) return
+
+    // Pre-load enabled profile rows so we can resolve CDP endpoints.
+    const profileRows = await getAllEnabledBrowserProfiles().catch(() => [])
+    const profilesById = new Map(profileRows.map(p => [p.id, p]))
+
+    for (const profileId of trackedIds) {
+      const idleTabs = browserTabManager.pickIdleTabs(profileId)
       if (idleTabs.length === 0) continue
 
-      // Resolve CDP endpoint once per project — config rarely changes between ticks.
-      let cdpEndpoint: string
-      try {
-        const cfg = await getProjectBrowserConfig(projectId)
-        if (!cfg.enabled) {
-          // Feature was disabled while tabs were tracked — drop everything.
-          browserTabManager.dropProject(projectId)
-          continue
-        }
-        cdpEndpoint = resolveCdpEndpoint(cfg.config)
-      } catch (err) {
-        console.warn(`[browser-cleanup] failed to resolve config for ${projectId}:`, err)
+      // Resolve CDP endpoint via the profile row. If the profile no longer
+      // exists / is disabled, drop all tracking — state would be bogus anyway.
+      let cfg = profilesById.get(profileId)
+      if (!cfg) cfg = (await getBrowserProfile(profileId).catch(() => null)) ?? undefined
+      if (!cfg || !cfg.enabled) {
+        browserTabManager.dropProfile(profileId)
         continue
       }
 
-      await browserMutex.acquire(projectId, async () => {
-        // Re-pick inside the mutex in case the state moved while we waited.
-        const stale = browserTabManager.pickIdleTabs(projectId)
+      let cdpEndpoint: string
+      try {
+        cdpEndpoint = resolveCdpEndpoint(cfg.config as JikuBrowserVercelConfig)
+      } catch (err) {
+        console.warn(`[browser-cleanup] failed to resolve endpoint for ${profileId}:`, err)
+        continue
+      }
+
+      await browserMutex.acquire(profileId, async () => {
+        const stale = browserTabManager.pickIdleTabs(profileId)
         for (const { index, agentId } of stale) {
           try {
             const r = await execBrowserCommand(cdpEndpoint, { action: 'tab', operation: 'close', index })
             if (!r.success) {
-              console.warn(`[browser-cleanup] tab_close ${index} failed for ${projectId}/${agentId}: ${r.error}`)
+              console.warn(`[browser-cleanup] tab_close ${index} failed for ${profileId}/${agentId}: ${r.error}`)
             }
           } catch (err) {
-            console.warn(`[browser-cleanup] tab_close ${index} threw for ${projectId}/${agentId}:`, err)
+            console.warn(`[browser-cleanup] tab_close ${index} threw for ${profileId}/${agentId}:`, err)
           }
-          // Whether or not chromium reported success, drop the slot — the
-          // tracked index is no longer trustworthy.
-          browserTabManager.removeTab(projectId, index)
+          browserTabManager.removeTab(profileId, index)
         }
       })
     }
@@ -311,7 +224,6 @@ export function startBrowserTabCleanup(intervalMs: number = 60_000): () => void 
     tick().catch(err => console.warn('[browser-cleanup] tick failed:', err))
   }, intervalMs)
 
-  // Don't pin the event loop just for cleanup — Node will exit cleanly.
   if (typeof handle === 'object' && handle && 'unref' in handle) {
     (handle as { unref: () => void }).unref()
   }

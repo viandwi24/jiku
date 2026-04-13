@@ -1,10 +1,10 @@
-import type { BrowserProjectConfig } from '@jiku-studio/db'
+import type { JikuBrowserVercelConfig } from './adapters/jiku-browser-vercel-types.ts'
 
 /**
- * Resolve CDP endpoint from project browser config.
+ * Resolve a CDP endpoint from a Jiku Browser profile config.
  * @jiku/browser only needs a CDP endpoint — no managed mode, no control server.
  */
-export function resolveCdpEndpoint(config: BrowserProjectConfig | undefined | null): string {
+export function resolveCdpEndpoint(config: JikuBrowserVercelConfig | undefined | null): string {
   if (!config?.cdp_url) {
     return 'ws://localhost:9222'
   }

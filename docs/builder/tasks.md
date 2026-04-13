@@ -1,15 +1,9 @@
 ## Backlog
 
-### Plan 20 — Multi Browser Profile + Browser Adapter System
-- [ ] Phase 1: Buat `packages/kit/src/browser-adapter.ts` — abstract BrowserAdapter class
-- [ ] Phase 2: BrowserAdapterRegistry + extend plugin context (`ctx.browser.registerAdapter()`)
-- [ ] Phase 3: DB migration — tabel `browser_profiles` + migration data dari kolom lama
-- [ ] Phase 4: Wrap existing browser logic jadi `JikuBrowserVercelAdapter`
-- [ ] Phase 5: Update `browser/tool.ts` — unified tool dengan `profile_id` routing
-- [ ] Phase 6: API routes — `/browser/adapters`, `/browser/profiles` CRUD + ping/preview/status
-- [ ] Phase 7: Frontend — rewrite browser page jadi multi-profile tabbed UI + Add Profile modal
-- [ ] Phase 8: Plugin `jiku.camofox` — CamofoxAdapter (baca repo dulu sebelum implement execute)
-- [ ] Phase 9: Update docs — feats/browser.md + changelog
+### Plan 20 follow-ups (post-ship)
+- [ ] Stale CamoFox tab recovery: if CamoFox evicts a cached tabId (idle timeout or `MAX_TABS_PER_SESSION` eviction), adapter should detect 404 on next call + refresh. Currently adapter caches `tabId` forever.
+- [ ] Extend action registry to `JikuBrowserVercelAdapter` if any CDP-specific custom actions emerge (none today).
+- [ ] Private registry publish for `jiku-camofox` image so deploys don't rebuild from git each time.
 
 ### Plan 19 follow-ups
 - [ ] Sandboxed `skill_exec_file` runtime (separate plan — needs JS/TS/Python sandbox)
@@ -52,6 +46,7 @@
 
 ## Done
 
+- [x] Plan 20 — Multi Browser Profile + Browser Adapter System: `BrowserAdapter` abstraction in `@jiku/kit`, per-project browser profiles (DB `browser_profiles` + migration 0016), plugin `ctx.browser.register()` hook, unified `browser` tool with `profile_id` routing, multi-profile tabbed UI + Add Profile modal, CamoFox plugin (REST REST adapter on port 9377 — NOT CDP), `@jiku/camofox` Docker wrapper package, custom action registry (`browser_list_actions` / `browser_run_action`) with 7 CamoFox custom actions, compose + env wiring for both dokploy and local dev — completed 2026-04-13. See `docs/plans/impl-reports/20-multi-browser-profile-implementation-report.md`.
 - [x] Plan 19 — Memory Learning Loop + Skills Loader v2: memory typing (episodic/semantic/procedural/reflective) + health decay, durable `background_jobs` queue + `BackgroundWorker` (SKIP LOCKED, retry), compaction-flush hook, post-run reflection (opt-in per agent), 3-phase dreaming engine (light/deep/REM) with explicit credential+model picker, FS-first skills with YAML frontmatter (skills.sh compatible), plugin `ctx.skills.register()` API, progressive-disclosure XML hint, per-agent access mode (`manual`/`all_on_demand`), eligibility gate, GitHub tarball + ZIP import (accepts `npx skills add` URL form), universal `recordLLMUsage()` usage tracker (all sources), usage page source filter + duration column + color-coded badges, memory browser Type/Health columns + clickable detail/edit dialog, FK names shortened in plugin_granted_permissions, `fs.read` unwrap fix, `refetchOnWindowFocus: false` globally, credential rate limit 30→120/min, deleted orphan `settings/memory` page — completed 2026-04-12. See `docs/plans/impl-reports/19-memory-skills-implementation-report.md`.
 - [x] Plan 18 — Production Hardening: rate limiting (5-layer `express-rate-limit`), broad `audit_logs` table + `audit.*` helper + settings/audit UI with CSV export, plugin policy enforcement via `ToolMeta.required_plugin_permission` + `plugin_granted_permissions` + core runner `ToolHooks`, tool hot-unregister on plugin activate/deactivate, plugin-permissions admin UI, and settings navigation refactor (vertical sidebar with Access Control group) — completed 2026-04-12. See `docs/plans/impl-reports/18-production-hardening-report.md`.
 - [x] Plan 17 — Plugin UI System (full): isolated runtime (tsup bundles + dynamic URL import + own React), auto-discovery loader, `apps/cli` (commander + Ink), `@jiku-plugin/studio` host anchor via native contributes/depends, signed-URL + rate-limit + prod .map gate on asset router, `jiku.analytics` demo plugin, Active Plugins tab split into System/Project sections, jiku.connector merged into Studio anchor, jiku.telegram switched to `depends: [StudioPlugin]` — completed 2026-04-12. See `docs/plans/impl-reports/17-plugin-ui-implementation-report.md`.

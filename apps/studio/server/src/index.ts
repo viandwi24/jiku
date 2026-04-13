@@ -19,6 +19,9 @@ import connectorsRouter from './routes/connectors.ts'
 import { runsRouter } from './routes/runs.ts'
 import { heartbeatRouter } from './routes/heartbeat.ts'
 import { browserRouter } from './routes/browser.ts'
+import { browserProfilesRouter } from './routes/browser-profiles.ts'
+// Side-effect import: registers the built-in `jiku.browser.vercel` adapter.
+import './browser/index.ts'
 import { filesystemRouter } from './routes/filesystem.ts'
 import { attachmentsRouter } from './routes/attachments.ts'
 import { aclRolesRouter } from './routes/acl-roles.ts'
@@ -84,6 +87,7 @@ app.use('/', connectorsRouter)  // webhook routes are at /webhook/:project_id/..
 app.use('/api', runsRouter)
 app.use('/api', heartbeatRouter)
 app.use('/api', browserRouter)
+app.use('/api', browserProfilesRouter)
 app.use('/api', filesystemRouter)
 app.use('/api', aclRolesRouter)
 app.use('/api', aclMembersRouter)

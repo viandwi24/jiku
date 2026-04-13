@@ -1,10 +1,11 @@
 services:
   # ─────────────────────────────────────────────
   # Headless Chrome (CDP + noVNC viewer)
+  # Used by the built-in `jiku.browser.vercel` adapter.
   # ─────────────────────────────────────────────
   chrome:
     build:
-      context: ../../packages/browser/docker
+      context: ../../../packages/browser/docker
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -16,38 +17,29 @@ services:
     shm_size: "2gb"
     volumes:
       - chrome-data:/data/chrome-data
-    expose:
-      - "9222"   # CDP — reached internally by the app service
-      - "6080"   # noVNC web viewer — exposed via Traefik
-    networks:
-      - dokploy-network
-    labels:
-      - "traefik.enable=true"
-      # noVNC web viewer
-      - "traefik.http.routers.jiku-browser.rule=Host(`${BROWSER_DOMAIN}`)"
-      - "traefik.http.routers.jiku-browser.entrypoints=websecure"
-      - "traefik.http.routers.jiku-browser.tls.certresolver=letsencrypt"
-      - "traefik.http.services.jiku-browser.loadbalancer.server.port=6080"
+    ports:
+      - "${CHROME_CDP_PORT:-9222}:9222"    # CDP — ws://localhost:9222
+      - "${CHROME_NOVNC_PORT:-6080}:6080"  # noVNC viewer — http://localhost:6080
 
   # ─────────────────────────────────────────────
   # CamoFox — Firefox-based anti-fingerprint browser (REST API, port 9377)
+  # Used by the `jiku.camofox` plugin adapter.
   # Docs: https://github.com/jo-inc/camofox-browser
-  # Studio plugin: plugins/jiku.camofox — connects via HTTP to port 9377.
   # ─────────────────────────────────────────────
   camofox:
     # Built from @jiku/camofox — a self-contained Dockerfile that clones
     # jo-inc/camofox-browser at build time and runs its REST server. Override
     # the upstream ref via CAMOFOX_REF (defaults to `master`).
     build:
-      context: ../../packages/camofox/docker
+      context: ../../../packages/camofox/docker
       dockerfile: Dockerfile
       args:
         CAMOFOX_REF: ${CAMOFOX_REF:-master}
     restart: unless-stopped
     environment:
       - CAMOFOX_PORT=9377
-      - CAMOFOX_API_KEY=${CAMOFOX_API_KEY}
-      - CAMOFOX_ADMIN_KEY=${CAMOFOX_ADMIN_KEY}
+      - CAMOFOX_API_KEY=${CAMOFOX_API_KEY:-}
+      - CAMOFOX_ADMIN_KEY=${CAMOFOX_ADMIN_KEY:-}
       - MAX_SESSIONS=${CAMOFOX_MAX_SESSIONS:-20}
       - MAX_TABS_PER_SESSION=${CAMOFOX_MAX_TABS_PER_SESSION:-10}
       - SESSION_TIMEOUT_MS=${CAMOFOX_SESSION_TIMEOUT_MS:-1800000}
@@ -66,25 +58,10 @@ services:
       - camofox-cookies:/home/node/.camofox/cookies
       # App-data volume for anything the server writes under /data.
       - camofox-data:/data/camofox
-    expose:
-      - "9377"   # REST API — reached internally by the app service + via Traefik
-    networks:
-      - dokploy-network
-    labels:
-      - "traefik.enable=true"
-      # CamoFox REST API exposed via domain so external clients / debugging can
-      # reach it. The Studio app itself still talks to `http://camofox:9377`
-      # on the internal network.
-      - "traefik.http.routers.jiku-camofox.rule=Host(`${CAMOFOX_DOMAIN}`)"
-      - "traefik.http.routers.jiku-camofox.entrypoints=websecure"
-      - "traefik.http.routers.jiku-camofox.tls.certresolver=letsencrypt"
-      - "traefik.http.services.jiku-camofox.loadbalancer.server.port=9377"
+    ports:
+      - "${CAMOFOX_PORT:-9377}:9377"   # REST API — http://localhost:9377
 
 volumes:
   chrome-data:
   camofox-data:
   camofox-cookies:
-
-networks:
-  dokploy-network:
-    external: true

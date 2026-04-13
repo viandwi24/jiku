@@ -114,6 +114,24 @@ export function defineTool(def: ToolDefinition): ToolDefinition {
   return def
 }
 
+// ─── Browser adapter system (Plan 20) ──────────────────────────────────────
+
+export {
+  BrowserAdapter,
+  defineBrowserAdapter,
+} from './browser-adapter.ts'
+export type {
+  BrowserAdapterContext,
+  BrowserAdapterResult,
+  BrowserAdapterContentPart,
+  BrowserAdapterTextPart,
+  BrowserAdapterImagePart,
+  BrowserAdapterConfigSchema,
+  BrowserPingResult,
+  BrowserPreviewResult,
+  BrowserCustomAction,
+} from './browser-adapter.ts'
+
 export function defineAgent(def: AgentDefinition): AgentDefinition {
   return def
 }

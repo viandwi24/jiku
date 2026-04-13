@@ -1,0 +1,14 @@
+{
+  "name": "@jiku/camofox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Docker wrapper around jo-inc/camofox-browser. Produces a self-contained image that clones, builds, and runs the CamoFox REST server on port 9377. Consumed by docker-compose.browser.yml and the jiku.camofox plugin adapter.",
+  "scripts": {
+    "docker:build": "docker build -t jiku-camofox:local ./docker",
+    "docker:run": "docker run --rm -p 9377:9377 jiku-camofox:local"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -1,5 +1,6 @@
 /**
- * Lightweight async mutex keyed by string (project ID).
+ * Lightweight async mutex keyed by string (profile ID — formerly project ID,
+ * see Plan 20).
  *
  * Why this exists: agent-browser operates on a single active tab per CDP
  * endpoint. If two agents in the same project run browser commands

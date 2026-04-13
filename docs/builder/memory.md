@@ -1,5 +1,30 @@
 # Memory
 
+## Zod schema reflection: always unwrap wrappers before reading `typeName`
+
+`_def.typeName` on a wrapped Zod node returns the wrapper name, not the inner type. `z.string().optional()._def.typeName === 'ZodOptional'` — `typeName.toLowerCase()` gives `"optional"`, NOT `"string"`. Always walk `ZodOptional` / `ZodDefault` / `ZodNullable` / `ZodEffects` via `_def.innerType` (or `_def.schema` for Effects) until you hit a leaf. Cap the walk at 5-10 iterations to avoid cycles. Pattern: `unwrapZod(node)` helper lives in `apps/studio/server/src/routes/browser-profiles.ts` and `apps/studio/server/src/browser/tool.ts`. Reuse it.
+
+## Shadcn DialogFooter has built-in `-mx-4 -mb-4` — breaks with custom DialogContent padding
+
+`@jiku/ui` `DialogFooter` assumes `DialogContent` has default `p-4` and uses `-mx-4 -mb-4` to stretch the footer's muted background edge-to-edge. If you override DialogContent to `p-0` (e.g. to build a scrollable body with pinned header/footer), DialogFooter overshoots the container. Fix: pass `className="mx-0 mb-0 rounded-b-xl"` to DialogFooter. Same trap doesn't apply to DialogHeader (it's just `flex flex-col gap-2`).
+
+## Chromium in Docker: wipe `Singleton{Lock,Cookie,Socket}` at entrypoint
+
+If Chromium's profile dir lives on a named volume (so it survives container restarts), stale `SingletonLock` / `SingletonCookie` / `SingletonSocket` files left by SIGKILL'd previous containers cause "profile appears to be in use by another Chromium process (PID) on another computer (HOSTNAME)" and refuse to start. Safe to delete at entrypoint BEFORE chromium launches — nothing else in the container holds the profile and the old hostname can never match. Files are pure coordination markers, not data — cookies / localStorage / history live in separate SQLite files. Same pattern applies to Firefox (`lock` / `.parentlock`).
+
+## CamoFox gotchas (jo-inc/camofox-browser)
+
+- **Not CDP.** Exposes REST at port 9377 — don't use `@jiku/browser` or any CDP client. See `plugins/jiku.camofox/src/adapter.ts`.
+- **URL scheme blocklist.** `POST /tabs` and `POST /tabs/:id/navigate` reject anything that isn't `http://` or `https://`. `about:blank`, `data:`, `file:` all error 400 `"Blocked URL scheme: X (only http/https allowed)"`. Preview tabs must load a real URL (configurable via `preview_url` profile field).
+- **`GET /tabs/:id/screenshot` returns raw `image/png` binary**, not JSON. Use `res.arrayBuffer()` + base64-encode, don't `res.json()`.
+- **`GET /tabs/:id/snapshot` returns JSON** with nested `screenshot: { data, mimeType }` if `?includeScreenshot=true`. Different endpoint, different shape.
+- **Firefox binary must be fetched during image build.** Upstream's Makefile does `camoufox fetch` on the host before `docker build`. We bake it into our image via `RUN npx camoufox fetch` AFTER `USER node` (so cache lands at `/home/node/.cache/camoufox/`). Without this, every POST /tabs crashes with `"Version information not found at /home/node/.cache/camoufox/version.json"`.
+- **No public image.** Upstream doesn't publish to any registry. `packages/camofox/docker/Dockerfile` is our build source — clones upstream at `CAMOFOX_REF` (default `master`, pin to SHA for reproducibility).
+
+## Custom action registry pattern (browser / connector)
+
+For platform-specific adapter features that don't fit a shared enum, use the `list_actions` + `run_action` pattern instead of emitting separate tools. Adapter declares `readonly customActions: CustomAction[]` (id + displayName + description + Zod inputSchema + example) and implements `runCustomAction(id, params, ctx)`. Two tools at the top level: `<domain>_list_actions(profile_id?)` returns the catalog, `<domain>_run_action(profile_id?, action_id, params)` validates via `inputSchema.safeParse()` + dispatches. Tool count stays flat regardless of adapter/action count; schemas load on-demand. Same pattern: `ConnectorAdapter.actions` + `connector_run_action`, `BrowserAdapter.customActions` + `browser_run_action`.
+
 ## Plugin tools need `permission: '*'` to be visible — named permissions are silently invisible
 
 `ctx.project.tools.register()` / `ctx.tools.register()` tools go through `resolveScope` which checks `caller.permissions.includes(tool.resolved_permission)`. The loader prefixes non-`*` permissions: `filesystem:read` → `jiku.sheet:filesystem:read`. No caller has that compound string, so the tool silently disappears from agent tool lists. **Always use `permission: '*'`** for tools that should be available unconditionally. For genuinely access-controlled tools, use `ToolMeta.required_plugin_permission` (Plan 18 path).

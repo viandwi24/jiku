@@ -514,8 +514,9 @@ export const api = {
   },
 
   browser: {
+    // Legacy (deprecated) — operate on the default profile.
     get: (projectId: string) =>
-      request<{ enabled: boolean; config: BrowserProjectConfig }>(`/api/projects/${projectId}/browser`),
+      request<{ enabled: boolean; config: BrowserProjectConfig; profiles: BrowserProfile[] }>(`/api/projects/${projectId}/browser`),
     setEnabled: (projectId: string, enabled: boolean) =>
       request<{ ok: boolean }>(`/api/projects/${projectId}/browser/enabled`, {
         method: 'PATCH',
@@ -536,6 +537,42 @@ export const api = {
       }),
     status: (projectId: string) =>
       request<BrowserStatus>(`/api/projects/${projectId}/browser/status`),
+
+    // Plan 20 — profile-aware endpoints.
+    listAdapters: (projectId: string) =>
+      request<{ adapters: BrowserAdapterInfo[] }>(`/api/projects/${projectId}/browser/adapters`),
+    listProfiles: (projectId: string) =>
+      request<{ profiles: BrowserProfile[] }>(`/api/projects/${projectId}/browser/profiles`),
+    createProfile: (projectId: string, data: BrowserProfileCreate) =>
+      request<{ profile: BrowserProfile }>(`/api/projects/${projectId}/browser/profiles`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    getProfile: (projectId: string, profileId: string) =>
+      request<{ profile: BrowserProfile }>(`/api/projects/${projectId}/browser/profiles/${profileId}`),
+    updateProfile: (projectId: string, profileId: string, data: BrowserProfilePatch) =>
+      request<{ profile: BrowserProfile }>(`/api/projects/${projectId}/browser/profiles/${profileId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    deleteProfile: (projectId: string, profileId: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/browser/profiles/${profileId}`, {
+        method: 'DELETE',
+      }),
+    setDefaultProfile: (projectId: string, profileId: string) =>
+      request<{ ok: boolean }>(`/api/projects/${projectId}/browser/profiles/${profileId}/default`, {
+        method: 'POST',
+      }),
+    pingProfile: (projectId: string, profileId: string) =>
+      request<BrowserPingResult>(`/api/projects/${projectId}/browser/profiles/${profileId}/ping`, {
+        method: 'POST',
+      }),
+    previewProfile: (projectId: string, profileId: string) =>
+      request<BrowserPreviewResult>(`/api/projects/${projectId}/browser/profiles/${profileId}/preview`, {
+        method: 'POST',
+      }),
+    statusProfile: (projectId: string, profileId: string) =>
+      request<BrowserStatus>(`/api/projects/${projectId}/browser/profiles/${profileId}/status`),
   },
 
   attachments: {
@@ -894,6 +931,52 @@ export interface BrowserStatus {
   tabs: BrowserStatusTab[]
   capacity: { used: number; agent_used: number; max: number }
   idle_timeout_ms: number
+}
+
+// ── Plan 20: multi-browser-profile ─────────────────────────────────────────
+
+export interface BrowserAdapterConfigField {
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'enum' | 'unknown'
+  optional: boolean
+  description?: string
+  default?: unknown
+  min?: number
+  max?: number
+  options?: string[]
+  placeholder?: string
+}
+
+export interface BrowserAdapterInfo {
+  id: string
+  display_name: string
+  description: string
+  config_fields: Record<string, BrowserAdapterConfigField>
+}
+
+export interface BrowserProfile {
+  id: string
+  project_id: string
+  name: string
+  adapter_id: string
+  config: Record<string, unknown>
+  enabled: boolean
+  is_default: boolean
+  created_at: string
+}
+
+export interface BrowserProfileCreate {
+  name: string
+  adapter_id: string
+  config?: Record<string, unknown>
+  enabled?: boolean
+  is_default?: boolean
+}
+
+export interface BrowserProfilePatch {
+  name?: string
+  config?: Record<string, unknown>
+  enabled?: boolean
+  is_default?: boolean
 }
 
 export interface PluginItem {

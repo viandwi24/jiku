@@ -37,6 +37,25 @@ done
 # ─── 3. Fluxbox ───────────────────────────────────────────────────────────
 fluxbox -display "${DISPLAY}" >"$LOG_DIR/fluxbox.log" 2>&1 &
 
+# ─── 3b. Clean stale profile locks ────────────────────────────────────────
+# If the previous container died hard (SIGKILL, OOM, power cut), chromium
+# leaves Singleton{Lock,Cookie,Socket} behind in the profile dir. Because
+# the profile lives on a named volume that survives restarts, chromium sees
+# those files on next boot and aborts with:
+#   "The profile appears to be in use by another Chromium process (PID) on
+#    another computer (OLD_HOSTNAME)."
+# Safe to wipe here — we know nothing else in this container is using the
+# profile (we're pre-launch) and the hostname from the old file no longer
+# matches this container anyway.
+CHROME_PROFILE_DIR=/data/chrome-data
+if [ -d "$CHROME_PROFILE_DIR" ]; then
+  rm -f \
+    "$CHROME_PROFILE_DIR/SingletonLock" \
+    "$CHROME_PROFILE_DIR/SingletonCookie" \
+    "$CHROME_PROFILE_DIR/SingletonSocket" \
+    2>/dev/null || true
+fi
+
 # ─── 4. Chromium ──────────────────────────────────────────────────────────
 # --no-sandbox is required because Docker Desktop on macOS/Windows does not
 # expose unprivileged user namespaces to containers, so chromium's zygote

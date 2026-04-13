@@ -10,6 +10,56 @@
 
 ---
 
+## ADR-051 — Custom action registry instead of per-adapter extra tools
+
+**Context:** `BrowserAdapter` already had `additionalTools?()` that could emit fresh `ToolDefinition`s per adapter. For CamoFox (youtube_transcript, macro, links, images, downloads, stats, import_cookies) this would mean 7+ extra top-level tools per profile — tool-list bloat scales with `profile_count × action_count`, and LLM context has to load every schema upfront even when most aren't used.
+
+**Decision:** Mirror the `ConnectorAdapter.actions` / `connector_list_actions` + `connector_run_action` pattern. Adapter declares `readonly customActions: BrowserCustomAction[]` (id + displayName + description + Zod inputSchema + example) and implements `runCustomAction(id, params, ctx)`. Two tools added globally in `buildBrowserTools()`: `browser_list_actions(profile_id?)` returns the catalog for a profile, `browser_run_action(profile_id?, action_id, params)` validates via `inputSchema.safeParse()` and dispatches.
+
+**Consequences:** Tool count stays flat at 3 (browser, list, run) regardless of how many adapters/custom actions exist. One extra round-trip for discovery, but schema isn't loaded into every LLM turn's tool list. Adapters keep platform-specific surface without touching the shared `BrowserAction` enum. `additionalTools()` still exists for cases where an adapter needs a truly custom top-level tool (e.g. future `puppeteer_screenshot_comparison`).
+
+---
+
+## ADR-052 — CamoFox is REST, not CDP — plugin keeps its own HTTP client
+
+**Context:** Initial Plan 20 assumption treated CamoFox as CDP-compatible (Firefox DevTools Protocol superset). Upstream README says otherwise — CamoFox exposes a REST API on port 9377 (`POST /tabs`, `GET /tabs/:id/{snapshot,screenshot}`, `POST /tabs/:id/{click,type,press,scroll,wait,navigate}`, `POST /youtube/transcript`, etc.). No CDP endpoint.
+
+**Decision:** `CamofoxAdapter.execute()` does NOT delegate to `@jiku/browser`. It's a pure HTTP client with its own session/tab tracking (`userId` per profile, `sessionKey` per agent, `tabId` cached in-memory). Unsupported BrowserActions (`pdf`, `eval`, `cookies_*`, `storage`, `batch`, `drag`, `upload`, `dblclick`, `hover`, `focus`, `check`, `uncheck`, `select`, `scrollintoview`) throw clear "not supported by CamoFox" errors.
+
+**Consequences:** Plugin has zero dependency on `@jiku/browser`. No shared mutex with `JikuBrowserVercelAdapter` — CamoFox handles its own concurrency server-side, so the plugin doesn't acquire `browserMutex`. Feature parity is intentionally partial — users pick CamoFox for anti-fingerprinting, not for every possible browser action. Future protocol additions (e.g. CDP in CamoFox v2) would need a new adapter id.
+
+---
+
+## ADR-053 — `@jiku/camofox` wrapper package owns the Dockerfile
+
+**Context:** Upstream camofox-browser doesn't publish to any public registry. README tells users to `make build` locally, which bakes Camoufox binary in via their Makefile. For our stack we need a deterministic, CI-friendly build.
+
+**Decision:** New `packages/camofox/` mirrors `packages/browser/docker/` pattern. Self-contained Dockerfile: `FROM node:20-bookworm-slim`, system deps for Firefox/Camoufox, `git clone --depth 1 --branch ${CAMOFOX_REF}`, `npm install`, `npx camoufox fetch` as `node` user (bakes Firefox binary into image), `CMD npm start`. Compose files (dokploy + dev) build from this local context with `CAMOFOX_REF` arg.
+
+**Consequences:** Single source of truth for the image. Pin upstream via commit SHA for reproducibility. First build ~200MB image and slow (needs to download Camoufox binary), but subsequent container starts are instant (no runtime fetch). Skipping `camoufox fetch` makes the image boot-time-lighter but every POST /tabs crashes with `"Version information not found"`. We keep it in the image.
+
+---
+
+## ADR-054 — CamoFox cookies volume: writable, not read-only
+
+**Context:** Upstream README mounts `~/.camofox/cookies:/home/node/.camofox/cookies:ro` — read-only, for *importing* cookies from the host. Our use case is persistence across restarts (browser keeps writing cookies during sessions).
+
+**Decision:** Our compose files mount a named volume (`camofox-cookies`) writable at the same documented path `/home/node/.camofox/cookies` (not the broader `.camofox` parent). Override via `CAMOFOX_COOKIES_DIR` env is supported upstream if users need a different path.
+
+**Consequences:** Matches documented CamoFox path exactly — no guessing on undocumented subdirs. Writable so REST-imported cookies and runtime-written cookies both survive container restart. Cost: if an attacker compromises CamoFox, they can write to the cookies dir. Acceptable for our threat model (container already has full browser access).
+
+---
+
+## ADR-055 — Adapter config UI driven by Zod schema reflection
+
+**Context:** Add Profile modal originally had three hardcoded input kinds (bool/number/string). Field type detection was broken because `serializeAdapter` called `typeName.toLowerCase()` on `ZodOptional` → `"optional"` — every field fell into the string branch. Even with the reflection bug fixed, users got empty inputs with no defaults, no labels, no hints.
+
+**Decision:** Backend `unwrapZod()` walks `ZodOptional`/`ZodDefault`/`ZodNullable`/`ZodEffects` to the leaf and extracts: inner type, optional flag, default value, min/max, description, enum options. Frontend shared `ConfigField` component renders: Switch for booleans, numeric Input with `min`/`max`/`step` for number/integer, Select for enums, Input for strings. Humanizes keys (`timeout_ms` → "Timeout (ms)"). Defaults become placeholders. `initialConfigFor()` prefills modal state with all declared defaults so the form is never empty. Adapters drive UX by adding `.describe(...)` + `.default(...)` to each Zod field — no per-field React code.
+
+**Consequences:** New adapters get a usable UI for free by writing rich Zod schemas. No brittle frontend switch statements per adapter. Loss: JSON-schema corner cases (unions, discriminated unions, records) aren't handled yet — adapters stick to flat ZodObject of primitives for now.
+
+---
+
 ## ADR-050 — Chat route: frontend sends only last user message, server loads history from DB
 
 **Context:** `useChat` from `@ai-sdk/react` sends the full `messages` array on every request by default. For long conversations with large tool results (e.g. sheet data with hundreds of rows), the body grew to 200KB+ and hit the 100KB `express.json()` limit. The server never used `messages` beyond extracting the last user message text and its file parts — full history was already in the DB via `StudioStorageAdapter`.

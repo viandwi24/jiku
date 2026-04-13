@@ -1,4 +1,4 @@
-import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById, getConnectors, deleteConnector, getProjectBrowserConfig } from '@jiku-studio/db'
+import { getAgentsByProjectId, getAgentById, loadProjectPolicyRules, getEnabledProjectPlugins, getProjectById, getConnectors, deleteConnector, getProjectBrowserProfiles } from '@jiku-studio/db'
 import { JikuRuntime, PluginLoader, createProviderDef, DEFAULT_PROJECT_MEMORY_CONFIG, resolveMemoryConfig } from '@jiku/core'
 import type { JikuRunParams, JikuRunResult, AgentMemoryConfig } from '@jiku/types'
 import { defineAgent } from '@jiku/kit'
@@ -124,16 +124,17 @@ export class JikuRuntimeManager {
     const connectorRows = await getConnectors(projectId)
     const connectorTools = connectorRows.length > 0 ? buildConnectorTools(projectId) : []
 
-    // Browser tools
+    // Browser tools — Plan 20: built from enabled browser profiles.
     let browserTools: ToolDefinition[] = []
-    const browserCfg = await getProjectBrowserConfig(projectId)
-    if (browserCfg.enabled) {
-      try {
-        browserTools = buildBrowserTools(projectId, browserCfg.config)
-        console.log(`[browser] Project ${projectId} browser tools enabled`)
-      } catch (err) {
-        console.warn(`[browser] Failed to build browser tools for project ${projectId}:`, err)
+    try {
+      const profiles = await getProjectBrowserProfiles(projectId)
+      const activeProfiles = profiles.filter(p => p.enabled)
+      if (activeProfiles.length > 0) {
+        browserTools = await buildBrowserTools(projectId)
+        console.log(`[browser] Project ${projectId} — ${activeProfiles.length} active profile(s), ${browserTools.length} browser tool(s)`)
       }
+    } catch (err) {
+      console.warn(`[browser] Failed to build browser tools for project ${projectId}:`, err)
     }
 
     // Filesystem tools
@@ -354,7 +355,15 @@ export class JikuRuntimeManager {
     this.sharedToolsCache.delete(projectId)
     // Drop browser tab tracking — the next wakeUp() starts from a clean
     // chromium state, so any cached tab indexes would be wrong anyway.
-    browserTabManager.dropProject(projectId)
+    // Drop per-profile browser tab tracking for every profile owned by this
+    // project. The next wakeUp starts from a clean chromium state anyway.
+    try {
+      const profiles = await getProjectBrowserProfiles(projectId)
+      for (const p of profiles) browserTabManager.dropProfile(p.id)
+    } catch {
+      // best-effort — if the DB is gone we just leak tab tracking until the
+      // idle cleanup loop catches up.
+    }
     // Drop cached FilesystemService — credential may change between
     // sleep/wakeUp cycles.
     invalidateFilesystemCache(projectId)

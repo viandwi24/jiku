@@ -1,21 +1,26 @@
+// Legacy /api/projects/:pid/browser routes (pre-Plan-20).
+//
+// These endpoints operate on the "default" profile so existing API clients
+// keep working during the migration window. New clients should use the
+// browser-profiles endpoints directly.
+
 import { Router } from 'express'
 import { z } from 'zod'
-import { execBrowserCommand } from '@jiku/browser'
-import type { ScreenshotData } from '@jiku/browser'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission } from '../middleware/permission.ts'
 import {
-  getProjectBrowserConfig,
-  setProjectBrowserEnabled,
-  setProjectBrowserConfig,
+  getProjectBrowserProfiles,
+  getDefaultBrowserProfile,
+  createBrowserProfile,
+  updateBrowserProfile,
   getAgentsByProjectId,
 } from '@jiku-studio/db'
 import { runtimeManager } from '../runtime/manager.ts'
-import { resolveCdpEndpoint } from '../browser/config.ts'
+import { browserAdapterRegistry } from '../browser/adapter-registry.ts'
 import { browserMutex } from '../browser/concurrency.ts'
 import {
   browserTabManager,
-  DEFAULT_MAX_TABS_PER_PROJECT,
+  DEFAULT_MAX_TABS_PER_PROFILE,
   MIN_MAX_TABS,
   MAX_MAX_TABS,
   IDLE_TAB_TIMEOUT_MS,
@@ -32,168 +37,109 @@ const BrowserConfigSchema = z.object({
   max_tabs: z.number().int().min(MIN_MAX_TABS).max(MAX_MAX_TABS).optional(),
 })
 
-// GET /projects/:pid/browser — config + status
+// Helper: resolve-or-create the default jiku.browser.vercel profile.
+async function ensureDefaultProfile(projectId: string, enabledInitially: boolean) {
+  let existing = await getDefaultBrowserProfile(projectId)
+  if (existing) return existing
+  const all = await getProjectBrowserProfiles(projectId)
+  if (all.length > 0) return all[0]!
+  return createBrowserProfile({
+    project_id: projectId,
+    name: 'Default',
+    adapter_id: 'jiku.browser.vercel',
+    config: {},
+    enabled: enabledInitially,
+    is_default: true,
+  })
+}
+
 router.get('/projects/:pid/browser', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
-    const cfg = await getProjectBrowserConfig(projectId)
+    const profiles = await getProjectBrowserProfiles(projectId)
+    const defaultProfile = profiles.find(p => p.is_default) ?? profiles[0] ?? null
     res.json({
-      enabled: cfg.enabled,
-      config: cfg.config,
+      enabled: profiles.some(p => p.enabled),
+      config: (defaultProfile?.config ?? {}),
+      profiles,
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 
-// PATCH /projects/:pid/browser/enabled — toggle on/off
 router.patch('/projects/:pid/browser/enabled', requirePermission('settings:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const body = z.object({ enabled: z.boolean() }).safeParse(req.body)
     if (!body.success) { res.status(400).json({ error: body.error.flatten() }); return }
 
-    await setProjectBrowserEnabled(projectId, body.data.enabled)
+    const profile = await ensureDefaultProfile(projectId, body.data.enabled)
+    if (profile.enabled !== body.data.enabled) {
+      await updateBrowserProfile(profile.id, { enabled: body.data.enabled })
+    }
+    browserTabManager.dropProfile(profile.id)
     await runtimeManager.syncProjectTools(projectId)
-    // Drop tab tracking — config or wiring may have changed; next call rebuilds.
-    browserTabManager.dropProject(projectId)
-
-    res.json({ ok: true })
+    res.json({ ok: true, deprecated: 'Use /api/projects/:pid/browser/profiles endpoints.' })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 
-// PATCH /projects/:pid/browser/config — update config
 router.patch('/projects/:pid/browser/config', requirePermission('settings:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const parsed = BrowserConfigSchema.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return }
 
-    await setProjectBrowserConfig(projectId, parsed.data)
+    const profile = await ensureDefaultProfile(projectId, true)
+    await updateBrowserProfile(profile.id, { config: parsed.data })
+    browserTabManager.dropProfile(profile.id)
     await runtimeManager.syncProjectTools(projectId)
-    // CDP endpoint may have changed — drop tracked tabs (they pointed at the old chromium).
-    browserTabManager.dropProject(projectId)
-
-    res.json({ ok: true, config: parsed.data })
+    res.json({ ok: true, config: parsed.data, deprecated: 'Use /api/projects/:pid/browser/profiles endpoints.' })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 
-// POST /projects/:pid/browser/ping — test CDP endpoint reachability
 router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
-    const cfg = await getProjectBrowserConfig(projectId)
-
-    if (!cfg.enabled) {
-      res.json({ ok: false, error: 'Browser is not enabled for this project' })
-      return
+    const profile = await getDefaultBrowserProfile(projectId)
+    if (!profile || !profile.enabled) {
+      res.json({ ok: false, error: 'Browser is not enabled for this project' }); return
     }
-
-    const cdpUrl = cfg.config?.cdp_url ?? 'ws://localhost:9222'
-
-    // Test CDP connection via /json/version endpoint
-    const t0 = Date.now()
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
-
-    try {
-      const r = await fetch(`${cdpUrl.replace(/^ws/, 'http')}/json/version`, { signal: controller.signal })
-      clearTimeout(timeout)
-      const latencyMs = Date.now() - t0
-
-      if (r.ok) {
-        const info = await r.json() as Record<string, string>
-        res.json({
-          ok: true,
-          cdp_url: cdpUrl,
-          latency_ms: latencyMs,
-          browser: info['Browser'] ?? info['product'] ?? 'unknown',
-        })
-      } else {
-        res.json({ ok: false, error: `CDP endpoint returned HTTP ${r.status}`, latency_ms: latencyMs })
-      }
-    } catch {
-      clearTimeout(timeout)
-      res.json({ ok: false, error: `Cannot reach CDP at ${cdpUrl} — is the browser container running?` })
-    }
+    const adapter = browserAdapterRegistry.get(profile.adapter_id)
+    if (!adapter) { res.json({ ok: false, error: `Adapter ${profile.adapter_id} not registered` }); return }
+    res.json(await adapter.ping(profile.config))
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 
-// POST /projects/:pid/browser/preview — capture a one-shot screenshot of the
-// current browser state. Returned inline as base64; never persisted. Used by
-// the Browser settings page to show a live "viewer" of the project's browser.
-//
-// The preview acquires the same per-project mutex as the agent tools so it
-// cannot race with an in-flight agent command. It does NOT switch tabs —
-// it always shows whichever tab is currently active in chromium (typically
-// the most recently used agent's tab).
 router.post('/projects/:pid/browser/preview', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
-    const cfg = await getProjectBrowserConfig(projectId)
-
-    if (!cfg.enabled) {
-      res.json({ ok: false, error: 'Browser is not enabled for this project' })
-      return
-    }
-
-    const cdpEndpoint = resolveCdpEndpoint(cfg.config)
-    const timeoutMs = cfg.config.timeout_ms ?? 30_000
-
-    const result = await browserMutex.acquire(projectId, async () => {
-      const screenshot = await execBrowserCommand<ScreenshotData>(
-        cdpEndpoint,
-        { action: 'screenshot' },
-        { timeoutMs },
-      )
-      if (!screenshot.success || !screenshot.data) {
-        return { ok: false as const, error: screenshot.error ?? 'Screenshot failed', hint: screenshot.hint ?? null }
-      }
-
-      // Best-effort metadata; never fail the preview if these don't return.
-      const [titleResult, urlResult] = await Promise.all([
-        execBrowserCommand<{ title: string }>(cdpEndpoint, { action: 'get', subcommand: 'title' }, { timeoutMs }).catch(() => null),
-        execBrowserCommand<{ url: string }>(cdpEndpoint, { action: 'get', subcommand: 'url' }, { timeoutMs }).catch(() => null),
-      ])
-
-      return {
-        ok: true as const,
-        data: {
-          base64: screenshot.data.base64,
-          format: screenshot.data.format ?? 'png',
-          title: titleResult?.success ? titleResult.data?.title ?? null : null,
-          url: urlResult?.success ? urlResult.data?.url ?? null : null,
-        },
-      }
-    })
-
+    const profile = await getDefaultBrowserProfile(projectId)
+    if (!profile || !profile.enabled) { res.json({ ok: false, error: 'Browser is not enabled for this project' }); return }
+    const adapter = browserAdapterRegistry.get(profile.adapter_id)
+    if (!adapter) { res.json({ ok: false, error: `Adapter ${profile.adapter_id} not registered` }); return }
+    const result = await browserMutex.acquire(profile.id, async () => adapter.preview(profile.config))
     res.json(result)
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })
 
-// GET /projects/:pid/browser/status — diagnostics for the settings page
-// debug panel. Returns the current state of the per-project tab manager and
-// the mutex (busy / idle). Names of agents are joined in so the UI can show
-// human-readable rows instead of UUIDs.
 router.get('/projects/:pid/browser/status', requirePermission('settings:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
-    const cfg = await getProjectBrowserConfig(projectId)
-
-    // Build a UUID → name lookup so the UI doesn't have to do it.
+    const profile = await getDefaultBrowserProfile(projectId)
     const agents = await getAgentsByProjectId(projectId)
     const agentNames = new Map(agents.map(a => [a.id, a.name]))
-
     const now = Date.now()
-    const tabs = browserTabManager.snapshot(projectId).map((t, index) => ({
+    const profileId = profile?.id ?? ''
+    const tabs = (profile ? browserTabManager.snapshot(profileId) : []).map((t, index) => ({
       index,
       agent_id: t.agentId,
       agent_name: t.agentId ? agentNames.get(t.agentId) ?? null : null,
@@ -201,28 +147,16 @@ router.get('/projects/:pid/browser/status', requirePermission('settings:read'), 
       last_used_at: t.lastUsedAt,
       idle_ms: now - t.lastUsedAt,
     }))
-
     const totalTabs = tabs.length
     const agentTabs = tabs.filter(t => t.kind === 'agent').length
-
-    // Resolve max: prefer the value the manager has actually applied to the
-    // running state, fall back to the saved config, finally to the default.
-    // This way the UI shows what the runtime is *currently using*, even if
-    // the user just changed the config and hasn't triggered a re-init yet.
-    const maxTabs =
-      browserTabManager.getMaxTabs(projectId) ??
-      cfg.config.max_tabs ??
-      DEFAULT_MAX_TABS_PER_PROJECT
+    const cfg = (profile?.config ?? {}) as { max_tabs?: number }
+    const maxTabs = (profile && browserTabManager.getMaxTabs(profileId)) ?? cfg.max_tabs ?? DEFAULT_MAX_TABS_PER_PROFILE
 
     res.json({
-      enabled: cfg.enabled,
-      mutex: { busy: browserMutex.isBusy(projectId) },
+      enabled: Boolean(profile?.enabled),
+      mutex: { busy: profile ? browserMutex.isBusy(profileId) : false },
       tabs,
-      capacity: {
-        used: totalTabs,
-        agent_used: agentTabs,
-        max: maxTabs,
-      },
+      capacity: { used: totalTabs, agent_used: agentTabs, max: maxTabs },
       idle_timeout_ms: IDLE_TAB_TIMEOUT_MS,
     })
   } catch (err) {

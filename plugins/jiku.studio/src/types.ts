@@ -2,8 +2,8 @@
 // These used to live in `@jiku/types` but they're Studio-specific — other
 // (non-Studio) hosts would never implement them.
 
-import type { ConnectorAdapter } from '@jiku/kit'
-export type { ConnectorAdapter }
+import type { ConnectorAdapter, BrowserAdapter } from '@jiku/kit'
+export type { ConnectorAdapter, BrowserAdapter }
 
 /** Connector-registration surface. Connector plugins (Telegram, Discord, etc.)
  *  use `ctx.connector.register(adapter)` to install their `ConnectorAdapter`
@@ -54,6 +54,12 @@ export interface FileViewAdapterSpec {
 /** Plugin API for registering file view adapters. */
 export interface PluginFileViewAdapterAPI {
   register: (spec: FileViewAdapterSpec) => void
+}
+
+/** Plugin API for registering browser adapters (Plan 20).
+ *  Installed adapters appear in the Browser Profile adapter selector UI. */
+export interface PluginBrowserAdapterAPI {
+  register: (adapter: BrowserAdapter) => void
 }
 
 /** Browser-side: direct passthrough to any Studio REST endpoint as the current user. */

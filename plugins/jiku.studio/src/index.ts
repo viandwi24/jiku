@@ -21,6 +21,7 @@ import type {
   PluginStudioHost,
   PluginConnectorAPI,
   PluginFileViewAdapterAPI,
+  PluginBrowserAdapterAPI,
 } from './types.ts'
 
 // ─── Type exports ────────────────────────────────────────────────────────────
@@ -37,6 +38,8 @@ export type {
   ConnectorAdapter,
   FileViewAdapterSpec,
   PluginFileViewAdapterAPI,
+  PluginBrowserAdapterAPI,
+  BrowserAdapter,
 } from './types.ts'
 
 /** Studio-host PluginContext — extends the base with `studio.*` surface. */
@@ -62,6 +65,7 @@ interface StudioContributes {
   events: PluginEventsAPI
   connector: PluginConnectorAPI
   fileViewAdapters: PluginFileViewAdapterAPI
+  browser: PluginBrowserAdapterAPI
 }
 
 const StudioPlugin = definePlugin({

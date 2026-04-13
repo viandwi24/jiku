@@ -1,4 +1,31 @@
-## Phase (2026-04-13) — Plan 20: Multi Browser Profile + Browser Adapter System — Starting Implementation
+## Phase (2026-04-13) — Plan 20: Multi Browser Profile + Browser Adapter System — SHIPPED + hardening pass
+
+### Plan 20 post-ship hardening — SHIPPED (2026-04-13)
+- [x] **Add Profile modal UX rebuild.** Backend `serializeAdapter` in `routes/browser-profiles.ts` was reporting `type: "optional"` for every field (never unwrapped `ZodOptional`/`ZodDefault`/`ZodNullable`) — all inputs fell into a plain text box. Rewrote `unwrapZod()` to walk wrapper nodes, extract real type + default + min/max + description + enum options.
+- [x] **Shared `ConfigField` component** (`apps/studio/web/.../browser/config-field.tsx`): boolean → `Switch`, number/integer → numeric `Input` with min/max/step, enum → `Select`, defaults become placeholders. Humanizes keys (`timeout_ms` → "Timeout (ms)", `cdp_url` → "CDP URL"). `initialConfigFor()` prefills modal with schema defaults.
+- [x] **Modal width + scroll.** Widened `DialogContent` to `sm:max-w-2xl`, turned into `flex flex-col max-h-[90vh]` with scrollable `flex-1` body; `DialogFooter` patched with `mx-0 mb-0 rounded-b-xl` to neutralize built-in `-mx-4 -mb-4` that assumed `p-4` on DialogContent.
+- [x] **CamoFox rewritten as REST client** (not CDP — upstream doesn't expose CDP). `plugins/jiku.camofox/src/adapter.ts` now maps BrowserActions → `/tabs/:id/{navigate,click,type,press,scroll,wait,snapshot,screenshot}` etc. Session model: `userId` per profile, `sessionKey` per agent; tab IDs tracked in-memory.
+- [x] **`@jiku/camofox` wrapper package** (`packages/camofox/`) with self-contained Dockerfile (`node:20-bookworm-slim` + git clone upstream at `CAMOFOX_REF` + `npm install` + `camoufox fetch` as node user + runs `npm start`). Upstream does not publish a registry image, so this is our single source of truth.
+- [x] **Docker compose wired** for both `infra/dokploy/docker-compose.browser.yml` (Traefik labels + `CAMOFOX_DOMAIN`) and `apps/studio/server/docker-compose.browser.yml` (host ports for dev). Volumes: `camofox-cookies:/home/node/.camofox/cookies` (writable for persistence) + `camofox-data:/data/camofox`. Env sections added to both `.env.example` files.
+- [x] **Chrome container stale-lock fix.** `packages/browser/docker/entrypoint.sh` now wipes `SingletonLock/Cookie/Socket` in the profile volume before launch — these survive hard container exits and caused "profile appears to be in use" crashes on restart.
+- [x] **CamoFox screenshot raw-binary fix.** `GET /tabs/:id/screenshot` returns raw `image/png` bytes (not JSON); adapter now uses a dedicated `requestImage()` helper that reads `res.arrayBuffer()` + base64-encodes.
+- [x] **CamoFox URL scheme blocklist.** `about:blank` rejected at POST /tabs (only http/https allowed). Preview now uses `cfg.preview_url` (new config field, default `https://www.example.com`).
+- [x] **Custom action registry.** `@jiku/kit` extended: `BrowserCustomAction`, `BrowserAdapter.customActions`, `runCustomAction()`. Two new tools: `browser_list_actions(profile_id?)` + `browser_run_action(profile_id?, action_id, params)`. Discovery pattern mirrors `ConnectorAdapter.actions` / `connector_run_action`.
+- [x] **CamoFox 7 custom actions registered:** `youtube_transcript`, `links`, `images`, `downloads`, `macro`, `stats`, `import_cookies` — each with Zod `inputSchema` + description + example.
+
+### Plan 20 — SHIPPED (2026-04-13)
+- [x] `packages/kit/src/browser-adapter.ts` — `BrowserAdapter` abstract class + types, exported from `packages/kit/src/index.ts`.
+- [x] `apps/studio/server/src/browser/adapter-registry.ts` — global registry; built-in `jiku.browser.vercel` registered at module load via `apps/studio/server/src/browser/index.ts` (side-effect imported from `apps/studio/server/src/index.ts`).
+- [x] Plugin context extension: `PluginBrowserAdapterAPI` in `plugins/jiku.studio/src/types.ts`; `StudioContributes.browser` added; `context-extender.ts` injects `ctx.browser.register(adapter)`.
+- [x] DB: migration `0016_browser_profiles.sql` creates `browser_profiles` table + seeds one default profile per project with `browser_enabled=true`. Drizzle schema `apps/studio/db/src/schema/browser-profiles.ts`, queries at `apps/studio/db/src/queries/browser-profiles.ts`, exported via `apps/studio/db/src/index.ts`.
+- [x] Adapter: `apps/studio/server/src/browser/adapters/jiku-browser-vercel.ts` wraps existing CDP logic; `execute.ts` refactored to export `mapToBrowserCommand`, `formatBrowserResult`, `ensureAgentTabActive`, `isReservedBrowserAction`; `tab-manager.ts` and `concurrency.ts` rekeyed from `projectId` → `profileId` (with back-compat aliases).
+- [x] Tool: `tool-schema.ts` gains `profile_id?`; `buildBrowserTools(projectId)` is now async and routes via the adapter registry.
+- [x] Routes: `apps/studio/server/src/routes/browser-profiles.ts` — GET adapters / list / POST / PATCH / DELETE / default / ping / preview / status. Legacy `routes/browser.ts` remains as a backward-compat shim.
+- [x] Frontend: `browser/page.tsx` rewritten for multi-profile tab UI; `add-profile-modal.tsx` + `profile-tab.tsx` added. `apps/studio/web/lib/api.ts` extended.
+- [x] CamoFox plugin: `plugins/jiku.camofox/` with `package.json`, `src/index.ts`, `src/adapter.ts`, `src/types.ts`. Auto-discovered. Assumes CamoFox is launched externally with a standard CDP endpoint.
+- [x] **Action required:** run migration `0016_browser_profiles.sql` (`cd apps/studio/db && bun run db:push`) before restart.
+
+### Previous phase — Starting Implementation
 
 ### Usage log response capture — SHIPPED (2026-04-13)
 - [x] `usage_logs.raw_response` column + migration `0015_usage_logs_raw_response.sql`

@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-04-13 — Plan 20 hardening: Add Profile UX + CamoFox REST adapter + custom action registry
+
+- **Add Profile modal UX fixed.** Root bug: `serializeAdapter` reported `ZodOptional.toLowerCase()` → `"optional"`, so every config field fell into a plain text Input regardless of underlying type. New `unwrapZod()` walks `Optional`/`Default`/`Nullable`/`Effects` wrappers to the leaf and extracts default, min/max, description, enum options. Frontend gains a shared `ConfigField` component — boolean → Switch, number → numeric Input with bounds, enum → Select, defaults → placeholders. Humanized labels, prefill defaults on adapter select.
+- **Modal layout fix.** `DialogContent` widened to `sm:max-w-2xl` + scrollable body (`flex flex-col max-h-[90vh]`, body `overflow-y-auto flex-1`). `DialogFooter`'s baked-in `-mx-4 -mb-4` (assumed `p-4` on DialogContent) neutralized with `mx-0 mb-0 rounded-b-xl` — fixes footer sticking past the container edge.
+- **CamoFox adapter rewritten as REST client.** Previous implementation (CDP via `@jiku/browser`) was wrong — upstream exposes a REST API on port 9377, not CDP. New adapter maps `BrowserAction`s to documented endpoints (`POST /tabs/:id/{navigate,click,type,press,scroll,wait}`, `GET /tabs/:id/{snapshot,screenshot}`, etc.). Session model: `userId` per profile, `sessionKey` per agent, tab IDs cached in-memory. Unsupported actions (`pdf`, `eval`, `cookies_*`, `storage`, `batch`, `drag`, `upload`, `dblclick`, `hover`, `focus`, `check`, `uncheck`, `select`, `scrollintoview`) throw clear errors.
+- **`@jiku/camofox` wrapper package.** New `packages/camofox/` with self-contained Dockerfile — clones upstream at `CAMOFOX_REF` (default `master`), installs deps, runs `camoufox fetch` as `node` user to bake the Firefox binary into the image (without this, first request crashed with `Version information not found at /home/node/.cache/camoufox/version.json`). Non-root, pre-creates `/home/node/.camofox/cookies` + `/data/camofox`.
+- **Docker compose + env.** Added Camofox services (Traefik-routed in `infra/dokploy/docker-compose.browser.yml`, host-ports in `apps/studio/server/docker-compose.browser.yml`). Both compose files build from `packages/camofox/docker`. Volumes: `camofox-cookies:/home/node/.camofox/cookies` (writable — upstream example uses `:ro` for import-only, we keep it writable for persistence) + `camofox-data:/data/camofox`. Browser section added to both `.env.example` files (`CAMOFOX_REF`, `CAMOFOX_API_KEY`, `CAMOFOX_ADMIN_KEY`, `CAMOFOX_PORT`, `CAMOFOX_DOMAIN`, `MAX_SESSIONS`, `MAX_TABS_PER_SESSION`, `SESSION_TIMEOUT_MS`, `IDLE_TIMEOUT_MS`, `PROXY_*`).
+- **Chrome container stale-lock fix.** `entrypoint.sh` now wipes `/data/chrome-data/Singleton{Lock,Cookie,Socket}` before launching chromium. These survive SIGKILL/OOM and cause "profile appears to be in use by another Chromium process" on restart because the profile volume is persistent across container ids.
+- **CamoFox wire-protocol fixes.**
+  - `GET /tabs/:id/screenshot` returns **raw `image/png` binary**, not JSON. Adapter now uses dedicated `requestImage()` with `res.arrayBuffer()` + base64 encoding.
+  - `POST /tabs` blocks non-http(s) URL schemes (`about:blank` rejected). Added `preview_url` config field (default `https://www.example.com`, user-overridable) so preview tab loads a valid page.
+- **Custom action registry** for platform-specific features. `@jiku/kit` extended with `BrowserCustomAction` type + optional `customActions` and `runCustomAction()` on `BrowserAdapter`. Two new tools in `buildBrowserTools()`: `browser_list_actions(profile_id?)` returns a per-adapter action catalog with `input_schema` + example; `browser_run_action(profile_id?, action_id, params)` validates params via Zod `safeParse` and dispatches to `adapter.runCustomAction()`. Mirrors the existing `ConnectorAdapter.actions` / `connector_run_action` pattern.
+- **CamoFox custom actions registered:** `youtube_transcript`, `links`, `images`, `downloads`, `macro`, `stats`, `import_cookies`. Each has a Zod schema + description + example.
+- **Files:**
+  - `packages/kit/src/browser-adapter.ts`, `packages/kit/src/index.ts`
+  - `packages/camofox/{package.json,README.md,docker/Dockerfile}` (new)
+  - `packages/browser/docker/entrypoint.sh`
+  - `apps/studio/server/src/browser/tool.ts`
+  - `apps/studio/server/src/routes/browser-profiles.ts`
+  - `apps/studio/server/src/browser/adapters/jiku-browser-vercel.ts`
+  - `apps/studio/web/lib/api.ts`
+  - `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/{add-profile-modal,profile-tab,config-field}.tsx`
+  - `apps/studio/server/docker-compose.browser.yml` (new)
+  - `apps/studio/server/.env.example`
+  - `infra/dokploy/docker-compose.browser.yml`
+  - `infra/dokploy/.env.example`
+  - `plugins/jiku.camofox/src/{adapter,types}.ts`
+
+## 2026-04-13 — Plan 20: Multi browser profile + browser adapter system
+
+- **Browser feature rearchitected.** One project → N browser profiles; each profile pins a `BrowserAdapter` (stable id like `jiku.browser.vercel` or `jiku.camofox`) with its own config. Unified `browser` tool now takes `profile_id?` and routes via the adapter registry.
+- **New abstraction layer in `@jiku/kit`.** `BrowserAdapter` abstract class + `BrowserAdapterContext` / `BrowserAdapterResult` / `BrowserPingResult` / `BrowserPreviewResult` types + `defineBrowserAdapter()` helper.
+- **Registry + plugin context.** `browserAdapterRegistry` in Studio server; plugins get `ctx.browser.register(adapter)` via `PluginBrowserAdapterAPI`. Built-in `JikuBrowserVercelAdapter` is registered at Studio boot.
+- **DB migration `0016_browser_profiles.sql`** creates `browser_profiles` and seeds a `Default` profile per legacy enabled project.
+- **Mutex + tab manager rekeyed** from `projectId` to `profileId`. Idle tab cleanup walks enabled profiles.
+- **Routes.** New `/api/projects/:pid/browser/adapters`, `/profiles` CRUD, `/profiles/:id/{ping,preview,status,default}`. Legacy endpoints kept as backward-compat.
+- **Frontend.** Multi-profile tab UI with per-profile status, live preview, debug panel, config, delete; `AddProfileModal` uses a radio-group adapter selector + dynamic config form.
+- **New plugin `jiku.camofox`.** Auto-discovered.
+- **Files:** `packages/kit/src/browser-adapter.ts`, `apps/studio/server/src/browser/*`, `apps/studio/server/src/routes/browser-profiles.ts`, `apps/studio/db/src/migrations/0016_browser_profiles.sql`, `apps/studio/db/src/schema/browser-profiles.ts`, `apps/studio/db/src/queries/browser-profiles.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/browser/*.tsx`, `apps/studio/web/lib/api.ts`, `plugins/jiku.studio/src/*.ts`, `plugins/jiku.camofox/**`.
+
 ## 2026-04-13 — Usage log: capture response + cover every LLM call site
 
 - **`usage_logs.raw_response` column added.** Until now prompts + messages were stored but the LLM reply was dropped on the floor. New migration `0015_usage_logs_raw_response.sql` adds a nullable `varchar` column; schema + `recordLLMUsage()` + web types extended.

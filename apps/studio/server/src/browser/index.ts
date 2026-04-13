@@ -1,31 +1,35 @@
-import type { BrowserProjectConfig } from '@jiku-studio/db'
-import { resolveCdpEndpoint } from './config.ts'
+// Plan 20 — Browser module entrypoint.
+//
+// Responsibilities:
+//   - Register the built-in `jiku.browser.vercel` adapter in the global
+//     BrowserAdapterRegistry.
+//   - Re-export the legacy `registerBrowserCdp` / `unregisterBrowserCdp`
+//     helpers so existing callers keep compiling. They are thin pass-throughs
+//     and will be removed once every caller migrates to the profile model.
 
-/**
- * CDP endpoint tracker for projects.
- * @jiku/browser requires a CDP endpoint; no long-running server is needed.
- */
-const cdpEndpoints = new Map<string, { endpoint: string }>()
+import { browserAdapterRegistry } from './adapter-registry.ts'
+import { jikuBrowserVercelAdapter } from './adapters/jiku-browser-vercel.ts'
 
-/**
- * Register a project's CDP endpoint for browser tools.
- */
-export function registerBrowserCdp(projectId: string, config: BrowserProjectConfig | undefined | null): void {
-  const endpoint = resolveCdpEndpoint(config)
-  cdpEndpoints.set(projectId, { endpoint })
+// Register the built-in adapter at module load time — before the plugin
+// loader runs and before any project wakes up. We explicitly want this
+// adapter always available, regardless of which plugins are installed.
+browserAdapterRegistry.register(jikuBrowserVercelAdapter)
+
+export { browserAdapterRegistry } from './adapter-registry.ts'
+export { jikuBrowserVercelAdapter } from './adapters/jiku-browser-vercel.ts'
+
+// ── Legacy helpers (kept as no-ops for backward compat) ────────────────────
+// The CDP endpoint is now resolved per-profile from the DB at call time.
+
+export function registerBrowserCdp(_projectId: string, _config: unknown): void {
+  // No-op — profile rows are the source of truth now.
 }
 
-/**
- * Unregister a project's CDP endpoint.
- */
-export function unregisterBrowserCdp(projectId: string): void {
-  cdpEndpoints.delete(projectId)
+export function unregisterBrowserCdp(_projectId: string): void {
+  // No-op — see above.
 }
 
-/**
- * Get the CDP endpoint for a project.
- */
-export function getCdpEndpoint(projectId: string): string | null {
-  const entry = cdpEndpoints.get(projectId)
-  return entry?.endpoint ?? null
+export function getCdpEndpoint(_projectId: string): string | null {
+  // Callers should look up via the profile row instead.
+  return null
 }

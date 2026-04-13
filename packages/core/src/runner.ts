@@ -229,6 +229,12 @@ export class AgentRunner {
       ...builtInResolved.filter(t => t.modes.includes(mode)),
     ]
 
+    // Per-run tool-id suppression (e.g. strip cron_create in cron-triggered runs)
+    if (params.suppress_tool_ids && params.suppress_tool_ids.length > 0) {
+      const suppressed = new Set(params.suppress_tool_ids)
+      modeTools = modeTools.filter(t => !suppressed.has(t.meta.id))
+    }
+
     // Plan 15.6: Filter tools by on/off state (agent override > project override > default enabled)
     if (params.tool_states) {
       const { project, agent: agentStates } = params.tool_states

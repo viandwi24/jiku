@@ -52,6 +52,7 @@ export async function runTaskConversation(
   agentId: string,
   goal: string,
   callerId: string | null,
+  opts: { triggeredByCron?: boolean; allowCreateCron?: boolean } = {},
 ): Promise<RunTaskResult> {
   await updateConversation(conversationId, {
     run_status: 'running',
@@ -71,6 +72,10 @@ export async function runTaskConversation(
       input: goal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
+      // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:
+      // a cron-fired agent is allowed to create/update/delete cron tasks (dynamic / conditional scheduling).
+      // The infinite-loop risk is handled by the [Cron Trigger] preamble in the stored prompt instead.
+      suppress_tool_ids: undefined,
     })
 
     // Drain the stream fully

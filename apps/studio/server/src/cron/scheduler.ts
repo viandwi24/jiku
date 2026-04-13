@@ -75,7 +75,7 @@ export class CronTaskScheduler {
     })
 
     // Run async, non-blocking
-    runTaskConversation(task.project_id, conv.id, task.agent_id, task.prompt, task.caller_id ?? null)
+    runTaskConversation(task.project_id, conv.id, task.agent_id, task.prompt, task.caller_id ?? null, { triggeredByCron: true, allowCreateCron: true })
       .then(async () => {
         await incrementRunCount(taskId)
         const updatedTask = await getCronTaskById(taskId)

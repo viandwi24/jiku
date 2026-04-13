@@ -21,11 +21,13 @@ function buildCronDeliveryBlock(delivery?: {
   chat_id?: string
   thread_id?: string
   scope_key?: string
+  platform?: string
 }): string {
   if (!delivery) return ''
+  const platform = delivery.platform ?? 'the original channel'
   const lines: string[] = ['', '[Cron Delivery]']
-  lines.push('When this task fires there is NO incoming message — you are triggered by the scheduler.')
-  lines.push('After producing the reminder/content, you MUST deliver it via one of the tools below:')
+  lines.push(`This reminder was requested from ${platform}, so the user expects the response on ${platform} — not as plain text in this task run.`)
+  lines.push('After producing the content, you MUST deliver it using ONE of the tools below (pick the first one that has enough data):')
   if (delivery.target_name) {
     lines.push(`- Preferred: connector_send_to_target({ target_name: "${delivery.target_name}"${delivery.connector_id ? `, connector_id: "${delivery.connector_id}"` : ''}, text: <your message>, markdown: true })`)
   }
@@ -36,7 +38,7 @@ function buildCronDeliveryBlock(delivery?: {
     const threadHint = delivery.thread_id ? `, thread_id: "${delivery.thread_id}"` : ''
     lines.push(`- Or raw: connector_send({ connector_id: "${delivery.connector_id}", target_ref_keys: { chat_id: "${delivery.chat_id}"${threadHint} }, text: <your message>, markdown: true })`)
   }
-  lines.push('Do not just return text — without one of these calls the user will receive nothing.')
+  lines.push('Only skip delivery if the instruction explicitly says "no notification" — otherwise text in the task log never reaches the user.')
   return lines.join('\n')
 }
 
@@ -50,26 +52,53 @@ export function buildCronCreateTool(
       id: 'cron_create',
       name: 'Create Cron Task',
       description:
-        'Create a new scheduled cron task for this agent. When the task fires there is NO incoming message — ' +
-        'so if the user needs to be notified (e.g. reminder to a Telegram chat), you MUST pass a `delivery` object ' +
-        'so the cron-run version of this agent knows where to send the output. Read the current Connector Context ' +
-        '(connector_id, chat scope, chat ref) and copy those values into delivery.',
+        'Create a scheduled cron task for this agent. SAFETY CRITICAL — a bad prompt here will run on a schedule forever, potentially causing infinite loops, spam, or silent failures. ' +
+        'Before calling this tool you MUST confirm all of the following:\n' +
+        '1. The `prompt` is a self-contained command to future-you (the cron-triggered run). It must NOT be a copy of the user\'s chat message — reword it into a direct instruction.\n' +
+        '2. The `prompt` includes every piece of context future-you will need (who the user is, what their timezone/locale is if relevant, what exact content to produce, any thresholds or ids). Future-you will NOT see the current chat history.\n' +
+        '3. If the user expects a reply on a channel (Telegram/Discord/etc.), `delivery` is filled with the current Connector Context (connector_id + chat_id/scope_key). Without it the user never receives the output.\n' +
+        '4. The schedule, name, and description match what the user actually asked for. When in doubt, ASK the user before calling — do not guess.\n' +
+        'If you cannot satisfy all four, ask the user for clarification instead of calling this tool.',
       group: 'cron',
     },
     permission: '*',
     modes: ['chat', 'task'],
     input: z.object({
-      name: z.string().max(255).describe('Human-readable name for the cron task'),
-      description: z.string().optional().describe('Optional description'),
-      cron_expression: z.string().max(100).describe('5-field cron expression, e.g. "0 * * * *" for every hour'),
-      prompt: z.string().describe('The prompt to send to the agent when triggered. DO NOT include delivery instructions here — use the `delivery` field instead.'),
+      name: z.string().max(255).describe('Human-readable name for the cron task. Short, unique, descriptive — e.g. "Reminder jam pulang (Budi)", "Daily sales digest — #sales topic".'),
+      description: z.string().optional().describe('Optional description — summarize who asked for it, why, and the expected output. Useful for audit.'),
+      cron_expression: z.string().max(100).describe(
+        '5-field cron expression evaluated in UTC. Convert from the user\'s local time BEFORE passing. ' +
+        'Examples: "0 10 * * *" = 10:00 UTC daily; "0 10 * * 1-5" = weekdays 10:00 UTC. ' +
+        'If the user said a local time (e.g. "jam 17 WIB"), convert: WIB=UTC+7 so 17:00 WIB → "0 10 * * *".',
+      ),
+      prompt: z.string().describe(
+        'THE INSTRUCTION FUTURE-YOU WILL RECEIVE when the cron fires. Treated as a command, not a conversation.\n' +
+        'Hard rules:\n' +
+        '- Must be SELF-CONTAINED. Future-you has no access to the current chat history, no user in the loop to ask, no memory of today\'s context unless you wrote it here.\n' +
+        '- Must be ACTIONABLE and UNAMBIGUOUS. Start with a verb: "Kirim...", "Buat...", "Hitung...", "Cek apakah...".\n' +
+        '- Must include everyone/everything referenced by name or id (user_id, chat_id already go in `delivery`; but e.g. agent identity, product names, thresholds — write them here).\n' +
+        '- MUST NOT be a copy of the user\'s request verbatim. Rewrite from their perspective ("ingatkan saya") to future-you\'s perspective ("kirim pengingat ke user bahwa ...").\n' +
+        '- MUST NOT include delivery channel instructions — those go in the `delivery` field.\n' +
+        'Examples:\n' +
+        '- User: "Ingatkan saya jam pulang tiap hari kerja jam 17 WIB"\n' +
+        '  BAD prompt: "Ingatkan saya jam pulang"\n' +
+        '  GOOD prompt: "Kirim pesan pengingat singkat dan ramah bahwa sekarang sudah jam 17:00 WIB — waktunya pulang. Ajak user untuk melakukan tes jam pulang jika itu yang biasanya dia lakukan. Gunakan bahasa santai sesuai gaya chat user sebelumnya."\n' +
+        '- User: "Kalau stok di bawah 10 besok jam 9, buat reminder restock"\n' +
+        '  GOOD prompt: "Cek stok produk A di filesystem /stock/current.json. Jika kurang dari 10, panggil cron_create untuk membuat reminder restock esok hari jam 09:00 WIB (cron_expression \\"0 2 * * *\\"). Jika cukup, tidak perlu tindakan."',
+      ),
       delivery: z.object({
         connector_id: z.string().optional().describe('Connector UUID from Connector Context'),
         target_name: z.string().optional().describe('Name of an existing Channel Target to send to (preferred if one exists)'),
         chat_id: z.string().optional().describe('Raw chat_id (from current Chat ref) — fallback when no named target'),
         thread_id: z.string().optional().describe('Forum topic thread_id if applicable'),
         scope_key: z.string().optional().describe('scope_key from Connector Context — enables send_to_scope'),
-      }).optional().describe('Where to send the output when the task fires. Omit only if the task has no user-facing output.'),
+        platform: z.string().optional().describe('Human label, e.g. "Telegram", "Discord" — used in the delivery instructions for your future self'),
+      }).optional().describe(
+        'Where to send the output when the task fires. ' +
+        'DEFAULT RULE: if the user made this request from a channel (Telegram, Discord, etc.) and did not say "don\'t notify me" or specify another channel, ' +
+        'ALWAYS fill this with the current channel\'s connector_id + chat_id/scope_key. ' +
+        'Only omit when user explicitly says the task is silent / runs in background without reply.',
+      ),
       enabled: z.boolean().default(true).describe('Whether the task is enabled immediately'),
     }),
     execute: async (input: unknown) => {
@@ -88,7 +117,33 @@ export function buildCronCreateTool(
         }
       }
 
-      const fullPrompt = parsed.prompt + buildCronDeliveryBlock(parsed.delivery)
+      // Safety rails — cheap heuristics that catch the most common "bad prompt" failure modes.
+      // These are intentionally lenient (agent can retry) not exhaustive.
+      const trimmed = parsed.prompt.trim()
+      if (trimmed.length < 30) {
+        return {
+          success: false,
+          error: 'prompt too short to be self-contained. Expand into a full actionable instruction for future-you — include who, what, and any required context. See the `prompt` field description for examples.',
+        }
+      }
+      // Catch the classic "echoing the user" failure.
+      const firstPerson = /^(ingatkan saya|reminder me|remind me|tolong ingatkan|catat untuk saya)\b/i
+      if (firstPerson.test(trimmed)) {
+        return {
+          success: false,
+          error: 'prompt is written from the user\'s perspective ("ingatkan saya..."). Rewrite from future-you\'s perspective as a command — e.g. "Kirim pengingat ke user bahwa ...". See the `prompt` field description.',
+        }
+      }
+
+      const preamble =
+        '[Cron Trigger]\n' +
+        'The scheduler is invoking you now — there is NO new user message in this run. ' +
+        'Treat the Instruction block below as a command FROM YOURSELF (the past-you that created this task) TO YOURSELF (present-you that must act).\n' +
+        '- If the Instruction describes content to deliver (e.g. a reminder, summary, digest): produce that content and send it via [Cron Delivery] — do NOT ask the user clarifying questions, the user is not in the loop right now.\n' +
+        '- If the Instruction describes a conditional (e.g. "kalau X maka buat cron baru"): you MAY call cron_create/update/delete as needed — this is supported.\n' +
+        '- Never interpret the Instruction as a fresh request to set up a reminder unless it explicitly says so — the reminder already exists (it is this task).\n\n' +
+        'Instruction:\n'
+      const fullPrompt = preamble + parsed.prompt + buildCronDeliveryBlock(parsed.delivery)
 
       const task = await createCronTask({
         project_id: projectId,

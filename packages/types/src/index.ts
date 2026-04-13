@@ -611,6 +611,12 @@ export interface JikuRunParams {
   tool_states?: ToolStatesMap
   /** Plan 15.8: Extra built-in tools injected per-run (e.g., progress tool for task mode). */
   extra_built_in_tools?: ToolDefinition[]
+  /**
+   * Per-run tool id suppression. Builtin tool meta.ids to strip before the run.
+   * Used by cron-triggered runs to remove `cron_create`/`cron_update`/`cron_delete` —
+   * prevents a cron task from recursively creating more cron tasks (infinite loop).
+   */
+  suppress_tool_ids?: string[]
   /** Plan 15.2: Semantic similarity scores from Qdrant (memoryId → score 0-1). Injected by studio layer. */
   semantic_scores?: Map<string, number>
 }

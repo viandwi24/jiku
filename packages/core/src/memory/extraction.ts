@@ -59,7 +59,11 @@ export async function extractMemoriesPostRun(params: {
       system: `Extract worth-remembering facts from conversations.
 Focus on: preferences, corrections, important facts, recurring patterns.
 Skip: transient info, greetings, questions, anything already stored.
-Each memory: single clear fact, max 100 chars.`,
+Each memory: single clear fact, max 100 chars.
+
+SCOPE RULES (critical — do not mix these up):
+- agent_caller: anything specific to THIS user — their name, preferences, allergies, habits, personal context, corrections they made. If the sentence could start with "This user...", use agent_caller.
+- agent_global: general facts about the agent's domain or operating environment that apply to ALL users — NOT about any individual user. If in doubt between the two, prefer agent_caller.`,
       prompt: `Existing memories (avoid duplicates):
 ${existingSummary || '(none)'}
 

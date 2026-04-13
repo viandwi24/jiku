@@ -15,6 +15,7 @@ import { AgentRunner, type CompactionHook, type FinalizeHook } from './runner.ts
 import { ModelProviders } from './providers.ts'
 import { defaultSubjectMatcher } from './resolver/access.ts'
 import type { PluginLoader } from './plugins/loader.ts'
+import type { AgentAdapterRegistryLike } from './adapter.ts'
 
 export class JikuRuntime {
   private agents = new Map<string, AgentRunner>()
@@ -24,6 +25,7 @@ export class JikuRuntime {
   private providers: ModelProviders
   private subjectMatcher: SubjectMatcher
   private runtimeId?: string
+  private adapterRegistry?: AgentAdapterRegistryLike
   private toolHooks?: ToolHooks
   private compactionHook?: CompactionHook
   private finalizeHook?: FinalizeHook
@@ -32,6 +34,7 @@ export class JikuRuntime {
     options: Omit<JikuRuntimeOptions, 'plugins'> & {
       plugins: PluginLoader
       runtime_id?: string
+      adapter_registry?: AgentAdapterRegistryLike
     }
   ) {
     this.rules = options.rules ?? []
@@ -43,6 +46,7 @@ export class JikuRuntime {
     )
     this.subjectMatcher = options.subject_matcher ?? defaultSubjectMatcher
     this.runtimeId = options.runtime_id
+    this.adapterRegistry = options.adapter_registry
     this.toolHooks = options.tool_hooks
   }
 
@@ -69,7 +73,7 @@ export class JikuRuntime {
   }
 
   addAgent(def: AgentDefinition, memoryConfig?: ResolvedMemoryConfig, personaSeed?: PersonaSeed | null, personaPrompt?: string | null, skillSection?: string | null, skillHint?: string | null): void {
-    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed, personaPrompt, skillSection, skillHint)
+    const runner = new AgentRunner(def, this.plugins, this.storage, this.providers, memoryConfig, this.runtimeId, personaSeed, personaPrompt, skillSection, skillHint, this.adapterRegistry)
     runner.setToolHooks(this.toolHooks)
     runner.setCompactionHook(this.compactionHook)
     runner.setFinalizeHook(this.finalizeHook)

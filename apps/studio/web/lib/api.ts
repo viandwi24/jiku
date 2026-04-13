@@ -89,6 +89,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    listAdapters: () =>
+      request<{ adapters: AgentAdapterInfo[] }>(`/api/agents/adapters`),
   },
 
   policies: {
@@ -1045,7 +1047,26 @@ export interface Agent {
   availability_schedule?: AvailabilitySchedule | null
   /** Plan 19 — skill access resolution mode */
   skill_access_mode?: 'manual' | 'all_on_demand' | null
+  /** Plan 21 — per-mode adapter selection + config. */
+  mode_configs?: Record<string, { adapter: string; config?: Record<string, unknown> }> | null
   created_at: string | null
+}
+
+/** Plan 21 — adapter info from GET /api/agents/adapters */
+export interface AgentAdapterInfo {
+  id: string
+  displayName: string
+  description: string
+  configSchema: {
+    type?: string
+    properties?: Record<string, {
+      type?: 'number' | 'string' | 'boolean'
+      default?: unknown
+      minimum?: number
+      maximum?: number
+      description?: string
+    }>
+  }
 }
 
 export interface AutoReplyRule {
@@ -1177,6 +1198,13 @@ export interface PreviewRunResult {
     provider_id: string
     provider_name: string
     model_id: string
+  }
+  mode?: 'chat' | 'task'
+  adapter_info?: {
+    id: string
+    display_name: string
+    description?: string
+    config?: Record<string, unknown>
   }
 }
 

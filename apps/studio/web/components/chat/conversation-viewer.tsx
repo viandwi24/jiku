@@ -435,6 +435,22 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming])
 
+  // Focus the chat input whenever the conversation id changes (e.g. after
+  // creating a new chat and being redirected to the loaded-conversation view).
+  // The native `autoFocus` attribute only fires on the initial mount — this
+  // covers subsequent convId swaps where the component instance is reused.
+  useEffect(() => {
+    if (mode !== 'edit') return
+    // Let the new view mount first, then focus.
+    const t = setTimeout(() => {
+      const el = document.querySelector<HTMLTextAreaElement>(
+        'textarea[data-slot="input-group-control"], textarea[placeholder^="Type a message"]',
+      )
+      el?.focus()
+    }, 0)
+    return () => clearTimeout(t)
+  }, [convId, mode])
+
   // Start live polling when edit-mode streaming ends (so readonly tabs catch up)
   // readonly: start polling when we detect a run is active
   const handleSend = async ({ text, files }: { text: string; files: { url: string; mediaType: string; filename?: string }[] }) => {
@@ -540,24 +556,51 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
             />
           ))}
 
-          {displayMessages.map(msg => {
-            const textContent = msg.parts
-              .filter(p => p.type === 'text')
-              .map(p => (p as { type: 'text'; text: string }).text)
-              .join('\n\n')
-            return (
-              <Message key={msg.id} from={msg.role} className="flex">
-                <MessageContent>
-                  <MessageParts msg={msg} />
-                </MessageContent>
-                {textContent && (
-                  <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} transition-opacity`}>
-                    <CopyButton text={textContent} />
-                  </div>
-                )}
-              </Message>
-            )
-          })}
+          {(() => {
+            // Last message index that is actively being streamed (we hide
+            // copy + show a live indicator only on this one).
+            const lastIdx = displayMessages.length - 1
+            return displayMessages.map((msg, idx) => {
+              const textContent = msg.parts
+                .filter(p => p.type === 'text')
+                .map(p => (p as { type: 'text'; text: string }).text)
+                .join('\n\n')
+              const isStreamingThisMsg =
+                displayStreaming && idx === lastIdx && msg.role === 'assistant'
+              return (
+                <Message key={msg.id} from={msg.role} className="flex">
+                  <MessageContent>
+                    <MessageParts msg={msg} />
+                    {isStreamingThisMsg && (
+                      <span
+                        className="inline-block w-2 h-2 rounded-full bg-primary align-middle ml-1 animate-pulse"
+                        aria-label="assistant is responding"
+                        title="assistant is responding"
+                      />
+                    )}
+                  </MessageContent>
+                  {textContent && !isStreamingThisMsg && (
+                    <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} transition-opacity`}>
+                      <CopyButton text={textContent} />
+                    </div>
+                  )}
+                </Message>
+              )
+            })
+          })()}
+
+          {/* Show standalone thinking indicator when stream has started but no assistant message yet */}
+          {displayStreaming &&
+           (displayMessages.length === 0 || displayMessages[displayMessages.length - 1]?.role !== 'assistant') && (
+            <Message from="assistant" className="flex">
+              <MessageContent>
+                <span className="inline-flex items-center gap-2 text-muted-foreground text-sm">
+                  <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
+                  <span>thinking…</span>
+                </span>
+              </MessageContent>
+            </Message>
+          )}
 
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">
@@ -574,7 +617,10 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
           {mode === 'edit' && (
             <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
               <AttachmentPreviews />
-              <PromptInputTextarea placeholder="Type a message… (Enter to send, paste image)" />
+              <PromptInputTextarea
+                autoFocus
+                placeholder="Type a message… (Enter to send, paste image)"
+              />
               <PromptInputFooter>
                 <AttachFileButton />
                 <PromptInputSubmit status={status} onStop={() => {}} />

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-13 — Plan 21: Agent Adapter System
+
+- **Agent execution is now pluggable per-mode.** New `AgentAdapter` abstraction in `@jiku/core` (`packages/core/src/adapter.ts`) — `DefaultAgentAdapter` preserves the legacy `streamText` path, `HarnessAgentAdapter` runs an explicit iterative LLM → tools loop (one `streamText` per iteration, merged into the same UI stream).
+- **Runner refactor.** `AgentRunner.run()` builds the adapter context once (`systemPrompt`, `messages`, `aiTools`, `modeTools`, shared `persistAssistantMessage`, `emitUsage`, writer handles) and calls `adapter.execute(ctx, params)`. The run-end finalize hook is fired inside `persistAssistantMessage` so both adapters get it.
+- **Registry.** `apps/studio/server/src/agent/adapter-registry.ts` mirrors the browser adapter registry pattern. Built-ins registered at server start via `apps/studio/server/src/agent/index.ts` (side-effect imported from `server/src/index.ts`). `JikuRuntime` now accepts an `adapter_registry` option; `runtime/manager.ts` injects the Studio registry so every `AgentRunner` resolves adapters through it.
+- **DB.** Migration `0017_agent_mode_configs.sql` (`ALTER TABLE agents ADD COLUMN mode_configs jsonb NOT NULL DEFAULT '{}'`). Drizzle schema updated. `wakeUp`, `syncProjectTools`, `syncAgent` forward `a.mode_configs` into `defineAgent()`.
+- **API.** New `GET /api/agents/adapters` returns `{ adapters: [{ id, displayName, description, configSchema }] }`. `PATCH /api/agents/:aid` now accepts `mode_configs`.
+- **Web.** `AgentConfigForm` renders a per-mode adapter `<select>` + a dynamic config form driven by each adapter's JSON Schema (number / boolean / string). Saved payload shape: `mode_configs: { chat: { adapter, config }, task: { adapter, config } }`. Only enabled modes are persisted.
+- Files: `packages/types/src/index.ts`, `packages/core/src/adapter.ts`, `packages/core/src/adapters/default.ts`, `packages/core/src/adapters/harness.ts`, `packages/core/src/runner.ts`, `packages/core/src/runtime.ts`, `packages/core/src/index.ts`, `apps/studio/server/src/agent/adapter-registry.ts`, `apps/studio/server/src/agent/index.ts`, `apps/studio/server/src/index.ts`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/routes/agents.ts`, `apps/studio/db/src/migrations/0017_agent_mode_configs.sql`, `apps/studio/db/src/schema/agents.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/agent/agent-config-form.tsx`.
+
 ## 2026-04-13 — Plan 20 hardening: Add Profile UX + CamoFox REST adapter + custom action registry
 
 - **Add Profile modal UX fixed.** Root bug: `serializeAdapter` reported `ZodOptional.toLowerCase()` → `"optional"`, so every config field fell into a plain text Input regardless of underlying type. New `unwrapZod()` walks `Optional`/`Default`/`Nullable`/`Effects` wrappers to the leaf and extracts default, min/max, description, enum options. Frontend gains a shared `ConfigField` component — boolean → Switch, number → numeric Input with bounds, enum → Select, defaults → placeholders. Humanized labels, prefill defaults on adapter select.

@@ -323,7 +323,14 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
               </button>
               {showUsageTooltip && (
                 <div className="absolute bottom-full right-0 mb-1.5 bg-popover border rounded-lg shadow-md p-3 text-xs whitespace-nowrap z-10">
-                  <p className="font-medium mb-2">Last run — {lastUsage.model_id ?? 'unknown model'}</p>
+                  <p className="font-medium mb-2">
+                    Last run — {lastUsage.model_id ?? 'unknown model'}
+                    {lastUsage.mode && (
+                      <span className="ml-1.5 inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {lastUsage.mode}
+                      </span>
+                    )}
+                  </p>
                   <div className="space-y-1.5 text-muted-foreground">
                     <div className="flex items-center justify-between gap-6">
                       <span className="flex items-center gap-1.5">

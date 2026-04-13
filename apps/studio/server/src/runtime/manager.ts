@@ -210,6 +210,7 @@ export class JikuRuntimeManager {
       },
     })
 
+    const { agentAdapterRegistry } = await import('../agent/adapter-registry.ts')
     const runtime = new JikuRuntime({
       plugins: pluginLoader,
       storage,
@@ -218,6 +219,7 @@ export class JikuRuntimeManager {
       default_provider: DYNAMIC_PROVIDER_ID,
       runtime_id: projectId,
       tool_hooks: buildToolHooks(projectId),
+      adapter_registry: agentAdapterRegistry,
     })
 
     // Plan 19 — wire compaction + finalize hooks for memory.flush / memory.reflection enqueue
@@ -294,6 +296,7 @@ export class JikuRuntimeManager {
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
           max_tool_calls: a.max_tool_calls ?? 40,
+          mode_configs: (a.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
           built_in_tools: [
             ...systemTools,
             ...memoryTools,
@@ -436,6 +439,7 @@ export class JikuRuntimeManager {
           model_id: DYNAMIC_MODEL_ID,
           compaction_threshold: a.compaction_threshold ?? 80,
           max_tool_calls: a.max_tool_calls ?? 40,
+          mode_configs: (a.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
           built_in_tools: [
             ...systemTools,
             ...memoryTools,
@@ -526,6 +530,7 @@ export class JikuRuntimeManager {
         model_id: DYNAMIC_MODEL_ID,
         compaction_threshold: agent.compaction_threshold ?? 80,
         max_tool_calls: agent.max_tool_calls ?? 40,
+        mode_configs: (agent.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
         built_in_tools: [
           ...systemTools,
           ...memoryTools,

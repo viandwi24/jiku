@@ -4,9 +4,16 @@ import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission, requireAnyPermission } from '../middleware/permission.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { generateSlug, uniqueSlug } from '../utils/slug.ts'
+import { agentAdapterRegistry } from '../agent/adapter-registry.ts'
 
 const router = Router()
 router.use(authMiddleware)
+
+// Plan 21 — list available agent execution adapters for the UI dropdown.
+// Registered BEFORE `/agents/:aid` routes so the literal path matches first.
+router.get('/agents/adapters', (_req, res) => {
+  res.json({ adapters: agentAdapterRegistry.list() })
+})
 
 // agents:read for management, but chats:read/runs:read also grant agent listing (needed to start a chat/run)
 router.get('/projects/:pid/agents', requireAnyPermission('agents:read', 'chats:read', 'runs:read'), async (req, res) => {
@@ -52,6 +59,7 @@ router.patch('/agents/:aid', requirePermission('agents:write'), async (req, res)
     name: string; description: string; base_prompt: string; allowed_modes: string[];
     slug: string; compaction_threshold: number; max_tool_calls: number; task_allowed_agents: string[] | null;
     queue_mode: string; auto_replies: unknown[]; availability_schedule: unknown;
+    mode_configs: Record<string, { adapter: string; config?: Record<string, unknown> }>;
   }>
 
   const agent = await updateAgent(agentId, body)

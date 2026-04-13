@@ -6,6 +6,21 @@ import { runtimeManager } from '../runtime/manager.ts'
 import { getAgentById, getConversationById, getProjectById } from '@jiku-studio/db'
 import { resolveAgentModel } from '../credentials/service.ts'
 import { getAdapter } from '../credentials/adapters.ts'
+import { agentAdapterRegistry } from '../agent/adapter-registry.ts'
+
+function buildAdapterInfo(agentRow: { mode_configs?: unknown }, mode: 'chat' | 'task') {
+  const modeConfigs = (agentRow.mode_configs ?? {}) as Record<string, { adapter?: string; config?: Record<string, unknown> }>
+  const cfg = modeConfigs[mode]
+  const adapterId = cfg?.adapter ?? 'jiku.agent.default'
+  const adapter = agentAdapterRegistry.get(adapterId) ?? agentAdapterRegistry.get('jiku.agent.default')
+  if (!adapter) return undefined
+  return {
+    id: adapter.id,
+    display_name: adapter.displayName,
+    description: adapter.description,
+    config: cfg?.config,
+  }
+}
 
 const router = Router()
 router.use(authMiddleware)
@@ -46,6 +61,8 @@ router.post('/agents/:aid/preview', requirePermission('agents:read'), async (req
         provider_name: adapter?.name ?? modelInfo.adapter_id,
         model_id: modelInfo.model_id ?? 'unknown',
       } : undefined,
+      mode,
+      adapter_info: buildAdapterInfo(agent, mode),
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Preview failed' })
@@ -100,6 +117,8 @@ router.post('/conversations/:id/preview', async (req, res) => {
         provider_name: adapter?.name ?? modelInfo.adapter_id,
         model_id: modelInfo.model_id ?? 'unknown',
       } : undefined,
+      mode,
+      adapter_info: buildAdapterInfo(agent, mode),
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Preview failed' })

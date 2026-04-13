@@ -13,6 +13,11 @@ export const agents = pgTable('agents', {
   compaction_threshold: integer('compaction_threshold').default(80).notNull(),
   /** Maximum number of LLM tool-call steps per run before stopping. Default 40. */
   max_tool_calls: integer('max_tool_calls').default(40).notNull(),
+  /** Plan 21 — per-mode adapter config: { chat: { adapter, config }, task: { adapter, config } }. */
+  mode_configs: jsonb('mode_configs')
+    .$type<Partial<Record<string, { adapter: string; config?: Record<string, unknown> }>>>()
+    .notNull()
+    .default({}),
   /** Partial memory config override (null = inherit all from project). */
   memory_config:        jsonb('memory_config').default(null),
   /** Initial persona seed (name, role, personality, etc). Applied once when agent_self is empty. */

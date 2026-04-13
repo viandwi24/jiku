@@ -326,17 +326,45 @@ function PreviewContent({ preview }: { preview: PreviewRunResult }) {
 
   return (
     <div className="space-y-4 pt-2">
-      {/* Model info */}
-      {preview.model_info && (
+      {/* Model + mode + adapter info */}
+      {(preview.model_info || preview.mode || preview.adapter_info) && (
         <div className="rounded-md border border-border/40 px-3 py-2 space-y-1 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Provider</span>
-            <span className="font-medium">{preview.model_info.provider_name}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Model</span>
-            <span className="font-mono font-medium">{preview.model_info.model_id}</span>
-          </div>
+          {preview.model_info && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Provider</span>
+                <span className="font-medium">{preview.model_info.provider_name}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Model</span>
+                <span className="font-mono font-medium">{preview.model_info.model_id}</span>
+              </div>
+            </>
+          )}
+          {preview.mode && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Mode</span>
+              <span className="font-medium capitalize">{preview.mode}</span>
+            </div>
+          )}
+          {preview.adapter_info && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Adapter</span>
+                <span className="font-medium">{preview.adapter_info.display_name}</span>
+              </div>
+              {preview.adapter_info.config && Object.keys(preview.adapter_info.config).length > 0 && (
+                <div className="pt-1 mt-1 border-t border-border/40 space-y-0.5">
+                  {Object.entries(preview.adapter_info.config).map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between pl-2">
+                      <span className="text-muted-foreground">{k}</span>
+                      <span className="font-mono">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 

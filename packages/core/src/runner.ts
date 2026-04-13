@@ -1,14 +1,15 @@
 import {
   createUIMessageStream,
-  streamText,
-  stepCountIs,
   tool,
   zodSchema,
   jsonSchema,
   type ToolSet,
   type ModelMessage,
   type ToolContent,
+  type StepResult,
 } from 'ai'
+import { DefaultAgentAdapter } from './adapters/default.ts'
+import type { AgentAdapter, AgentAdapterRegistryLike, AgentRunContext } from './adapter.ts'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type {
   AgentDefinition,
@@ -130,10 +131,19 @@ export interface FinalizeHook {
   }): void
 }
 
+/** Local fallback registry — used when AgentRunner is constructed without one. */
+class DefaultOnlyRegistry implements AgentAdapterRegistryLike {
+  private readonly fallback = new DefaultAgentAdapter()
+  resolve(_id: string): AgentAdapter {
+    return this.fallback
+  }
+}
+
 export class AgentRunner {
   private toolHooks?: ToolHooks
   private compactionHook?: CompactionHook
   private finalizeHook?: FinalizeHook
+  private adapterRegistry: AgentAdapterRegistryLike
 
   constructor(
     private agent: AgentDefinition,
@@ -146,7 +156,10 @@ export class AgentRunner {
     private personaPrompt?: string | null,
     private skillSection?: string | null,
     private skillHint?: string | null,
-  ) {}
+    adapterRegistry?: AgentAdapterRegistryLike,
+  ) {
+    this.adapterRegistry = adapterRegistry ?? new DefaultOnlyRegistry()
+  }
 
   setToolHooks(hooks: ToolHooks | undefined): void {
     this.toolHooks = hooks
@@ -467,9 +480,6 @@ export class AgentRunner {
 
     // 8. Keep a ref to the storage for use in closures below
     const storage = this.storage
-    const memoryConfig = this.memoryConfig
-    const runtimeId = this.runtimeId
-    const agentId = this.agent.meta.id
 
     // 9. Build stream using createUIMessageStream
     const stream = createUIMessageStream<JikuUIMessage>({
@@ -573,103 +583,88 @@ export class AgentRunner {
           }
         }
 
-        // Run LLM — merge AI SDK stream directly into the UI stream writer
-        const result = streamText({
-          model,
-          system: systemPrompt,
+        // Plan 21 — persistAssistantMessage helper shared by adapters.
+        const persistAssistantMessage = async (steps: StepResult<ToolSet>[]): Promise<void> => {
+          type MessagePartLocal =
+            | { type: 'text'; text: string }
+            | { type: 'tool-invocation'; toolInvocationId: string; toolName: string; args: unknown; state: 'result'; result: unknown }
+
+          const allParts: MessagePartLocal[] = []
+          for (const step of steps) {
+            for (const tc of step.toolCalls ?? []) {
+              const tr = (step.toolResults ?? []).find((r) => r.toolCallId === tc.toolCallId)
+              allParts.push({
+                type: 'tool-invocation',
+                toolInvocationId: tc.toolCallId,
+                toolName: tc.toolName,
+                args: tc.input,
+                state: 'result',
+                result: tr?.output ?? null,
+              })
+            }
+            if (step.text) allParts.push({ type: 'text', text: step.text })
+          }
+
+          if (allParts.length > 0) {
+            await storage.addMessage(conversation_id, {
+              conversation_id,
+              role: 'assistant',
+              parts: allParts,
+            })
+          }
+
+          if (mode === 'task') {
+            const finalText = steps.map(s => s.text).filter(Boolean).join('')
+            await storage.updateConversation(conversation_id, {
+              status: 'completed',
+              output: finalText || undefined,
+            })
+          }
+
+          // Plan 19 — fire finalize hook fire-and-forget (reflection enqueue)
+          try {
+            this.finalizeHook?.({
+              conversation_id,
+              agent_id: this.agent.meta.id,
+              mode,
+              turn_count: steps.length,
+            })
+          } catch (err) {
+            console.warn('[runner] finalize hook error:', err)
+          }
+        }
+
+        // Plan 21 — resolve adapter for this mode.
+        const modeConfig = this.agent.mode_configs?.[mode]
+        const adapterId = modeConfig?.adapter ?? 'jiku.agent.default'
+        const adapter = this.adapterRegistry.resolve(adapterId)
+
+        const adapterCtx: AgentRunContext = {
+          systemPrompt,
           messages,
-          tools: Object.keys(aiTools).length > 0 ? aiTools : undefined,
-          stopWhen: stepCountIs(this.agent.max_tool_calls ?? 40),
-          abortSignal: params.abort_signal,
-          onStepFinish: (event) => {
-            jikuWriter.write('jiku-step-usage', {
-              step: event.stepNumber,
-              input_tokens: event.usage.inputTokens ?? 0,
-              output_tokens: event.usage.outputTokens ?? 0,
+          modeTools,
+          aiTools,
+          model,
+          maxToolCalls: this.agent.max_tool_calls ?? 40,
+          mode,
+          run_id,
+          conversation_id,
+          agent_id: this.agent.meta.id,
+          storage,
+          runtimeCtx,
+          writer: jikuWriter,
+          sdkWriter: writer,
+          modeConfig,
+          emitUsage: (usage) => {
+            jikuWriter.write('jiku-usage', {
+              input_tokens: usage.inputTokens ?? 0,
+              output_tokens: usage.outputTokens ?? 0,
             })
           },
-        })
-
-        // Drain the streamText output into the UI stream
-        writer.merge(
-          result.toUIMessageStream({ sendFinish: true, sendStart: true, sendReasoning: true, sendSources: true }),
-        )
-
-        // Wait for completion then persist + emit final usage
-        const [steps, usage] = await Promise.all([result.steps, result.usage])
-
-        // Aggregate final assistant text across all steps for usage logging.
-        const finalResponseText = steps.map(s => s.text).filter(Boolean).join('\n')
-
-        // Emit raw snapshot for usage log debug
-        jikuWriter.write('jiku-run-snapshot', {
-          system_prompt: systemPrompt,
-          messages,
-          response: finalResponseText,
-        })
-
-        jikuWriter.write('jiku-usage', {
-          input_tokens: usage.inputTokens ?? 0,
-          output_tokens: usage.outputTokens ?? 0,
-        })
-
-        // Build all parts from all steps: text + tool invocations
-        type MessagePartLocal =
-          | { type: 'text'; text: string }
-          | { type: 'tool-invocation'; toolInvocationId: string; toolName: string; args: unknown; state: 'result'; result: unknown }
-
-        const allParts: MessagePartLocal[] = []
-
-        for (const step of steps) {
-          // Add tool call+result pairs for this step
-          for (const tc of step.toolCalls ?? []) {
-            const tr = (step.toolResults ?? []).find((r) => r.toolCallId === tc.toolCallId)
-            allParts.push({
-              type: 'tool-invocation',
-              toolInvocationId: tc.toolCallId,
-              toolName: tc.toolName,
-              args: tc.input,
-              state: 'result',
-              result: tr?.output ?? null,
-            })
-          }
-          // Add text part for this step (if any)
-          if (step.text) {
-            allParts.push({ type: 'text', text: step.text })
-          }
+          persistAssistantMessage,
         }
 
-        if (allParts.length > 0) {
-          await storage.addMessage(conversation_id, {
-            conversation_id,
-            role: 'assistant',
-            parts: allParts,
-          })
-        }
-
-        if (mode === 'task') {
-          const finalText = steps.map(s => s.text).filter(Boolean).join('')
-          await storage.updateConversation(conversation_id, {
-            status: 'completed',
-            output: finalText || undefined,
-          })
-        }
-
-        // Note: LLM extraction removed (Plan 15 decision).
-        // Memory is saved explicitly via agent tool calls (memory_core_append, etc.)
-        // This avoids duplicate memories and saves token costs.
-
-        // Plan 19 — fire finalize hook fire-and-forget (reflection enqueue)
-        try {
-          this.finalizeHook?.({
-            conversation_id,
-            agent_id: this.agent.meta.id,
-            mode,
-            turn_count: steps.length,
-          })
-        } catch (err) {
-          console.warn('[runner] finalize hook error:', err)
-        }
+        await adapter.execute(adapterCtx, params)
       },
 
       onError: (err: unknown) => {
@@ -737,7 +732,8 @@ export class AgentRunner {
     ]
 
     const model_id = this.agent.model_id ?? 'unknown'
-    const pluginSegments = await this.plugins.getPromptSegmentsAsync()
+    const pluginSegmentsWithMeta = await this.plugins.getPromptSegmentsWithMetaAsync()
+    const pluginSegments = pluginSegmentsWithMeta.map(s => s.segment)
 
     // Build segments with token estimates
     const modeInstructionText = buildModeInstruction(mode)
@@ -840,11 +836,11 @@ export class AgentRunner {
             token_estimate: estimateTokens(toolHintsText),
           }]
         : []),
-      ...pluginSegments.map((seg, i) => ({
+      ...pluginSegmentsWithMeta.map(({ plugin_id, plugin_name, segment }) => ({
         source: 'plugin' as const,
-        label: `Plugin Segment ${i + 1}`,
-        content: seg,
-        token_estimate: estimateTokens(seg),
+        label: `${plugin_name} (${plugin_id})`,
+        content: segment,
+        token_estimate: estimateTokens(segment),
       })),
     ]
 

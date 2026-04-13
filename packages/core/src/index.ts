@@ -1,6 +1,14 @@
 export { JikuRuntime } from './runtime.ts'
 export { AgentRunner, JikuAccessError } from './runner.ts'
 export type { CompactionHook, FinalizeHook } from './runner.ts'
+export type {
+  AgentAdapter,
+  AgentAdapterMeta,
+  AgentRunContext,
+  AgentAdapterRegistryLike,
+} from './adapter.ts'
+export { DefaultAgentAdapter } from './adapters/default.ts'
+export { HarnessAgentAdapter } from './adapters/harness.ts'
 export { PluginLoader } from './plugins/loader.ts'
 export { PluginCircularDepError } from './plugins/dependency.ts'
 export { discoverPluginsFromFolder, type DiscoveredPlugin, type DiscoverOptions } from './plugins/discover.ts'

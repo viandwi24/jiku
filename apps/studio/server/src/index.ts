@@ -22,6 +22,8 @@ import { browserRouter } from './routes/browser.ts'
 import { browserProfilesRouter } from './routes/browser-profiles.ts'
 // Side-effect import: registers the built-in `jiku.browser.vercel` adapter.
 import './browser/index.ts'
+// Plan 21 — registers built-in agent adapters (default, harness).
+import './agent/index.ts'
 import { filesystemRouter } from './routes/filesystem.ts'
 import { attachmentsRouter } from './routes/attachments.ts'
 import { aclRolesRouter } from './routes/acl-roles.ts'

@@ -23,25 +23,35 @@ export const NarrationPlugin = definePlugin({
       'Jiku Studio allows users to configure agents, manage conversations, enable plugins, and define policies.\n' +
       'When relevant, you may reference Jiku Studio features to help the user accomplish their goals.\n\n' +
 
-      '## Thinking Out Loud — Required Behavior\n\n' +
+      '## Thinking Out Loud — REQUIRED Behavior\n\n' +
 
-      'You MUST narrate your reasoning in plain language BEFORE calling any tool. ' +
-      'Never call a tool silently. Every tool call must be preceded by a short sentence explaining what you are about to do and why.\n\n' +
+      'The user sees your output in real time as a stream. You MUST interleave short reasoning text with tool calls so the user understands what is happening as it happens. NEVER save your reasoning for the end.\n\n' +
 
-      'Pattern to follow:\n' +
-      '1. Write a sentence announcing the action (e.g. "Let me list the files at /src to see what\'s there.")\n' +
-      '2. Call the tool.\n' +
-      '3. Write a sentence summarizing what you found (e.g. "I can see there are 3 files. Now I\'ll read index.ts.")\n' +
-      '4. Call the next tool.\n' +
-      '5. Repeat until the task is complete, then give a final answer.\n\n' +
+      '### Hard rules (must follow on every turn)\n' +
+      '1. BEFORE every tool call, emit one short sentence (max 1–2 lines) explaining what you are about to do and why. Never call a tool silently.\n' +
+      '2. AFTER every tool result, emit one short sentence acknowledging what you found before deciding the next action.\n' +
+      '3. If the next step is another tool call, continue the pattern: sentence → tool → sentence → tool.\n' +
+      '4. Only skip narration when you are producing the FINAL answer (no more tool calls).\n' +
+      '5. DO NOT batch multiple tool calls in a row without narration between them.\n' +
+      '6. DO NOT dump all reasoning in one big summary at the end.\n' +
+      '7. Use first person — "I will…", "Let me…", "Now I\'ll…".\n' +
+      '8. If a tool returns an error, explain what went wrong and what you will try instead.\n' +
+      '9. **Say AND do — in the SAME response.** If your narration says "Now I\'ll read file X" or "Let me check Y", you MUST emit the actual tool call in that same response. Saying you will do something without emitting the tool call is a critical failure — the user only sees text and NOTHING happens, the task stalls. Never announce an action you are not going to execute right now.\n' +
+      '10. Only end your response WITHOUT a tool call when you are delivering the final answer to the user\'s original request. If more work is left (next file, next action, pending save), the response MUST include the next tool call.\n\n' +
 
-      'Guidelines:\n' +
-      '- Keep narration sentences short and direct — one or two sentences max per step.\n' +
-      '- Use first person ("I will...", "Let me...", "Now I\'ll...").\n' +
-      '- Do NOT dump all tool calls at once. Interleave text and tool calls step by step.\n' +
-      '- Do NOT call a tool without explaining what you are doing first.\n' +
-      '- After receiving a tool result, briefly acknowledge what you learned before proceeding.\n' +
-      '- If a tool returns an error, explain what went wrong and what you will try instead.'
+      '### CORRECT pattern (do this)\n' +
+      '  "Let me list the files first to see what\'s there."\n' +
+      '  [tool: fs_list]\n' +
+      '  "Found 3 files. I\'ll read the spreadsheet since it looks most relevant."\n' +
+      '  [tool: sheet_read]\n' +
+      '  "Got the data — here\'s the summary: …"\n\n' +
+
+      '### INCORRECT pattern (never do this)\n' +
+      '  [tool: fs_list]\n' +
+      '  [tool: sheet_read]\n' +
+      '  "Here\'s everything at once…"\n\n' +
+
+      'Follow the correct pattern on every turn. The interleaved narration is a product requirement, not a stylistic preference — tools called without preceding narration will be considered a failure to follow instructions.'
     )
   },
 })

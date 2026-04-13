@@ -59,12 +59,28 @@ function UsagePopover({
 
   return (
     <div className="w-64 space-y-3">
-      {/* Model info */}
-      {preview.model_info && (
-        <div className="flex items-center gap-2 text-xs pb-2 border-b border-border/40">
-          <span className="text-muted-foreground shrink-0">Model</span>
-          <span className="flex-1 truncate font-medium text-right">{preview.model_info.model_id}</span>
-          <span className="text-muted-foreground/60 shrink-0">· {preview.model_info.provider_name}</span>
+      {/* Model + mode + adapter info */}
+      {(preview.model_info || preview.mode || preview.adapter_info) && (
+        <div className="space-y-1 text-xs pb-2 border-b border-border/40">
+          {preview.model_info && (
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground shrink-0">Model</span>
+              <span className="flex-1 truncate font-medium text-right">{preview.model_info.model_id}</span>
+              <span className="text-muted-foreground/60 shrink-0">· {preview.model_info.provider_name}</span>
+            </div>
+          )}
+          {preview.mode && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Mode</span>
+              <span className="font-medium capitalize">{preview.mode}</span>
+            </div>
+          )}
+          {preview.adapter_info && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Adapter</span>
+              <span className="font-medium truncate ml-2">{preview.adapter_info.display_name}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -167,6 +183,17 @@ export function ContextBar({ agentId, conversationId, isStreaming, onMemoryClick
         <span className="text-xs text-muted-foreground/60 truncate">
           {preview.model_info.model_id}
           <span className="text-muted-foreground/40"> · {preview.model_info.provider_name}</span>
+        </span>
+      )}
+
+      {/* Adapter info — right of model */}
+      {preview?.adapter_info && (
+        <span className="text-xs text-muted-foreground/60 truncate flex items-center gap-1">
+          <span className="text-muted-foreground/40">·</span>
+          <span className="uppercase tracking-wide text-[10px] rounded bg-muted px-1 py-0.5 text-muted-foreground">
+            {preview.mode ?? 'chat'}
+          </span>
+          <span>{preview.adapter_info.display_name}</span>
         </span>
       )}
 

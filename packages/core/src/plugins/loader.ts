@@ -321,6 +321,37 @@ export class PluginLoader implements PluginLoaderInterface {
   /**
    * Returns all prompt segments (including async factories), optionally filtered by project.
    */
+  /**
+   * Like getPromptSegmentsAsync but returns the owning plugin's id + name
+   * alongside each segment — used by the preview UI to label segments per
+   * plugin instead of a generic "Plugin Segment N".
+   */
+  async getPromptSegmentsWithMetaAsync(projectId?: string): Promise<Array<{ plugin_id: string; plugin_name: string; segment: string }>> {
+    const filtered = !projectId
+      ? this.registeredPrompts
+      : (() => {
+          const enabled = this.projectEnabledPlugins.get(projectId) ?? new Set<string>()
+          return this.registeredPrompts.filter(r => {
+            const plugin = this.plugins.get(r.plugin_id)
+            if (!plugin) return false
+            if (!plugin.meta.project_scope) return true
+            return enabled.has(r.plugin_id)
+          })
+        })()
+
+    return Promise.all(
+      filtered.map(async r => {
+        const plugin = this.plugins.get(r.plugin_id)
+        const seg = typeof r.segment === 'string' ? r.segment : await r.segment()
+        return {
+          plugin_id: r.plugin_id,
+          plugin_name: plugin?.meta.name ?? r.plugin_id,
+          segment: seg,
+        }
+      })
+    )
+  }
+
   async getPromptSegmentsAsync(projectId?: string): Promise<string[]> {
     if (!projectId) {
       return Promise.all(

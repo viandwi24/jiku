@@ -4,6 +4,14 @@
 
 export type AgentMode = 'chat' | 'task'
 
+/** Plan 21 — Per-mode adapter configuration on an agent. */
+export interface AgentModeConfig {
+  /** Stable adapter id (e.g. 'jiku.agent.default'). */
+  adapter: string
+  /** Adapter-specific config; shape defined by adapter's `configSchema`. */
+  config?: Record<string, unknown>
+}
+
 // ============================================================
 // PLUGIN UI (Plan 17)
 // ============================================================
@@ -148,6 +156,10 @@ export interface JikuDataTypes {
     summary: string
     removed_count: number
     token_saved: number
+  }
+  'jiku-harness-iteration': {
+    iteration: number
+    max_iterations: number
   }
 }
 
@@ -324,6 +336,8 @@ export interface AgentDefinition {
   meta: AgentMeta
   base_prompt: string
   allowed_modes: AgentMode[]
+  /** Plan 21 — per-mode adapter selection + config. */
+  mode_configs?: Partial<Record<AgentMode, AgentModeConfig>>
   provider_id?: string
   model_id?: string
   /** Context compaction threshold percentage (0–100). 0 = disabled. Default 80. */
@@ -701,6 +715,14 @@ export interface PreviewRunResult {
     provider_id: string
     provider_name: string
     model_id: string
+  }
+  /** Plan 21 — the mode this preview was built for, plus resolved adapter info. */
+  mode?: AgentMode
+  adapter_info?: {
+    id: string
+    display_name: string
+    description?: string
+    config?: Record<string, unknown>
   }
 }
 

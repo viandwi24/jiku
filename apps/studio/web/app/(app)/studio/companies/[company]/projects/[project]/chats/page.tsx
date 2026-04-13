@@ -6,8 +6,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { FileUIPart } from 'ai'
 import {
-  Avatar,
-  AvatarFallback,
   Button,
   Command,
   CommandEmpty,
@@ -183,9 +181,6 @@ function ChatsPage({ params, searchParams }: PageProps) {
                         value={agent.name}
                         onSelect={() => { setSelectedAgent(agent); setOpen(false) }}
                       >
-                        <Avatar className="h-5 w-5 mr-2 shrink-0">
-                          <AvatarFallback className="text-xs">{agent.name.slice(0, 2).toUpperCase()}</AvatarFallback>
-                        </Avatar>
                         <span className="text-sm truncate">{agent.name}</span>
                         <Check className={cn('ml-auto h-4 w-4', selectedAgent?.id === agent.id ? 'opacity-100' : 'opacity-0')} />
                       </CommandItem>

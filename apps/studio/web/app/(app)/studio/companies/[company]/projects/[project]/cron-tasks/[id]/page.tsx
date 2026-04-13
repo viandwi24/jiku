@@ -4,7 +4,9 @@ import { use, useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
+import type { CronTaskMode } from '@/lib/api'
 import {
+  Badge,
   Button,
   Input,
   Label,
@@ -15,8 +17,11 @@ import {
   SelectValue,
   Switch,
   Textarea,
+  Tabs,
+  TabsList,
+  TabsTrigger,
 } from '@jiku/ui'
-import { ArrowLeft, Clock, Play, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeft, Clock, Play, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { CronExpressionInput } from '@/components/cron/cron-expression-input'
 
@@ -38,7 +43,8 @@ function formatRelative(d: string | null): string {
   return `${Math.floor(diff / 86400000)}d ago`
 }
 
-function formatNext(d: string | null, enabled: boolean): string {
+function formatNext(d: string | null, enabled: boolean, status: string): string {
+  if (status === 'archived') return '—'
   if (!enabled) return '—'
   if (!d) return '—'
   const diff = new Date(d).getTime() - Date.now()
@@ -47,6 +53,22 @@ function formatNext(d: string | null, enabled: boolean): string {
   if (diff < 3600000) return `in ${Math.floor(diff / 60000)}m`
   if (diff < 86400000) return `in ${Math.floor(diff / 3600000)}h`
   return `in ${Math.floor(diff / 86400000)}d`
+}
+
+function toLocalInputValue(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  // Convert UTC ISO → local "YYYY-MM-DDTHH:mm" for <input type="datetime-local">.
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function fromLocalInput(local: string): string | null {
+  if (!local) return null
+  const d = new Date(local)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString()
 }
 
 export default function CronTaskDetailPage({ params }: PageProps) {
@@ -87,7 +109,9 @@ export default function CronTaskDetailPage({ params }: PageProps) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [agentId, setAgentId] = useState('')
+  const [mode, setMode] = useState<CronTaskMode>('recurring')
   const [cronExpression, setCronExpression] = useState('')
+  const [runAtLocal, setRunAtLocal] = useState('')
   const [prompt, setPrompt] = useState('')
   const [enabled, setEnabled] = useState(true)
 
@@ -96,23 +120,32 @@ export default function CronTaskDetailPage({ params }: PageProps) {
     setName(task.name)
     setDescription(task.description ?? '')
     setAgentId(task.agent_id)
-    setCronExpression(task.cron_expression)
+    setMode(task.mode)
+    setCronExpression(task.cron_expression ?? '')
+    setRunAtLocal(toLocalInputValue(task.run_at))
     setPrompt(task.prompt)
     setEnabled(task.enabled)
   }, [task])
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['cron-task', projectId, taskId] })
+    qc.invalidateQueries({ queryKey: ['cron-tasks', projectId, 'active'] })
+    qc.invalidateQueries({ queryKey: ['cron-tasks', projectId, 'archived'] })
+  }
 
   const saveMutation = useMutation({
     mutationFn: () => api.cronTasks.update(projectId, taskId, {
       name: name.trim(),
       description: description.trim() || null,
       agent_id: agentId,
-      cron_expression: cronExpression.trim(),
+      mode,
+      cron_expression: mode === 'recurring' ? cronExpression.trim() : null,
+      run_at: mode === 'once' ? fromLocalInput(runAtLocal) : null,
       prompt: prompt.trim(),
       enabled,
     }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['cron-task', projectId, taskId] })
-      qc.invalidateQueries({ queryKey: ['cron-tasks', projectId] })
+      invalidate()
       toast.success('Cron task saved')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Save failed'),
@@ -121,10 +154,28 @@ export default function CronTaskDetailPage({ params }: PageProps) {
   const triggerMutation = useMutation({
     mutationFn: () => api.cronTasks.trigger(projectId, taskId),
     onSuccess: (d) => {
-      qc.invalidateQueries({ queryKey: ['cron-task', projectId, taskId] })
+      invalidate()
       toast.success(`Triggered — run ID: ${d.conversation_id.slice(0, 8)}...`)
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Trigger failed'),
+  })
+
+  const archiveMutation = useMutation({
+    mutationFn: () => api.cronTasks.archive(projectId, taskId),
+    onSuccess: () => {
+      invalidate()
+      toast.success('Cron task archived')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Archive failed'),
+  })
+
+  const restoreMutation = useMutation({
+    mutationFn: () => api.cronTasks.restore(projectId, taskId),
+    onSuccess: () => {
+      invalidate()
+      toast.success('Cron task restored')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Restore failed'),
   })
 
   const deleteMutation = useMutation({
@@ -149,7 +200,11 @@ export default function CronTaskDetailPage({ params }: PageProps) {
     return <div className="p-6 text-sm text-muted-foreground">Cron task not found.</div>
   }
 
-  const canSubmit = name.trim() && agentId && cronExpression.trim() && prompt.trim()
+  const isArchived = task.status === 'archived'
+  const scheduleValid = mode === 'recurring'
+    ? !!cronExpression.trim()
+    : !!runAtLocal && !!fromLocalInput(runAtLocal)
+  const canSubmit = name.trim() && agentId && prompt.trim() && scheduleValid
 
   return (
     <div className="p-6 space-y-6 max-w-lg">
@@ -163,24 +218,53 @@ export default function CronTaskDetailPage({ params }: PageProps) {
           <ArrowLeft className="h-4 w-4 mr-1" />
           Back
         </Button>
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="text-base font-semibold flex items-center gap-2">
               <Clock className="h-4 w-4" />
               {task.name}
+              <Badge variant={task.mode === 'once' ? 'secondary' : 'outline'} className="text-xs ml-1">
+                {task.mode === 'once' ? 'Once' : 'Recurring'}
+              </Badge>
+              {isArchived && (
+                <Badge variant="outline" className="text-xs">Archived</Badge>
+              )}
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">Edit cron task settings</p>
           </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => triggerMutation.mutate()}
-              disabled={triggerMutation.isPending}
-            >
-              <Play className="h-3.5 w-3.5 mr-1" />
-              {triggerMutation.isPending ? 'Triggering...' : 'Trigger Now'}
-            </Button>
+          <div className="flex gap-2 flex-wrap justify-end">
+            {!isArchived && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => triggerMutation.mutate()}
+                disabled={triggerMutation.isPending}
+              >
+                <Play className="h-3.5 w-3.5 mr-1" />
+                {triggerMutation.isPending ? 'Triggering...' : 'Trigger Now'}
+              </Button>
+            )}
+            {isArchived ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => restoreMutation.mutate()}
+                disabled={restoreMutation.isPending}
+              >
+                <ArchiveRestore className="h-3.5 w-3.5 mr-1" />
+                Restore
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => archiveMutation.mutate()}
+                disabled={archiveMutation.isPending}
+              >
+                <Archive className="h-3.5 w-3.5 mr-1" />
+                Archive
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -207,7 +291,7 @@ export default function CronTaskDetailPage({ params }: PageProps) {
         </div>
         <div>
           <p className="text-muted-foreground">Next Run</p>
-          <p className="font-semibold mt-0.5">{formatNext(task.next_run_at, task.enabled)}</p>
+          <p className="font-semibold mt-0.5">{formatNext(task.next_run_at, task.enabled, task.status)}</p>
         </div>
         <div>
           <p className="text-muted-foreground">Created</p>
@@ -219,6 +303,17 @@ export default function CronTaskDetailPage({ params }: PageProps) {
             <p className="font-semibold mt-0.5">{task.caller.name} ({task.caller.email})</p>
           </div>
         )}
+      </div>
+
+      {/* Mode */}
+      <div className="space-y-1.5">
+        <Label className="text-xs font-medium">Mode</Label>
+        <Tabs value={mode} onValueChange={(v) => setMode(v as CronTaskMode)}>
+          <TabsList>
+            <TabsTrigger value="recurring">Recurring</TabsTrigger>
+            <TabsTrigger value="once">Once</TabsTrigger>
+          </TabsList>
+        </Tabs>
       </div>
 
       {/* Name */}
@@ -253,11 +348,24 @@ export default function CronTaskDetailPage({ params }: PageProps) {
         </Select>
       </div>
 
-      {/* Cron Expression */}
-      <div className="space-y-1.5">
-        <Label className="text-xs font-medium">Cron Expression</Label>
-        <CronExpressionInput value={cronExpression} onChange={setCronExpression} />
-      </div>
+      {/* Schedule */}
+      {mode === 'recurring' ? (
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Cron Expression</Label>
+          <CronExpressionInput value={cronExpression} onChange={setCronExpression} />
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Run At</Label>
+          <Input
+            type="datetime-local"
+            value={runAtLocal}
+            onChange={e => setRunAtLocal(e.target.value)}
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">Local timezone. Stored as UTC.</p>
+        </div>
+      )}
 
       {/* Prompt */}
       <div className="space-y-1.5">
@@ -275,14 +383,14 @@ export default function CronTaskDetailPage({ params }: PageProps) {
           <p className="text-sm font-medium">Enabled</p>
           <p className="text-xs text-muted-foreground mt-0.5">Task will run on the configured schedule</p>
         </div>
-        <Switch checked={enabled} onCheckedChange={setEnabled} />
+        <Switch checked={enabled} onCheckedChange={setEnabled} disabled={isArchived} />
       </div>
 
       {/* Actions */}
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={!canSubmit || saveMutation.isPending}
+          disabled={!canSubmit || saveMutation.isPending || isArchived}
           onClick={() => saveMutation.mutate()}
         >
           {saveMutation.isPending ? 'Saving...' : 'Save Changes'}

@@ -1,3 +1,24 @@
+## Phase (2026-04-13) — Cron one-shot + archive — SHIPPED
+
+Cron tasks now support `mode: 'once'` (one-shot, fires at `run_at`, auto-archives after success) alongside the existing `mode: 'recurring'`. Archived tasks are hidden from default lists and the scheduler; they remain in the DB for history/audit. No retry on failure (per spec). `cron_list` tool accepts `include_archived`; new `cron_archive`/`cron_restore` tools. REST routes: `POST .../archive`, `POST .../restore`, and `?status=archived` / `?include_archived=1` on list. UI: Active/Archived tabs on list page; mode picker (Recurring cron expression vs Once datetime-local) on create + detail pages.
+
+Migration: `0025_cron_once_and_archive.sql` — adds `mode`, `run_at`, `status` columns; makes `cron_expression` nullable; indexes on `status` and `(project_id, status)`.
+
+Relevant files:
+- `apps/studio/db/src/migrations/0025_cron_once_and_archive.sql`
+- `apps/studio/db/src/schema/cron_tasks.ts`
+- `apps/studio/db/src/queries/cron_tasks.ts` — `archiveCronTask`, `restoreCronTask`, `CronTaskStatus`, `CronTaskMode`
+- `apps/studio/server/src/cron/scheduler.ts` — `ScheduledJob` union (recurring Cron vs once setTimeout); auto-archive on once-success; past-due fires immediately
+- `apps/studio/server/src/cron/tools.ts` — `cron_create` accepts `mode`/`run_at`; `cron_list` accepts `include_archived`; new `cron_archive`, `cron_restore`
+- `apps/studio/server/src/runtime/manager.ts` — registers new tools (3 agent bootstrap sites)
+- `apps/studio/server/src/routes/cron-tasks.ts` — `POST /archive`, `POST /restore`; list filter; PATCH accepts `mode`/`run_at`
+- `apps/studio/web/lib/api.ts` — `CronTaskMode`, `CronTaskStatus`, `archive`/`restore`, list status filter
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/page.tsx` — Active/Archived tabs
+- `.../cron-tasks/new/page.tsx` — mode picker
+- `.../cron-tasks/[id]/page.tsx` — mode edit + archive/restore buttons + Archived badge
+
+---
+
 ## Phase (2026-04-13) — Plan 23 Branch Chat — SHIPPED + post-ship fixes applied
 
 Message-level branching for chat conversations (Claude.ai/ChatGPT-style edit + regenerate). Conversation id and URL stay stable; messages form a tree with `parent_message_id`, and conversation tracks `active_tip_message_id` server-side.

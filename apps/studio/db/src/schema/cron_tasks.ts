@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, index } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 import { agents } from './agents.ts'
 import { users } from './users.ts'
@@ -9,7 +9,16 @@ export const cron_tasks = pgTable('cron_tasks', {
   agent_id:              uuid('agent_id').references(() => agents.id).notNull(),
   name:                  varchar('name', { length: 255 }).notNull(),
   description:           text('description'),
-  cron_expression:       varchar('cron_expression', { length: 100 }).notNull(),
+  /** Recurring mode: 5-field cron expression. Nullable for 'once' mode. */
+  cron_expression:       varchar('cron_expression', { length: 100 }),
+  /**
+   * Execution mode:
+   *  - 'recurring' (default): fires on `cron_expression` indefinitely until disabled/archived.
+   *  - 'once': fires exactly once at `run_at`, then auto-archives.
+   */
+  mode:                  varchar('mode', { length: 20 }).notNull().default('recurring'),
+  /** One-shot fire time for `mode === 'once'`. Ignored for recurring. */
+  run_at:                timestamp('run_at'),
   prompt:                text('prompt').notNull(),
   /**
    * Plan 22 revision — structured execution context for the cron.
@@ -21,6 +30,11 @@ export const cron_tasks = pgTable('cron_tasks', {
    */
   context:               jsonb('context').notNull().default({}),
   enabled:               boolean('enabled').notNull().default(true),
+  /**
+   * Lifecycle state. 'archived' tasks are excluded from default lists and from the
+   * scheduler on startup; they remain in the DB so history/audit is preserved.
+   */
+  status:                varchar('status', { length: 20 }).notNull().default('active'),
   caller_id:             uuid('caller_id').references(() => users.id),
   caller_role:           varchar('caller_role', { length: 100 }),
   caller_is_superadmin:  boolean('caller_is_superadmin').notNull().default(false),
@@ -30,7 +44,10 @@ export const cron_tasks = pgTable('cron_tasks', {
   metadata:              jsonb('metadata').notNull().default({}),
   created_at:            timestamp('created_at').defaultNow().notNull(),
   updated_at:            timestamp('updated_at').defaultNow().notNull(),
-})
+}, (t) => ({
+  statusIdx: index('cron_tasks_status_idx').on(t.status),
+  projectStatusIdx: index('cron_tasks_project_status_idx').on(t.project_id, t.status),
+}))
 
 export type CronTask = typeof cron_tasks.$inferSelect
 export type NewCronTask = typeof cron_tasks.$inferInsert

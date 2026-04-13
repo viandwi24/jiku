@@ -10,7 +10,7 @@ import { buildConnectorTools } from '../connectors/tools.ts'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { heartbeatScheduler } from '../task/heartbeat.ts'
 import { cronTaskScheduler } from '../cron/scheduler.ts'
-import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool } from '../cron/tools.ts'
+import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool, buildCronArchiveTool, buildCronRestoreTool } from '../cron/tools.ts'
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
 import { buildBrowserTools } from '../browser/tool.ts'
@@ -284,6 +284,8 @@ export class JikuRuntimeManager {
             buildCronListTool(projectId, a.id),
             buildCronUpdateTool(projectId, a.id, cronCallerCtx),
             buildCronDeleteTool(projectId, a.id, cronCallerCtx),
+            buildCronArchiveTool(projectId, a.id, cronCallerCtx),
+            buildCronRestoreTool(projectId, a.id, cronCallerCtx),
           ]
         : []
 
@@ -427,6 +429,8 @@ export class JikuRuntimeManager {
             buildCronListTool(projectId, a.id),
             buildCronUpdateTool(projectId, a.id, cronCallerCtxSync),
             buildCronDeleteTool(projectId, a.id, cronCallerCtxSync),
+            buildCronArchiveTool(projectId, a.id, cronCallerCtxSync),
+            buildCronRestoreTool(projectId, a.id, cronCallerCtxSync),
           ]
         : []
 
@@ -518,6 +522,8 @@ export class JikuRuntimeManager {
           buildCronListTool(projectId, agent.id),
           buildCronUpdateTool(projectId, agent.id, cronCallerCtxAgent),
           buildCronDeleteTool(projectId, agent.id, cronCallerCtxAgent),
+          buildCronArchiveTool(projectId, agent.id, cronCallerCtxAgent),
+          buildCronRestoreTool(projectId, agent.id, cronCallerCtxAgent),
         ]
       : []
 

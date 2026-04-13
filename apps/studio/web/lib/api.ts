@@ -719,13 +719,21 @@ export const api = {
   },
 
   cronTasks: {
-    list: (projectId: string) =>
-      request<{ cron_tasks: CronTask[] }>(`/api/projects/${projectId}/cron-tasks`),
+    list: (projectId: string, opts?: { status?: 'active' | 'archived' | 'all' }) => {
+      const qs = opts?.status === 'archived'
+        ? '?status=archived'
+        : opts?.status === 'all'
+          ? '?include_archived=1'
+          : ''
+      return request<{ cron_tasks: CronTask[] }>(`/api/projects/${projectId}/cron-tasks${qs}`)
+    },
     create: (projectId: string, body: {
       agent_id: string
       name: string
       description?: string
-      cron_expression: string
+      mode?: CronTaskMode
+      cron_expression?: string | null
+      run_at?: string | null
       prompt: string
       enabled?: boolean
     }) =>
@@ -738,7 +746,9 @@ export const api = {
     update: (projectId: string, id: string, body: Partial<{
       name: string
       description: string | null
-      cron_expression: string
+      mode: CronTaskMode
+      cron_expression: string | null
+      run_at: string | null
       prompt: string
       enabled: boolean
       agent_id: string
@@ -749,6 +759,10 @@ export const api = {
       }),
     delete: (projectId: string, id: string) =>
       request<{ ok: boolean }>(`/api/projects/${projectId}/cron-tasks/${id}`, { method: 'DELETE' }),
+    archive: (projectId: string, id: string) =>
+      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks/${id}/archive`, { method: 'POST' }),
+    restore: (projectId: string, id: string) =>
+      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks/${id}/restore`, { method: 'POST' }),
     trigger: (projectId: string, id: string) =>
       request<{ ok: boolean; conversation_id: string }>(`/api/projects/${projectId}/cron-tasks/${id}/trigger`, { method: 'POST' }),
   },
@@ -1152,13 +1166,19 @@ export interface AvailabilitySchedule {
   offline_message: string
 }
 
+export type CronTaskMode = 'recurring' | 'once'
+export type CronTaskStatus = 'active' | 'archived'
+
 export interface CronTask {
   id: string
   project_id: string
   agent_id: string
   name: string
   description: string | null
-  cron_expression: string
+  mode: CronTaskMode
+  cron_expression: string | null
+  run_at: string | null
+  status: CronTaskStatus
   prompt: string
   enabled: boolean
   caller_id: string | null

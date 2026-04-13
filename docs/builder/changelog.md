@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-13 — Cron one-shot mode + archive lifecycle
+
+- Added `mode: 'once' | 'recurring'` and `status: 'active' | 'archived'` to `cron_tasks`. One-shot fires at `run_at` then auto-archives on success (no retry). Archived tasks excluded from default lists and scheduler but preserved in DB.
+- `cron_list` tool takes `include_archived`. New `cron_archive` / `cron_restore` agent tools.
+- REST: `POST /cron-tasks/:id/archive`, `POST /cron-tasks/:id/restore`; list `?status=archived` & `?include_archived=1`; PATCH accepts `mode`/`run_at`.
+- Scheduler: recurring via `croner`; once via `setTimeout(run_at - now)`. Past-due once fires immediately on startup.
+- UI: Active/Archived tabs on list; mode picker (cron vs datetime-local) on create and detail pages; archived tasks read-only with Restore.
+- Migration `0025_cron_once_and_archive.sql` — adds `mode`/`run_at`/`status`, makes `cron_expression` nullable, indexes `(project_id, status)`.
+- Files: `apps/studio/db/src/migrations/0025_cron_once_and_archive.sql`, `apps/studio/db/src/schema/cron_tasks.ts`, `apps/studio/db/src/queries/cron_tasks.ts`, `apps/studio/server/src/cron/{scheduler.ts,tools.ts}`, `apps/studio/server/src/runtime/manager.ts`, `apps/studio/server/src/routes/cron-tasks.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/{page.tsx,new/page.tsx,[id]/page.tsx}`.
+
 ## 2026-04-13 — Plan 23 post-ship: branch-aware compaction + UX fixes
 
 **Fixed (UX bugs found in QA):**

@@ -4,6 +4,7 @@ import { use, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
+import type { CronTaskMode } from '@/lib/api'
 import {
   Button,
   Input,
@@ -15,6 +16,9 @@ import {
   SelectValue,
   Switch,
   Textarea,
+  Tabs,
+  TabsList,
+  TabsTrigger,
 } from '@jiku/ui'
 import { ArrowLeft, Clock } from 'lucide-react'
 import { toast } from 'sonner'
@@ -22,6 +26,14 @@ import { CronExpressionInput } from '@/components/cron/cron-expression-input'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
+}
+
+/** Convert a datetime-local string ("2026-04-13T17:00") to ISO UTC. */
+function toISOFromLocal(local: string): string | null {
+  if (!local) return null
+  const d = new Date(local)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString()
 }
 
 export default function NewCronTaskPage({ params }: PageProps) {
@@ -48,27 +60,33 @@ export default function NewCronTaskPage({ params }: PageProps) {
     enabled: !!projectId,
   })
 
-  // Only agents with task mode enabled and cron_task_enabled
   const eligibleAgents = (agentsData?.agents ?? []).filter(a =>
     a.allowed_modes.includes('task') && (a.cron_task_enabled !== false)
   )
 
+  const [mode, setMode] = useState<CronTaskMode>('recurring')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [agentId, setAgentId] = useState('')
   const [cronExpression, setCronExpression] = useState('0 * * * *')
+  const [runAtLocal, setRunAtLocal] = useState('')
   const [prompt, setPrompt] = useState('')
   const [enabled, setEnabled] = useState(true)
 
   const createMutation = useMutation({
-    mutationFn: () => api.cronTasks.create(projectId, {
-      agent_id: agentId,
-      name: name.trim(),
-      description: description.trim() || undefined,
-      cron_expression: cronExpression.trim(),
-      prompt: prompt.trim(),
-      enabled,
-    }),
+    mutationFn: () => {
+      const runAtISO = mode === 'once' ? toISOFromLocal(runAtLocal) : null
+      return api.cronTasks.create(projectId, {
+        agent_id: agentId,
+        name: name.trim(),
+        description: description.trim() || undefined,
+        mode,
+        cron_expression: mode === 'recurring' ? cronExpression.trim() : null,
+        run_at: runAtISO,
+        prompt: prompt.trim(),
+        enabled,
+      })
+    },
     onSuccess: () => {
       toast.success('Cron task created')
       router.push(`/studio/companies/${companySlug}/projects/${projectSlug}/cron-tasks`)
@@ -76,7 +94,10 @@ export default function NewCronTaskPage({ params }: PageProps) {
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to create'),
   })
 
-  const canSubmit = name.trim() && agentId && cronExpression.trim() && prompt.trim()
+  const hasSchedule = mode === 'recurring'
+    ? !!cronExpression.trim()
+    : !!runAtLocal && !!toISOFromLocal(runAtLocal)
+  const canSubmit = name.trim() && agentId && prompt.trim() && hasSchedule
 
   return (
     <div className="p-6 space-y-6 max-w-lg">
@@ -95,7 +116,23 @@ export default function NewCronTaskPage({ params }: PageProps) {
           New Cron Task
         </h1>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Schedule an agent to run automatically on a cron expression.
+          Schedule an agent to run on a recurring cron, or just once at a specific time.
+        </p>
+      </div>
+
+      {/* Mode */}
+      <div className="space-y-1.5">
+        <Label className="text-xs font-medium">Mode</Label>
+        <Tabs value={mode} onValueChange={(v) => setMode(v as CronTaskMode)}>
+          <TabsList>
+            <TabsTrigger value="recurring">Recurring</TabsTrigger>
+            <TabsTrigger value="once">Once (auto-archive)</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <p className="text-xs text-muted-foreground">
+          {mode === 'once'
+            ? 'Fires exactly once at the chosen time, then auto-archives to history.'
+            : 'Fires repeatedly on the cron schedule until disabled or archived.'}
         </p>
       </div>
 
@@ -144,11 +181,24 @@ export default function NewCronTaskPage({ params }: PageProps) {
         <p className="text-xs text-muted-foreground">Only agents with task mode enabled are shown.</p>
       </div>
 
-      {/* Cron Expression */}
-      <div className="space-y-1.5">
-        <Label className="text-xs font-medium">Cron Expression <span className="text-destructive">*</span></Label>
-        <CronExpressionInput value={cronExpression} onChange={setCronExpression} />
-      </div>
+      {/* Schedule — differs by mode */}
+      {mode === 'recurring' ? (
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Cron Expression <span className="text-destructive">*</span></Label>
+          <CronExpressionInput value={cronExpression} onChange={setCronExpression} />
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Run At <span className="text-destructive">*</span></Label>
+          <Input
+            type="datetime-local"
+            value={runAtLocal}
+            onChange={e => setRunAtLocal(e.target.value)}
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">Uses your local timezone. Stored as UTC.</p>
+        </div>
+      )}
 
       {/* Prompt */}
       <div className="space-y-1.5">

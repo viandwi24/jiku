@@ -5,6 +5,9 @@ import {
   createCronTask,
   updateCronTask,
   deleteCronTask,
+  archiveCronTask,
+  restoreCronTask,
+  type CronTaskStatus,
 } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
 import { cronTaskScheduler } from './scheduler.ts'
@@ -41,11 +44,22 @@ export function buildCronCreateTool(
     input: z.object({
       name: z.string().max(255).describe('Human-readable name for the cron task. Short, unique, descriptive — e.g. "Reminder jam pulang (Budi)", "Daily sales digest — #sales topic".'),
       description: z.string().optional().describe('Optional description — summarize who asked for it, why, and the expected output. Useful for audit.'),
-      cron_expression: z.string().max(100).describe(
-        '5-field cron expression evaluated in UTC. Convert from the user\'s local time BEFORE passing. ' +
+      mode: z.enum(['recurring', 'once']).default('recurring').describe(
+        'Execution mode. "recurring" (default) uses `cron_expression` and fires repeatedly until disabled. ' +
+        '"once" uses `run_at` and fires exactly once, then auto-archives — perfect for one-off reminders ' +
+        '("ingatkan saya besok jam 9" → mode: "once", run_at: <besok 09:00 UTC ISO>).',
+      ),
+      cron_expression: z.string().max(100).optional().describe(
+        'Required when `mode` is "recurring". 5-field cron expression evaluated in UTC. Convert from the user\'s local time BEFORE passing. ' +
         'Default timezone is in [Project Context] above — use it as fallback when the user doesn\'t specify a zone. ' +
         'Examples: "0 10 * * *" = 10:00 UTC daily; "0 10 * * 1-5" = weekdays 10:00 UTC. ' +
-        'If project default is Asia/Jakarta (UTC+7) and user says "jam 17", that\'s 17 WIB → cron_expression "0 10 * * *".',
+        'If project default is Asia/Jakarta (UTC+7) and user says "jam 17", that\'s 17 WIB → cron_expression "0 10 * * *". ' +
+        'Omit for `mode: "once"`.',
+      ),
+      run_at: z.string().datetime().optional().describe(
+        'Required when `mode` is "once". ISO 8601 UTC datetime when the task should fire (e.g. "2026-04-14T02:00:00.000Z"). ' +
+        'Convert user\'s local time to UTC before passing. If user says "besok jam 9" and project timezone is Asia/Jakarta, ' +
+        'that\'s 09:00 WIB tomorrow → "<tomorrow>T02:00:00.000Z". Past timestamps will fire immediately on startup.',
       ),
       prompt: z.string().describe(
         'THE INSTRUCTION FUTURE-YOU WILL RECEIVE when the cron fires. Treated as a command, not a conversation.\n' +
@@ -93,7 +107,9 @@ export function buildCronCreateTool(
       const parsed = input as {
         name: string
         description?: string
-        cron_expression: string
+        mode: 'recurring' | 'once'
+        cron_expression?: string
+        run_at?: string
         prompt: string
         enabled: boolean
         delivery?: CronContext['delivery']
@@ -117,6 +133,23 @@ export function buildCronCreateTool(
         }
       }
 
+      // Mode-specific validation.
+      let runAt: Date | null = null
+      if (parsed.mode === 'recurring') {
+        if (!parsed.cron_expression?.trim()) {
+          return { success: false, error: 'cron_expression is required when mode is "recurring".' }
+        }
+      } else {
+        if (!parsed.run_at) {
+          return { success: false, error: 'run_at is required when mode is "once".' }
+        }
+        const d = new Date(parsed.run_at)
+        if (Number.isNaN(d.getTime())) {
+          return { success: false, error: 'run_at is not a valid ISO datetime.' }
+        }
+        runAt = d
+      }
+
       const context: CronContext = {}
       if (parsed.origin) context.origin = parsed.origin
       if (parsed.delivery) context.delivery = parsed.delivery
@@ -127,13 +160,13 @@ export function buildCronCreateTool(
         agent_id: agentId,
         name: parsed.name,
         description: parsed.description ?? null,
-        cron_expression: parsed.cron_expression,
-        // Stored prompt is now pure intent — [Cron Trigger] / [Cron Delivery] / [Cron Origin]
-        // are composed by the scheduler from `context` at fire time. This means editing
-        // `prompt` via UI never wipes delivery info.
+        mode: parsed.mode,
+        cron_expression: parsed.mode === 'recurring' ? (parsed.cron_expression ?? null) : null,
+        run_at: runAt,
         prompt: parsed.prompt,
         context: context as unknown as Record<string, unknown>,
         enabled: parsed.enabled,
+        status: 'active',
         caller_id: callerCtx.callerId,
         caller_role: callerCtx.callerRole,
         caller_is_superadmin: callerCtx.callerIsSuperadmin,
@@ -156,26 +189,103 @@ export function buildCronListTool(projectId: string, agentId: string): ToolDefin
     meta: {
       id: 'cron_list',
       name: 'List Cron Tasks',
-      description: 'List all scheduled cron tasks for this agent',
+      description: 'List scheduled cron tasks for this agent. By default only active (non-archived) tasks are returned. Archived tasks (including one-shot tasks that already fired) are hidden unless `include_archived` is true.',
       group: 'cron',
     },
     permission: '*',
     modes: ['chat', 'task'],
-    input: z.object({}),
-    execute: async () => {
-      const tasks = await getCronTasksByAgent(agentId)
+    input: z.object({
+      include_archived: z.boolean().default(false).describe('Set true to include archived tasks in the result (useful for reviewing history of one-shot reminders).'),
+    }),
+    execute: async (input: unknown) => {
+      const parsed = (input ?? {}) as { include_archived?: boolean }
+      const statuses: CronTaskStatus[] = parsed.include_archived ? ['active', 'archived'] : ['active']
+      const tasks = await getCronTasksByAgent(agentId, { statuses })
       return {
         tasks: tasks.map(t => ({
           id: t.id,
           name: t.name,
           description: t.description,
+          mode: t.mode,
+          status: t.status,
           cron_expression: t.cron_expression,
+          run_at: t.run_at?.toISOString() ?? null,
           enabled: t.enabled,
           run_count: t.run_count,
           last_run_at: t.last_run_at?.toISOString() ?? null,
           next_run_at: t.next_run_at?.toISOString() ?? null,
         })),
       }
+    },
+  }
+}
+
+export function buildCronArchiveTool(
+  projectId: string,
+  agentId: string,
+  callerCtx: CallerSnapshotContext,
+): ToolDefinition {
+  return {
+    meta: {
+      id: 'cron_archive',
+      name: 'Archive Cron Task',
+      side_effectful: true,
+      description: 'Archive a cron task. Archived tasks are hidden from the default list, stop firing, but remain in the DB so history and audit are preserved. Use this instead of delete when the task is done but the record should stay.',
+      group: 'cron',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({
+      task_id: z.string().describe('ID of the cron task to archive'),
+    }),
+    execute: async (input: unknown) => {
+      const parsed = input as { task_id: string }
+      const existing = await getCronTaskById(parsed.task_id)
+      if (!existing) return { success: false, error: 'Cron task not found' }
+      if (existing.agent_id !== agentId) return { success: false, error: 'Not authorized' }
+      if (existing.caller_is_superadmin && !callerCtx.callerIsSuperadmin) {
+        return { success: false, error: 'Only a superadmin can modify a superadmin-created cron task' }
+      }
+      cronTaskScheduler.stopTask(parsed.task_id)
+      await archiveCronTask(parsed.task_id)
+      return { success: true }
+    },
+  }
+}
+
+export function buildCronRestoreTool(
+  projectId: string,
+  agentId: string,
+  callerCtx: CallerSnapshotContext,
+): ToolDefinition {
+  return {
+    meta: {
+      id: 'cron_restore',
+      name: 'Restore Cron Task',
+      side_effectful: true,
+      description: 'Restore a previously archived cron task back to active. If the task is enabled and (for recurring) has a valid cron_expression, it will be rescheduled.',
+      group: 'cron',
+    },
+    permission: '*',
+    modes: ['chat', 'task'],
+    input: z.object({
+      task_id: z.string().describe('ID of the cron task to restore'),
+    }),
+    execute: async (input: unknown) => {
+      const parsed = input as { task_id: string }
+      const existing = await getCronTaskById(parsed.task_id)
+      if (!existing) return { success: false, error: 'Cron task not found' }
+      if (existing.agent_id !== agentId) return { success: false, error: 'Not authorized' }
+      if (existing.caller_is_superadmin && !callerCtx.callerIsSuperadmin) {
+        return { success: false, error: 'Only a superadmin can modify a superadmin-created cron task' }
+      }
+      const task = await restoreCronTask(parsed.task_id)
+      if (task.enabled) {
+        cronTaskScheduler.scheduleTask(task.id, projectId).catch(err =>
+          console.warn('[cron:tools] Failed to schedule restored task:', err)
+        )
+      }
+      return { success: true, task_id: task.id }
     },
   }
 }

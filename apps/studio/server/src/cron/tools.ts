@@ -15,6 +15,31 @@ interface CallerSnapshotContext {
   callerIsSuperadmin: boolean
 }
 
+function buildCronDeliveryBlock(delivery?: {
+  connector_id?: string
+  target_name?: string
+  chat_id?: string
+  thread_id?: string
+  scope_key?: string
+}): string {
+  if (!delivery) return ''
+  const lines: string[] = ['', '[Cron Delivery]']
+  lines.push('When this task fires there is NO incoming message — you are triggered by the scheduler.')
+  lines.push('After producing the reminder/content, you MUST deliver it via one of the tools below:')
+  if (delivery.target_name) {
+    lines.push(`- Preferred: connector_send_to_target({ target_name: "${delivery.target_name}"${delivery.connector_id ? `, connector_id: "${delivery.connector_id}"` : ''}, text: <your message>, markdown: true })`)
+  }
+  if (delivery.scope_key && delivery.connector_id) {
+    lines.push(`- Or: connector_run_action({ connector_id: "${delivery.connector_id}", action_id: "send_to_scope", params: { scope_key: "${delivery.scope_key}", text: <your message>, markdown: true } })`)
+  }
+  if (delivery.chat_id && delivery.connector_id) {
+    const threadHint = delivery.thread_id ? `, thread_id: "${delivery.thread_id}"` : ''
+    lines.push(`- Or raw: connector_send({ connector_id: "${delivery.connector_id}", target_ref_keys: { chat_id: "${delivery.chat_id}"${threadHint} }, text: <your message>, markdown: true })`)
+  }
+  lines.push('Do not just return text — without one of these calls the user will receive nothing.')
+  return lines.join('\n')
+}
+
 export function buildCronCreateTool(
   projectId: string,
   agentId: string,
@@ -24,7 +49,11 @@ export function buildCronCreateTool(
     meta: {
       id: 'cron_create',
       name: 'Create Cron Task',
-      description: 'Create a new scheduled cron task for this agent',
+      description:
+        'Create a new scheduled cron task for this agent. When the task fires there is NO incoming message — ' +
+        'so if the user needs to be notified (e.g. reminder to a Telegram chat), you MUST pass a `delivery` object ' +
+        'so the cron-run version of this agent knows where to send the output. Read the current Connector Context ' +
+        '(connector_id, chat scope, chat ref) and copy those values into delivery.',
       group: 'cron',
     },
     permission: '*',
@@ -33,7 +62,14 @@ export function buildCronCreateTool(
       name: z.string().max(255).describe('Human-readable name for the cron task'),
       description: z.string().optional().describe('Optional description'),
       cron_expression: z.string().max(100).describe('5-field cron expression, e.g. "0 * * * *" for every hour'),
-      prompt: z.string().describe('The prompt to send to the agent when triggered'),
+      prompt: z.string().describe('The prompt to send to the agent when triggered. DO NOT include delivery instructions here — use the `delivery` field instead.'),
+      delivery: z.object({
+        connector_id: z.string().optional().describe('Connector UUID from Connector Context'),
+        target_name: z.string().optional().describe('Name of an existing Channel Target to send to (preferred if one exists)'),
+        chat_id: z.string().optional().describe('Raw chat_id (from current Chat ref) — fallback when no named target'),
+        thread_id: z.string().optional().describe('Forum topic thread_id if applicable'),
+        scope_key: z.string().optional().describe('scope_key from Connector Context — enables send_to_scope'),
+      }).optional().describe('Where to send the output when the task fires. Omit only if the task has no user-facing output.'),
       enabled: z.boolean().default(true).describe('Whether the task is enabled immediately'),
     }),
     execute: async (input: unknown) => {
@@ -43,7 +79,16 @@ export function buildCronCreateTool(
         cron_expression: string
         prompt: string
         enabled: boolean
+        delivery?: {
+          connector_id?: string
+          target_name?: string
+          chat_id?: string
+          thread_id?: string
+          scope_key?: string
+        }
       }
+
+      const fullPrompt = parsed.prompt + buildCronDeliveryBlock(parsed.delivery)
 
       const task = await createCronTask({
         project_id: projectId,
@@ -51,12 +96,12 @@ export function buildCronCreateTool(
         name: parsed.name,
         description: parsed.description ?? null,
         cron_expression: parsed.cron_expression,
-        prompt: parsed.prompt,
+        prompt: fullPrompt,
         enabled: parsed.enabled,
         caller_id: callerCtx.callerId,
         caller_role: callerCtx.callerRole,
         caller_is_superadmin: callerCtx.callerIsSuperadmin,
-        metadata: {},
+        metadata: parsed.delivery ? { delivery: parsed.delivery } : {},
       })
 
       if (task.enabled) {

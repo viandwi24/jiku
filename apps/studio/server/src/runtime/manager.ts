@@ -654,10 +654,14 @@ export class JikuRuntimeManager {
     this.modelCache.set(cacheKey, buildProvider(modelInfo))
 
     // Plan 18 — enrich caller with per-member plugin permissions + superadmin flag.
+    // Skip DB lookup for non-UUID caller ids (e.g. 'system' from cron/reflection jobs,
+    // 'connector:<uuid>' from connector events) — these are not real user rows and would
+    // throw "invalid input syntax for type uuid" on project_memberships.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     let enrichedCaller = params.caller
     try {
       const callerUserId = params.caller.user_id
-      if (callerUserId) {
+      if (callerUserId && UUID_RE.test(callerUserId)) {
         const [grantedPerms, membership] = await Promise.all([
           (await import('@jiku-studio/db')).getGrantedPluginPermissions(callerUserId, projectId),
           (await import('@jiku-studio/db')).getProjectMembership(projectId, callerUserId),

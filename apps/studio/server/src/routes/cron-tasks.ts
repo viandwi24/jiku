@@ -19,10 +19,14 @@ router.get('/projects/:pid/cron-tasks', requirePermission('cron_tasks:read'), as
   const userId = res.locals['user_id'] as string
   const perms = await loadPerms(req, res)
   const isSuperadmin = perms?.resolved.isSuperadmin ?? false
+  // Users with cron_tasks:write (admin/manager-tier) see everyone's tasks.
+  // Users with only cron_tasks:read see only their own — previous default was everyone-own-only
+  // which hid the list from admins. Superadmins always see all.
+  const canSeeAll = isSuperadmin || (perms?.resolved.permissions?.includes('cron_tasks:write') ?? false)
 
   const tasks = await getCronTasksByProject(
     projectId,
-    isSuperadmin ? undefined : { callerIdFilter: userId },
+    canSeeAll ? undefined : { callerIdFilter: userId },
   )
 
   res.json({ cron_tasks: tasks })

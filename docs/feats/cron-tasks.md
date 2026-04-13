@@ -1,8 +1,21 @@
 # Cron Tasks Feature
 
-**Last Updated:** 2026-04-07
-**Status:** Complete
+**Last Updated:** 2026-04-13
+**Status:** Shipped + revised in Plan 22 (context column, delivery composition, prompt discipline)
 **Entry Points:** `apps/studio/server/src/cron/`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/`
+
+## Plan 22 revision additions
+
+- **`cron_tasks.context jsonb`** column (migration `0020`) carries `{ origin, delivery, subject, notes }`. Schedule composition lives in `cron/context.ts:composeCronRunInput()` — called by the scheduler at fire time. Stored `prompt` is pure intent; UI prompt edits no longer destroy delivery wiring.
+- **`cron_create` tool input** accepts `origin / delivery / subject` as separate structured fields. `cron_update` shallow-merges context (unspecified keys preserved).
+- **Scheduler prelude**: fired runs receive `[Cron Trigger]` + `[Cron Origin]` + `[Cron Subject]` + Instruction + `[Cron Delivery]` composed from the stored context. Delivery block references bare tool names (`connector_send(...)`) since built-ins no longer use the `builtin_` prefix (ADR-064).
+- **Infinite-loop guard**: `[Cron Trigger]` preamble explicitly states the reminder already exists + forbids treating Instruction as a fresh reminder request. Cron mutation tools (`cron_create/update/delete`) STAY available in cron-fired runs to support conditional / dynamic chains (ADR-063).
+- **Soft rails** in `cron_create.execute`: reject prompt < 30 chars or starting with first-person patterns ("Ingatkan saya", "Remind me", etc.) — model gets a crisp rewrite hint.
+- **Side-effectful dedup**: `cron_create / cron_update / cron_delete` marked `side_effectful: true` so edit-replay returns cached result instead of double-firing (ADR-060).
+- **Admin visibility**: `GET /projects/:pid/cron-tasks` — anyone with `cron_tasks:write` sees the full list (previously non-superadmins saw only own rows).
+- **Permission UI group**: Settings → Permissions → "Cron Tasks" (read / write).
+- **Backfill migration** `0019` adds `cron_tasks:read/write` to existing `Admin` project_roles whose permissions array was stale.
+- **Heartbeat scheduler** now uses croner (`nextRun()`) instead of the broken hand-rolled parser (ADR-066).
 
 ## Overview
 

@@ -1,8 +1,23 @@
-# Feature: Channels & Connector System (Plan 10 + polish)
+# Feature: Channels & Connector System (Plan 10 + Plan 22 revision)
 
 ## What it does
 
 Connectors allow agents to receive input from and send output to third-party platforms (Telegram, Discord, etc.) in a unified way. All runs go through `runtime.run()` — no special paths. Binding rules route incoming events to specific agents and adapter types.
+
+## Plan 22 additions (2026-04-13)
+
+- **`scope_key` conversation isolation** (ADR-056): multi-chat platforms (Telegram groups, forum topics) now get per-scope conversations. DMs keep using `identity.conversation_id`. New table `connector_scope_conversations(connector_id, scope_key, agent_id, conversation_id)`.
+- **Named Channel Targets** (ADR-057): `connector_targets` table + REST CRUD + agent tools `connector_list_targets / connector_send_to_target / connector_list_scopes / connector_create_target / connector_update_target / connector_delete_target / connector_save_current_scope`. Agents can register destinations by name and address them from cron tasks.
+- **Media pipeline via event log** (ADR-058): `ConnectorEventMedia` carries metadata only (type, name, mime, size); `file_id` stored in `connector_events.metadata`. Agent fetches via `connector_run_action("fetch_media", { event_id, save_path })`. Lazy-fetch, restart-safe, auditable.
+- **Scope filter on bindings** (ADR-059): `connector_bindings.scope_key_pattern` (`null` / `group:*` / `dm:*` / exact / `group:X:topic:N`). Prefix wildcard only.
+- **TelegramAdapter overhaul**: `computeScopeKey / targetFromScopeKey`, `thread_id` + `chat_type` + `chat_title` in inbound events, 9 new actions (`fetch_media`, `send_media_group`, `send_url_media`, `send_to_scope`, `get_chat_members`, `create_invite_link`, `forward_message`, `set_chat_description`, `ban_member`), `sendMessage` media / media_group / scope support.
+- **`/reset` command** intercepted in event-router: clears current scope's `conversation_id` (DM = identity; group/topic = scope row). History preserved.
+- **Streaming typing simulation (Telegram)** per-send via `ConnectorContent.simulate_typing` (ADR-065). Auto-reply defaults true; agent tools default false. Progressive reveal in 3 stages with `\n\n⚪` indicator at 2-second intervals.
+- **Connector usage log parity**: `event-router` captures `data-jiku-usage` + `data-jiku-meta` + `data-jiku-run-snapshot` chunks and calls `recordLLMUsage({ source: 'chat' })` — Telegram conversations now appear in Usage Log.
+- **Audit log actor guard**: non-UUID actor ids (`connector:<uuid>`) nulled, preserved in `metadata.actor_label`, `actor_type` set to `'connector'`.
+- **Enriched `[Connector Context]` string**: now includes `Connector ID`, `Chat ref: chat_id=..., thread_id=...`, `Chat scope`, `Chat: <title> (<type>)`, plus a `Media available: ... event_id: "..."` hint when inbound contains media.
+- **Agent-side Target CRUD**: `connector_create_target / connector_update_target / connector_delete_target / connector_save_current_scope` let agents register their own destinations without admin setup.
+- **Telegram `editMessage`** now respects markdown (parse_mode MarkdownV2 + escape via telegramify-markdown).
 
 ## Core Concepts
 

@@ -155,7 +155,41 @@ export const api = {
         body: JSON.stringify(body ?? {}),
       }),
     messages: (convId: string) =>
-      request<{ messages: { id: string; role: string; parts: { type: string; [key: string]: unknown }[]; created_at: string | null }[] }>(`/api/conversations/${convId}/messages`),
+      request<{
+        conversation_id?: string
+        active_tip_message_id?: string | null
+        messages: {
+          id: string
+          role: string
+          parts: { type: string; [key: string]: unknown }[]
+          created_at: string | null
+          // Plan 23 — present when served via active-path query
+          parent_message_id?: string | null
+          branch_index?: number
+          sibling_count?: number
+          sibling_ids?: string[]
+          current_sibling_index?: number
+        }[]
+      }>(`/api/conversations/${convId}/messages`),
+    // Plan 23 — branch navigation
+    resolveSiblingTip: (convId: string, siblingId: string) =>
+      request<{ tip_message_id: string }>(
+        `/api/conversations/${convId}/sibling-tip?sibling_id=${encodeURIComponent(siblingId)}`,
+      ),
+    setActiveTip: (convId: string, tipMessageId: string) =>
+      request<{ ok: boolean; active_tip_message_id: string; messages: unknown[] }>(
+        `/api/conversations/${convId}/active-tip`,
+        { method: 'PATCH', body: JSON.stringify({ tip_message_id: tipMessageId }) },
+      ),
+    regenerate: (convId: string, userMessageId: string) =>
+      fetch(`${BASE_URL}/api/conversations/${convId}/regenerate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ user_message_id: userMessageId }),
+      }),
     preview: (convId: string, body: { mode?: 'chat' | 'task' }) =>
       request<PreviewRunResult>(`/api/conversations/${convId}/preview`, {
         method: 'POST',

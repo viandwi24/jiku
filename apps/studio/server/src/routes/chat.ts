@@ -23,7 +23,7 @@ const router = Router()
 router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req, res) => {
   const conversationId = String(req.params['id'])
   const userId = res.locals['user_id'] as string
-  const { messages } = req.body as { messages: UIMessage[] }
+  const { messages, parent_message_id } = req.body as { messages: UIMessage[]; parent_message_id?: string | null }
 
   const conversation = await getConversationById(conversationId)
   if (!conversation) { res.status(404).json({ error: 'Conversation not found' }); return }
@@ -157,6 +157,11 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
       attachments: attachments.length > 0 ? attachments : undefined,
       input_file_parts: inputFileParts.length > 0 ? inputFileParts : undefined,
       conversation_id: conversationId,
+      // Preserve the null/undefined distinction:
+      //   undefined → runner falls back to conversation.active_tip (linear extend)
+      //   null      → explicit "branch at root" (edit of the first user message)
+      //   uuid      → explicit branch off this parent
+      parent_message_id: parent_message_id === undefined ? undefined : parent_message_id,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'

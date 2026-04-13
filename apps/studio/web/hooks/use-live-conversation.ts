@@ -132,11 +132,24 @@ export function useLiveConversation({ conversationId, onDone, autoDetect = false
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
 
+  // Tracks whether we've ever observed `running:true` in the current polling
+  // session. Without this, callers that start polling BEFORE the server has
+  // registered the run (e.g. /regenerate kicked off by the client moments
+  // before the server's `streamRegistry.startRun` fires) would see the very
+  // first poll return `running:false` and immediately tear down — making the
+  // streaming indicator vanish a frame after appearing.
+  const seenRunningRef = useRef(false)
+  // Hard cap on "waiting for server to register run" — if we never see
+  // running=true within this window, give up and call onDone (defensive).
+  const startedAtRef = useRef(0)
+  const STARTUP_GRACE_MS = 8000
+
   const stop = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
+    seenRunningRef.current = false
     setIsStreaming(false)
     setLiveMessage(null)
   }, [])
@@ -145,17 +158,27 @@ export function useLiveConversation({ conversationId, onDone, autoDetect = false
     if (timerRef.current) return // already polling
 
     setIsStreaming(true)
+    seenRunningRef.current = false
+    startedAtRef.current = Date.now()
 
     timerRef.current = setInterval(async () => {
       try {
         const { running, chunks } = await api.conversations.liveParts(conversationId)
 
         if (!running) {
+          // Startup grace: tolerate `running:false` until we've either seen
+          // `running:true` once OR exhausted the grace window. Prevents the
+          // "indicator vanishes a frame after appearing" race where we poll
+          // before the server's startRun() has been called.
+          if (!seenRunningRef.current && Date.now() - startedAtRef.current < STARTUP_GRACE_MS) {
+            return
+          }
           stop()
           onDoneRef.current?.()
           return
         }
 
+        seenRunningRef.current = true
         const msg = chunksToUIMessage(chunks)
         setLiveMessage(msg)
       } catch {

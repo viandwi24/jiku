@@ -1,5 +1,8 @@
 # Feature: Task Mode, Heartbeat & Run History (Plan 11)
 
+> **2026-04-13 (ADR-066)** — Heartbeat cron parser switched from a buggy hand-roll to `croner` (`new Cron(expr).nextRun(from)`). Reject non-5-field expressions to prevent 6-field "seconds-first" typos (`*/30 * * * * *`) from becoming every-30-second runaways. Covers `*/N`, ranges, lists, DOW specials — same library as `cron/scheduler.ts`.
+
+
 ## What it does
 
 - **Task Mode** — agents spawn `task` conversations via `run_task` tool. Runs autonomously without waiting for user input. Can be background (detached) or awaited with timeout.

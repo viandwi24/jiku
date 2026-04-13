@@ -1,5 +1,127 @@
 # Changelog
 
+## 2026-04-13 — Plan 23 post-ship: branch-aware compaction + UX fixes
+
+**Fixed (UX bugs found in QA):**
+- **Edit didn't actually branch.** `branchMeta` was stale right after a turn ended, so `submitEdit` couldn't find the parent of the edited message → `parent_message_id` fell to `null` → chat route's `?? undefined` downgraded that to "use active_tip" → linear append. Two-part fix: (a) `refreshMessages()` now runs whenever streaming transitions true→false (kept off the initial mount to avoid racing `pending_message`), (b) chat route preserves the null-vs-undefined distinction, (c) `submitEdit` re-fetches meta if missing for the edited message.
+- **First message disappeared after redirect from `/new`.** My initial `refreshMessages()` on mount raced with `useChat`'s optimistic send from the `pending_message` handler — the empty DB fetch wiped the just-typed message until the response completed. Replaced mount-time `refreshMessages` with a meta-only `hydrateBranchMetaOnly` that doesn't touch the messages array.
+- **Edit visually appended to old turn before snapping into a branch.** Optimistically `setMessages(prev.slice(0, idx))` before `sendMessage` so the edited message and everything after it disappear immediately and the new turn renders in the branched position.
+- **Branch navigator was above the message.** Moved inline into the action bar (next to Copy/Edit/Regenerate). Dropped the "Edit"/"Response" labels — context is clear.
+- **Regenerate ran silently in the background.** Now starts `useLiveConversation` polling immediately, optimistically removes the old assistant message, drains the response body so server-side SSE actually flows (raw fetch left it unread → backpressure stalled writes), and the live-parts buffer streams the new assistant in real time.
+- **Regenerate indicator vanished after one frame.** First `/live-parts` poll was racing the server's `streamRegistry.startRun(convId)` — sometimes returned `running:false` → `stop()` + `onDone` immediately. Added an 8-second startup grace to `useLiveConversation`: `running:false` is tolerated until we've seen `running:true` once OR the grace window expires.
+- **Regenerate fetch had no auth.** `api.conversations.regenerate` was using raw `fetch()` without `BASE_URL` or `getAuthHeaders()` (probably 401-ing). Routed through the standard headers/baseURL pattern.
+
+**Backend correctness (objective audit found these — UI testing wouldn't have caught them):**
+- **Edit leaked old turn into model context.** Runner was loading history from `conversation.active_tip_message_id` regardless of `params.parent_message_id`. For an edit on message M, the old M and its assistant reply were still in the path → model treated the edit as a follow-up. Fix: when `params.parent_message_id` is supplied, walk history via `getMessagesByPath(params.parent_message_id)`. Null means explicit "branch at root" → empty history.
+- **Regenerate duplicated the user message in model context.** With the above fix, history now includes the user message we're regenerating from. Runner was still pushing `params.input` again → model saw the same user message twice. Skip the input push when `params.regenerate === true`.
+
+**Compaction redesigned (ADR-073 revised — supersedes the original "skip on branched conv"):**
+- Reread `applyCompactBoundary()` and confirmed the existing system already uses an `[Context Summary]\n…` text-marker pattern; only `replaceMessages` (DELETE + reinsert) was destructive.
+- `checkCompactionThreshold` now measures **active branch path tokens** (with `applyCompactBoundary` applied), not flat conversation tokens.
+- When triggered, append the checkpoint as a new assistant message via `addBranchedMessage(parent = current_tip)` instead of `replaceMessages`. Old rows stay in DB → other branches keep walking through them.
+- Skipped on **explicit branch fork** (edit-message where `parent_message_id !== current_tip`) and on **regenerate** so checkpoints aren't dumped into branches the user is leaving.
+- For "linear extend" sends after compaction, `desiredParent` falls through to the latest tip (not the pre-compaction one), so the new user message chains off the checkpoint instead of becoming its sibling.
+- `replaceMessages` retained as a fallback for adapters without `addBranchedMessage` (in-memory dev adapter).
+- Preview snapshot (`runner.ts:~1040`) likewise switched to active-path token accounting + per-branch compaction count.
+
+**Files touched (post-ship):**
+- `packages/core/src/runner.ts` — history-load logic refactored around `historyRef` (linear-extend vs explicit-fork), compaction block rewritten to append-only, threshold + preview branch-aware.
+- `apps/studio/server/src/routes/chat.ts` — null/undefined preservation in `parent_message_id`.
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — `hydrateBranchMetaOnly` mount, transition-only `refreshMessages`, optimistic prune in submitEdit/regenerate, navigator moved into action bar, regenerate streams via `useLiveConversation`.
+- `apps/studio/web/hooks/use-live-conversation.ts` — startup grace for `running:false`.
+- `apps/studio/web/lib/api.ts` — regenerate uses `BASE_URL` + `getAuthHeaders()`.
+- `docs/builder/{decisions,memory}.md`, `docs/feats/branch-chat.md` — documented the compaction revision and active-branch-as-context-budget invariant.
+
+**Type check:** web 0 errors; core has only the same pre-existing errors documented in Plan 22 rev 3 next-up (`UserContentPart[]`, NodeJS namespaces, etc.).
+
+---
+
+## 2026-04-13 — Plan 23: message-level branching (chat)
+
+**Added:**
+- **Schema (migration `0024_plan23_branch_chat.sql`):** `messages.parent_message_id` (self-FK, ON DELETE CASCADE) + `messages.branch_index` (int, default 0); `conversations.active_tip_message_id` (FK → messages, ON DELETE SET NULL). Backfill: existing messages get linear parent chain by `created_at`; each conversation's tip = its last message. Indexes: `idx_messages_parent`, `idx_messages_conv_parent`, `idx_conv_active_tip`.
+- **Drizzle schema:** `apps/studio/db/src/schema/conversations.ts` — added the three columns + indexes via `AnyPgColumn` for the self/cross references.
+- **Query layer (`apps/studio/db/src/queries/conversation.ts`):**
+  - `getActivePath(convId)` — recursive CTE that walks tip → root via `parent_message_id` and attaches `sibling_count` + `sibling_ids` per row (ADR-062).
+  - `getMessagesByPath(tipId)` — same walk, returns raw rows for the runner.
+  - `getLatestLeafInSubtree(rootId)` — ADR-064 "latest leaf" descent (always `MAX(branch_index)`).
+  - `setActiveTip(convId, tipId)` — persist a new active tip.
+  - `addBranchedMessage({conv, parent, role, parts})` — single-tx insert with auto-computed `branch_index = max(siblings)+1` then bump `active_tip_message_id`.
+  - `getMessageById`, `conversationHasBranching`.
+- **Storage adapter:** `StudioStorageAdapter` implements new optional `JikuStorageAdapter` methods `getActivePathMessages`, `getMessagesByPath`, `addBranchedMessage`, `setActiveTip`. `Message` mapping now carries `parent_message_id` + `branch_index`. `Conversation` mapping carries `active_tip_message_id`.
+- **Runner (`packages/core/src/runner.ts`):**
+  - History load now uses `getActivePathMessages` whenever the storage supports it AND the conversation has a tip set; falls back to linear `getMessages` (in-memory adapter / new convs).
+  - User message persistence routed through `addBranchedMessage` with `parent_message_id` chosen as `params.parent_message_id ?? conversation.active_tip_message_id`. Assistant message hangs off the just-saved user msg id.
+  - New `JikuRunParams.regenerate` flag: skips the user-save and treats `parent_message_id` (which must be a user msg) as the existing user turn — the new assistant message becomes a sibling of any prior reply.
+  - Compaction is skipped when the conversation has any branching (sibling_count > 1 anywhere) — branched-conv compaction is out of scope for the initial release (edge case #5).
+- **HTTP routes (`apps/studio/server/src/routes/`):**
+  - `POST /conversations/:id/chat` accepts optional `parent_message_id` in body and forwards to runner (ADR-063: branching is implicit — new sibling auto-detected when parent already has children).
+  - `GET /conversations/:id/messages` returns `{ conversation_id, active_tip_message_id, messages }` where each message carries branch metadata (sibling_count/ids/current_index) when the conv has a tip; falls back to flat list otherwise.
+  - `GET /conversations/:id/sibling-tip?sibling_id=` resolves the latest-leaf tip inside a sibling subtree (used by the navigator before switching).
+  - `PATCH /conversations/:id/active-tip` switches the active tip and returns the new active path; rejected with 503 while a run is in progress (ADR-066).
+  - `POST /conversations/:id/regenerate { user_message_id }` sets the active tip to that user message and triggers the runner with `regenerate: true`. Rejected with 409 if a run is in progress.
+- **Frontend API client (`apps/studio/web/lib/api.ts`):** `conversations.messages` return type extended with branch metadata; new `resolveSiblingTip`, `setActiveTip`, `regenerate` helpers.
+- **`ConversationViewer`:**
+  - Tracks `activeTip` + `branchMeta` map (id → `{parent_message_id, branch_index, sibling_count, sibling_ids, current_sibling_index}`); hydrated on mount and after each refresh via `refreshMessages()`.
+  - `prepareSendMessagesRequest` includes `parent_message_id: activeTipRef.current` (ref mirror so the captured closure always sees the latest tip).
+  - Message render loop renders an inline `BranchNavigator` above any message with `sibling_count > 1` (label: "Edit" for user, "Response" for assistant). Edit button on user messages opens `MessageEditInput`; Regenerate button on assistant messages calls the regenerate endpoint then polls `/status` until done.
+  - Edit submit: stamps `activeTip` to the edited message's parent so the next `sendMessage` lands as a sibling, then sends.
+- **Components:**
+  - `apps/studio/web/components/chat/branch-navigator.tsx` — `← N/total →` with optional contextual label, hidden when only one sibling exists.
+  - `apps/studio/web/components/chat/message-edit-input.tsx` — inline `Textarea` + Send/Cancel; ⌘/Ctrl+Enter to submit, Esc to cancel.
+- **Types (`@jiku/types`):** `Message.parent_message_id` + `Message.branch_index` (optional), `Conversation.active_tip_message_id` (optional), `MessageWithBranchMeta`. `JikuStorageAdapter` gains optional `getActivePathMessages` / `getMessagesByPath` / `addBranchedMessage` / `setActiveTip`. `JikuRunParams` gains `parent_message_id?` + `regenerate?`.
+
+**Files:** `apps/studio/db/src/migrations/0024_plan23_branch_chat.sql`, `apps/studio/db/src/schema/conversations.ts`, `apps/studio/db/src/queries/conversation.ts`, `apps/studio/server/src/runtime/storage.ts`, `apps/studio/server/src/routes/{chat,conversations}.ts`, `packages/core/src/runner.ts`, `packages/types/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/chat/{conversation-viewer,branch-navigator,message-edit-input}.tsx`.
+
+**Deferred:** sidebar "(branched)" hint, error-toast UI integration, keyboard-arrow navigation, branched-conversation compaction. Manual UX QA + E2E tests pending.
+
+---
+
+## 2026-04-13 — Plan 22 revision part 3: simulate_typing per send, structured prompt, /reset, fixes
+
+**Added:**
+- **Structured markdown system prompt** (`buildSystemPrompt` rewrite). Sections now: `## Runtime Context (Priority Rules)` (prepend), `## Base Prompt`, `## Persona`, `## Skills`, `## Memory`, `## Mode Instruction`, `## User Context`, `## Tool Hints`, `## Plugins` (with `### <plugin name> (<plugin.id>)` sub-headers), `## Runtime Context` (Company & Team / Project Context). Auto-strip leading `[Foo]` brackets from segment content because the markdown header replaces them. Plugin segments now resolved via `getPromptSegmentsWithMetaAsync()` so each plugin's name + id is a sub-header. Preview Context Sheet picks up the new `runtime` source group automatically.
+- **`extra_system_prepend`** in `JikuRunParams` for hard rules above base_prompt. Used by Studio to put the Scheduling Capability segment at the very top so weak-base-prompt agents don't reject reminders. Preview shows them under `## Runtime Context (Priority Rules)` with `(prepend)` suffix.
+- **`/reset` command in Telegram event-router.** DM = clear `identity.conversation_id`; group/topic = clear `connector_scope_conversations.conversation_id` for that scope. History rows preserved; next message creates a fresh conversation.
+- **Telegram typing simulation per send-action.** New `ConnectorContent.simulate_typing` flag. TelegramAdapter `sendMessage` (text-only ≤ 4000 chars) sends `⌛` placeholder, then 3-stage progressive reveal (33% → 66% → full) with `\n\n⚪` indicator and 2s ticks; final edit applies markdown cleanly. Auto-reply path passes `simulate_typing: true` by default (user is waiting); agent tools (`connector_send`, `connector_send_to_target`) accept it as opt-in param defaulting false (notifications/broadcasts stay clean).
+- **Telegram connector usage logging in chat path.** `executeConversationAdapter` now drains `data-jiku-usage` / `data-jiku-meta` / `data-jiku-run-snapshot` chunks from the runtime stream and calls `recordLLMUsage({ source: 'chat', ... })`. Previously usage was only recorded in HTTP `/chat` route — Telegram replies invisible in Usage Log.
+- **Project timezone settings** finalized: full IANA dropdown grouped by region (Asia first), label "Timezone", default `Asia/Jakarta` for new projects (migrations `0021`, `0022`).
+- **Capability-hint Scheduling Capability segment** strengthened to forbid common refusal phrases ("aku tidak bisa pasang pengingat", "set di alarm HP", "pakai Google Assistant") + concrete cron_create example with delivery wiring + explicit update/delete workflow (cron_list → cron_update / cron_delete).
+
+**Fixed:**
+- **Cron infinite loop.** Cron-fired agent re-interpreted stored prompt as a new reminder request → re-called cron_create. Root cause: stored prompt was the user's verbatim message. Fixed by: `[Cron Trigger]` preamble at fire time + cron_create tool description forbids echoing user + soft rails reject prompts < 30 chars or starting with first-person ("Ingatkan saya..."). `[Cron Trigger]` also explicitly states cron mutation tools ARE allowed in cron-fired runs (dynamic scheduling supported).
+- **Cron delivery silently failed.** Agent in task mode wrote reminder text but didn't call `connector_send`. Two root causes: (1) prompt referenced `connector_send(...)` while AI SDK exposed the tool as `builtin_connector_send` → name mismatch → model "I cannot access". Removed the `builtin_` prefix entirely in `runner.ts` (built-in tools now use bare `meta.id` as `tool_name`), saves tokens. (2) Task mode agents treat text output as the deliverable. `[Cron Trigger]` preamble now explicitly says: "Any text you write is logged internally only — user receives NOTHING; only tool calls reach them" + REQUIRED OUTPUT FORMAT: short narration sentence + tool call in the SAME response.
+- **Edit re-runs side-effectful tools (ADR-060).** Editing a chat message replayed AI SDK execute() for previously-fired tools → duplicate cron rows / sends. Fix: `ToolMeta.side_effectful` + runner-level dedup map keyed by `${tool_name}:${stableHash(args)} → cached_result`. Marked: cron_create/update/delete, connector_send, connector_send_to_target, connector_run_action, connector_create_target/update_target/delete_target/save_current_scope, identity_set.
+- **Cron context wiped by prompt edit (ADR-061).** `[Cron Trigger]` / `[Cron Delivery]` blocks were baked into `cron_tasks.prompt`; UI prompt edits deleted them. Migration `0020` adds `cron_tasks.context jsonb`. New `cron/context.ts` composes `[Cron Trigger]` + `[Cron Origin]` + `[Cron Subject]` + Instruction + `[Cron Delivery]` at fire time. `cron_create` tool now takes `origin` / `delivery` / `subject` as separate input fields. `cron_update` shallow-merges context.
+- **Heartbeat cron parser broken.** `*/30 * * * *` → hand-rolled parser computed NaN → fell through to "every minute" default. Replaced with `croner` `nextRun()` (same library as cron/scheduler.ts). Reject 6-field expressions to prevent runaway "every-30-second" misparses.
+- **Audit log UUID crash.** Connector-triggered tool invocations had `actor_id = "connector:<uuid>"` which Postgres rejected on the `uuid` column. Audit logger now nulls non-UUID actor_ids, sets `actor_type` to `'connector'` / `'system'` accordingly, and stores the original label in `metadata.actor_label`. ActorType union extended with `'connector'`.
+- **System-user UUID crash in plugin-permissions loader.** Cron/reflection invocations with `caller.user_id = 'system'` hit the `project_memberships.user_id` UUID column. Runtime guard skips lookup for non-UUID caller ids. Closes the corresponding entry in Plan 21 follow-ups.
+- **Telegram `editMessage` ignores markdown.** Was always sending plain text. Now respects `content.markdown` (escape via `telegramify-markdown`, set `parse_mode: MarkdownV2`).
+- **Cron-tasks list filtered by callerIdFilter for everyone non-superadmin** → admins saw empty list. Loosened: anyone with `cron_tasks:write` sees full project list.
+- **Cron Tasks permission group missing in Settings UI.** Added under `settings/permissions/page.tsx` so admin/manager roles can toggle `cron_tasks:read/write`.
+- **Edit-bleed regression in cron-fired runs.** ADR-063 reverts an earlier idea to suppress cron mutation tools in cron-fired runs (would have broken conditional/dynamic cron chains). Loop prevention now relies on prompt discipline + side-effect dedup instead.
+
+**DB migrations:**
+- `0019_plan22_backfill_admin_cron_perms.sql` — backfill `Admin` project_roles with `cron_tasks:read/write`.
+- `0020_plan22_cron_context.sql` — `cron_tasks.context jsonb`.
+- `0021_plan22_project_timezone.sql` — `projects.default_timezone text` (default 'UTC').
+- `0022_plan22_timezone_default_jakarta.sql` — change default to `Asia/Jakarta`.
+- `0023_plan22_binding_simulate_typing.sql` — DROP COLUMN (was tried at binding level then reverted to per-send-action param).
+
+**Files touched:**
+- Types: `packages/types/src/index.ts` — `ToolMeta.side_effectful`, `JikuRunParams.suppress_tool_ids`, `JikuRunParams.extra_system_segments`, `JikuRunParams.extra_system_prepend`, `ConnectorContent.simulate_typing`, `ContextSegment.source += 'runtime'`, `ConnectorBinding.scope_key_pattern` (kept; `simulate_typing` reverted).
+- Core: `packages/core/src/runner.ts` (dedup map, prepend support, labeled plugin segments, no `builtin_` prefix), `packages/core/src/runtime.ts` (preview wiring), `packages/core/src/resolver/prompt.ts` (markdown structured `buildSystemPrompt` with `LabeledSegment[]`, `prepend_segments`, `runtime_segments`).
+- DB: `apps/studio/db/src/schema/{cron_tasks,projects,connectors}.ts`, `apps/studio/db/src/queries/connector.ts`, four migrations above.
+- Server runtime: `apps/studio/server/src/runtime/manager.ts` (UUID guard, prepend Scheduling Capability, Company & Team + Project Context segment injection in run + previewRun), `apps/studio/server/src/runtime/team-structure.ts` (new), `apps/studio/server/src/runtime/project-context.ts` (new).
+- Cron: `apps/studio/server/src/cron/context.ts` (new — prelude composer), `apps/studio/server/src/cron/tools.ts` (cron_create/update with origin/delivery/subject + safety rails + side_effectful flag), `apps/studio/server/src/cron/scheduler.ts` (composed prelude on fire).
+- Heartbeat: `apps/studio/server/src/task/heartbeat.ts` (croner-based parser).
+- Connectors: `apps/studio/server/src/connectors/event-router.ts` (`/reset` command, scope-aware conversation resolution, side_effectful awareness, simulate_typing default true on auto-reply, usage log capture, media context hint with event_id), `apps/studio/server/src/connectors/tools.ts` (mark side_effectful, simulate_typing param on send tools, agent-side target CRUD).
+- Telegram: `plugins/jiku.telegram/src/index.ts` (scope helpers, `extractTelegramMedia` → DB metadata pipeline, `sendMessage` media/media_group/scope, 9 new actions, `editMessage` markdown support, `sendWithTypingSimulation` 3-stage reveal).
+- Audit: `apps/studio/server/src/audit/logger.ts` (non-UUID actor guard).
+- Routes: `apps/studio/server/src/routes/projects.ts` (PATCH accepts `default_timezone` with IANA validation), `apps/studio/server/src/routes/cron-tasks.ts` (admin sees all on `cron_tasks:write`), `apps/studio/server/src/routes/connectors.ts` (targets + scopes routes).
+- Web: `apps/studio/web/lib/api.ts` (Project type + targets/scopes clients), settings General (timezone Select dropdown grouped by region), settings Permissions (Cron Tasks group), connector detail page (Targets card), binding editor (Scope Filter field; simulate_typing toggle removed), context-preview-sheet (`runtime` source label).
+- Plan doc: `docs/plans/22-channel-system-v2.md` — Revision appendix with full file list + ADR refs + migration order.
+
 ## 2026-04-13 — Plan 22 revision: project default_timezone + Project Context segment + preview parity
 
 **Added:**

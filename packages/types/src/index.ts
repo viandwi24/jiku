@@ -472,6 +472,8 @@ export interface Conversation {
   status: 'active' | 'completed' | 'failed'
   goal?: string
   output?: unknown
+  /** Plan 23 — tip of the currently active branch path. */
+  active_tip_message_id?: string | null
   created_at: Date
   updated_at: Date
 }
@@ -481,7 +483,18 @@ export interface Message {
   conversation_id: string
   role: 'user' | 'assistant' | 'tool'
   parts: MessagePart[]
+  /** Plan 23 — parent pointer for message-level branching. */
+  parent_message_id?: string | null
+  /** Plan 23 — ordinal among siblings sharing `parent_message_id`. */
+  branch_index?: number
   created_at: Date
+}
+
+/** Plan 23 — message + sibling metadata attached for the branch navigator. */
+export interface MessageWithBranchMeta extends Message {
+  sibling_count: number
+  sibling_ids: string[]
+  current_sibling_index: number
 }
 
 export type MessagePart =
@@ -642,6 +655,20 @@ export interface JikuRunParams {
   extra_system_prepend?: Array<{ label: string; content: string }>
   /** Plan 15.2: Semantic similarity scores from Qdrant (memoryId → score 0-1). Injected by studio layer. */
   semantic_scores?: Map<string, number>
+  /**
+   * Plan 23 — branching: parent message id for the new user message. When absent,
+   * runner falls back to `conversation.active_tip_message_id` (linear extend).
+   * When present but different from active tip, the new message becomes a branch
+   * sibling (edit-message flow).
+   */
+  parent_message_id?: string | null
+  /**
+   * Plan 23 — regenerate mode: if true, runner skips persisting a new user message
+   * and re-runs the model from the existing path ending at `parent_message_id`
+   * (which must itself point at a user message). Assistant response is saved as
+   * a sibling of the previous assistant reply.
+   */
+  regenerate?: boolean
 }
 
 // ============================================================
@@ -1002,6 +1029,21 @@ export interface JikuStorageAdapter {
   deleteMessages(conversation_id: string, ids: string[]): Promise<void>
   /** Replace all messages in a conversation — used for compaction checkpointing. */
   replaceMessages(conversation_id: string, messages: Omit<Message, 'id' | 'created_at'>[]): Promise<Message[]>
+
+  // ── Plan 23 — message-level branching ────────────────────────────────────
+  /** Load messages along the active branch path (root → tip). */
+  getActivePathMessages?(conversation_id: string): Promise<Message[]>
+  /** Load messages from a specific tip walking parent links backwards. */
+  getMessagesByPath?(tip_message_id: string): Promise<Message[]>
+  /** Insert a message with correct branch_index and atomically bump active tip. */
+  addBranchedMessage?(input: {
+    conversation_id: string
+    parent_message_id: string | null
+    role: Message['role']
+    parts: MessagePart[]
+  }): Promise<Message>
+  /** Persist a new active tip for a conversation. */
+  setActiveTip?(conversation_id: string, tip_message_id: string | null): Promise<void>
 
   pluginGet(scope: string, key: string): Promise<unknown>
   pluginSet(scope: string, key: string, value: unknown): Promise<void>

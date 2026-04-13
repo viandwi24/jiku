@@ -1,5 +1,59 @@
 # Memory
 
+## Chat messages form a tree (Plan 23) — never assume linear
+
+`messages.parent_message_id` (self-FK, ON DELETE CASCADE) + `messages.branch_index` make every chat conversation a tree. `conversations.active_tip_message_id` points at the leaf of the currently selected branch. To render or send to model, walk root → tip via `getActivePath(convId)` (recursive CTE in `apps/studio/db/src/queries/conversation.ts`). **Don't `SELECT * FROM messages WHERE conversation_id = ?` for chat history** — that mixes siblings from other branches into model context. New writes must go through `addBranchedMessage()` so `branch_index` and `active_tip_message_id` stay consistent — never insert into `messages` directly from new code paths. Branching is implicit (ADR-070): supplying any `parent_message_id` that already has children automatically creates a sibling.
+
+## Compaction is append-only and branch-aware (ADR-073, revised)
+
+Don't call `replaceMessages` for compaction in branched conversations — it deletes ALL rows and erases alternate branches. The runner now appends a `[Context Summary]\n…` assistant message via `addBranchedMessage(parent = current_tip)` and lets `applyCompactBoundary()` (in `packages/core/src/compaction.ts`) skip everything before the checkpoint at history load time. Old messages stay in DB so other branches keep walking through them. Compaction is skipped when the user is forking (edit-message with parent != tip) or regenerating, so checkpoints aren't dumped into branches the user is leaving.
+
+## Active path is the per-branch context budget
+
+Token threshold checks, preview snapshots, and anything that asks "how much context does this conversation use" must walk the **active branch path** — not the flat `getMessages`. Counting all branches over-reports the budget and misrepresents what the model actually sees.
+
+## Built-in tool names are bare `meta.id` (no `builtin_` prefix anymore)
+
+`packages/core/src/runner.ts` exposes built-in tools to the AI SDK as `tool_name = meta.id` (was `builtin_${meta.id}`). Internal `resolved_id` keeps `__builtin__:<id>` for tool_states / audit / dedup. **Any prompt text referencing tools must use the bare name** (e.g. `cron_create`, `connector_send`, `fs_read`) — using the old `builtin_*` form will not match the model's tool list and the model will refuse with "I cannot access". Plugin tools still namespace via `<plugin_id>:<id>` so they cannot collide.
+
+## Side-effectful tools dedup on conversation replay
+
+When user edits a chat message, AI SDK replays the rewritten history and re-invokes any tool whose call appears in it. Without protection, `cron_create` / `connector_send` / `fs_write` etc. fire twice. `ToolMeta.side_effectful: true` opts a tool into runner-level dedup — at run start the runner builds `${tool_name}:${stableHash(args)} → cached_result` from full conversation history and short-circuits `execute()` for repeats. Identical retries collapse, distinct args don't. Marked side-effectful: `cron_create/update/delete`, `connector_send`, `connector_send_to_target`, `connector_run_action`, `connector_create_target/update_target/delete_target/save_current_scope`, `identity_set`. Add the flag to any new tool that mutates external state.
+
+## Cron-fired task runs need a strong `[Cron Trigger]` preamble
+
+A cron-fired agent runs in `task` mode with no live user. Two compounding failure modes:
+1. Treats the stored prompt as a fresh user request → calls `cron_create` again → infinite loop.
+2. Outputs the reminder as text and never calls `connector_send` → user gets nothing.
+The `[Cron Trigger]` preamble (composed by `cron/context.ts.composeCronRunInput`) explicitly addresses both: states the user is not in the loop (forbids clarifying questions), states "any text you write goes to /dev/null — you MUST call a delivery tool from `[Cron Delivery]`", and prescribes a required output format (one short narration sentence + tool call in the SAME response). Conditional cron-creates-cron is still allowed by ADR-063, but only when the Instruction explicitly describes such logic.
+
+## Cron prompt and cron context are stored separately
+
+`cron_tasks.prompt` is pure intent (short, editable from the UI). `cron_tasks.context jsonb` carries `{ origin, delivery, subject, notes }`. Scheduler composes `[Cron Trigger]` + `[Cron Origin]` + `[Cron Subject]` + Instruction + `[Cron Delivery]` at fire time via `cron/context.ts`. Editing the prompt via UI no longer destroys delivery wiring. `cron_create` tool input takes `origin/delivery/subject` as separate fields; `cron_update` shallow-merges context.
+
+## Use `croner` everywhere for cron parsing — no hand rolls
+
+`croner` is the project's standard cron parser (used by `cron/scheduler.ts`, `dream-scheduler.ts`, and now `task/heartbeat.ts`). Hand-rolled parsers will silently mishandle `*/N`, ranges, lists, day-of-week specials. Heartbeat had a buggy hand roll that made `*/30 * * * *` fire every minute — replaced with `new Cron(expr).nextRun(from)`. When accepting cron input, also reject anything that isn't exactly 5 fields — croner accepts 6-field "seconds-first" by default which lets a typo (`*/30 * * * * *`) become every-30-second runaway.
+
+## System prompt structure (Plan 22 revision)
+
+`buildSystemPrompt` emits markdown sections in this order:
+1. `## Runtime Context (Priority Rules)` — `prepend_segments` (highest precedence; e.g. Scheduling Capability)
+2. `## Base Prompt`
+3. `## Persona` / `## Skills` / `## Memory` / `## Mode Instruction` / `## User Context` / `## Skills (on-demand hint)` / `## Tool Hints`
+4. `## Plugins` — labeled by `<plugin name> (<plugin.id>)` from `getPromptSegmentsWithMetaAsync()`
+5. `## Runtime Context` — `runtime_segments` (Company & Team, Project Context, etc.)
+
+`buildSystemPrompt` accepts `LabeledSegment[]` (or legacy `string[]`) for plugin/prepend/runtime sections. Auto-strips a leading `[Foo]` line from segment content because the markdown header replaces it. Hard rules that must override base_prompt persona belong in `prepend_segments`, not in plugin segments — plugin segments come AFTER base_prompt and lose precedence on weak / restrictive base prompts.
+
+## Connector auto-reply uses `simulate_typing: true` by default; agent tools default false
+
+`event-router.executeConversationAdapter` (auto-reply path) hardcodes `simulate_typing: true` when calling `adapter.sendMessage` — the user is waiting, typing UX is appropriate. Agent-callable tools (`connector_send`, `connector_send_to_target`) accept `simulate_typing` as opt-in input defaulting `false` so cron / proactive sends stay clean. TelegramAdapter implements progressive reveal in 3 stages (33% / 66% / 100%) at 2-second intervals when `simulate_typing && text-only && length ≤ 4000`. Loading indicator `\n\n⚪` on its own line; final edit applies markdown.
+
+## Non-UUID actor ids must not reach Postgres uuid columns
+
+Cron / heartbeat jobs and connector events run with `caller.user_id = 'system'` or `'connector:<uuid>'`. `project_memberships.user_id` and `audit_logs.actor_id` are uuid columns and reject these strings with `invalid input syntax for type uuid`. Always guard with a UUID regex check before passing to a uuid-typed query: `runtime/manager.ts` skips plugin permission lookup; `audit/logger.ts` nulls `actor_id` and stores the original label in `metadata.actor_label` plus sets `actor_type = 'connector' / 'system'` accordingly. Apply the same guard whenever a new path can carry a non-user caller id.
+
 ## OpenAI Chat Completions cannot emit text + tool_call in one response
 
 Every response from a Chat Completions model is either text OR tool_calls — never both. No prompt will reliably change this. Claude can emit both natively. The only robust workaround for GPT is to run TWO separate `streamText` calls per logical "turn": one with `tool_choice: 'none'` (forces text) and one with `tool_choice: 'auto'` (permits tools). This is the core reason `HarnessAgentAdapter` exists. Reference threads: community.openai.com/t/1128779, /436653, /844498.

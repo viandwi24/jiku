@@ -8,6 +8,10 @@ import {
   listConversationsByAgent,
   deleteMessagesByIds,
   replaceMessages as dbReplaceMessages,
+  getActivePath as dbGetActivePath,
+  getMessagesByPath as dbGetMessagesByPath,
+  addBranchedMessage as dbAddBranchedMessage,
+  setActiveTip as dbSetActiveTip,
   pluginKvGet,
   pluginKvSet,
   pluginKvDelete,
@@ -38,6 +42,7 @@ function toJikuConversation(row: {
   title?: string | null
   status: string
   goal?: string | null
+  active_tip_message_id?: string | null
   created_at: Date | null
   updated_at?: Date | null
 }): Conversation {
@@ -48,6 +53,7 @@ function toJikuConversation(row: {
     status: (row.status === 'completed' ? 'completed' : row.status === 'failed' ? 'failed' : 'active'),
     goal: row.goal ?? undefined,
     title: row.title ?? undefined,
+    active_tip_message_id: row.active_tip_message_id ?? null,
     created_at: row.created_at ?? new Date(),
     updated_at: row.updated_at ?? new Date(),
   }
@@ -58,6 +64,8 @@ function toJikuMessage(row: {
   conversation_id: string
   role: string
   parts: unknown
+  parent_message_id?: string | null
+  branch_index?: number
   created_at: Date | null
 }): Message {
   let parts: MessagePart[]
@@ -78,6 +86,8 @@ function toJikuMessage(row: {
     conversation_id: row.conversation_id,
     role,
     parts,
+    parent_message_id: row.parent_message_id ?? null,
+    branch_index: row.branch_index ?? 0,
     created_at: row.created_at ?? new Date(),
   }
 }
@@ -194,6 +204,45 @@ export class StudioStorageAdapter implements JikuStorageAdapter {
       })),
     )
     return rows.map(toJikuMessage)
+  }
+
+  // ── Plan 23 — branching ──────────────────────────────────────────────────
+
+  async getActivePathMessages(conversationId: string): Promise<Message[]> {
+    const rows = await dbGetActivePath(conversationId)
+    return rows.map(r => toJikuMessage({
+      id: r.id,
+      conversation_id: r.conversation_id,
+      role: r.role,
+      parts: r.parts,
+      parent_message_id: r.parent_message_id,
+      branch_index: r.branch_index,
+      created_at: r.created_at,
+    }))
+  }
+
+  async getMessagesByPath(tipMessageId: string): Promise<Message[]> {
+    const rows = await dbGetMessagesByPath(tipMessageId)
+    return rows.map(r => toJikuMessage(r))
+  }
+
+  async addBranchedMessage(input: {
+    conversation_id: string
+    parent_message_id: string | null
+    role: Message['role']
+    parts: Message['parts']
+  }): Promise<Message> {
+    const row = await dbAddBranchedMessage({
+      conversation_id: input.conversation_id,
+      parent_message_id: input.parent_message_id,
+      role: input.role,
+      parts: input.parts,
+    })
+    return toJikuMessage(row)
+  }
+
+  async setActiveTip(conversationId: string, tipMessageId: string | null): Promise<void> {
+    await dbSetActiveTip(conversationId, tipMessageId)
   }
 
   async pluginGet(scope: string, key: string): Promise<unknown> {

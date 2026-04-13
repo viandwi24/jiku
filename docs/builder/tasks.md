@@ -1,9 +1,25 @@
 ## Backlog
 
+### Plan 23 follow-ups (post-ship)
+- [ ] Conversation list sidebar: "(branched)" indicator. Needs either denormalized `has_branches` boolean on `conversations` (kept in sync via insert trigger or runner-side write) or accept a per-row branching check on the project list query.
+- [ ] Toast UI for branch-switch / regenerate / edit failures (currently `console.error` only). Wait for a project-wide toast pick before adding a new dependency.
+- [ ] Keyboard arrows on `BranchNavigator` (← / → when focused) for power users.
+- [ ] E2E tests: edit flow, regenerate flow, multi-branch navigation, root-message edit (parent_message_id=null), regenerate from a non-tip assistant.
+- [ ] QA: long conversation that crosses compaction threshold under branching — verify each branch carries its own checkpoint and switching between them keeps context coherent.
+- [ ] Visual hint for messages on a non-default branch (e.g. subtle border/badge when current_sibling_index > 0).
+
+### Plan 22 follow-ups (post-revision-part-3)
+- [ ] "Smart" `simulate_typing`: if outbound text < 80 chars, skip placeholder + single send (3 round-trips for a one-liner is overkill).
+- [ ] QA cron scheduling end-to-end in Telegram with weekday-only + DST-crossing schedules.
+- [ ] Plugin-authored prompt segments support `LabeledSegment` (currently studio-only; plugins still pass `string`).
+- [ ] Fix pre-existing TS errors surfaced during Plan 22 work: express `req.params: string|string[]`, drizzle `.default(null)`, `UserContentPart[]`/`ToolContent` mismatch in runner.ts:489, memory/tools.ts `AgentMemory` missing required fields, browser-profiles `os` property. Separate cleanup pass.
+- [ ] Simulate_typing for Discord / WhatsApp adapters when those land — mirror Telegram pattern via shared helper.
+- [ ] Cron UI: show `context.delivery` / `context.origin` so admin can edit without agent round-trip.
+- [ ] Cron list in UI: filter by caller / by delivery connector / by "silent" (no delivery) — triage at scale.
+
 ### Plan 21 follow-ups (post-ship)
 - [ ] Plugin adapter registration: expose `ctx.agent.registerAdapter()` via `StudioContributes` + `context-extender.ts` when the first plugin-authored adapter lands.
 - [ ] Optional "retry phase 2 once on dropped tool" mode for HarnessAgentAdapter (residual risk: GPT sometimes drops a tool call with `tool_choice=auto` → loop exits early). Make opt-in because retry wastes a call when model genuinely decided to stop.
-- [ ] Fix `plugin-permissions` loader UUID error: `caller.user_id === 'system'` (heartbeat/cron path) hits `project_memberships.user_id` (uuid column) and throws `invalid input syntax for type uuid: "system"`. Pre-existing; spammy log, non-blocking. Early-return before the query if `user_id` isn't a UUID.
 - [ ] Harness iteration pill in UI (we emit `jiku-harness-iteration` events from iter ≥ 2; nothing consumes them yet).
 
 ### Plan 20 follow-ups (post-ship)
@@ -51,6 +67,12 @@
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
+
+- [x] Plan 23 — Branch Chat (message-level branching for chat conversations): migration `0024` (parent_message_id + branch_index + active_tip_message_id with backfill), recursive-CTE active path query, branch-aware runner (history walk by parent_message_id override OR active tip), regenerate route with `regenerate:true` flag, branch switch + sibling-tip endpoints, `BranchNavigator` + `MessageEditInput` UI inline in action bar, regenerate streams via `useLiveConversation` + 8s startup grace, append-only branch-aware compaction (ADR-073 revised — appends `[Context Summary]` checkpoint via `addBranchedMessage`, never destroys siblings), preview/threshold accounting per active branch. ADRs ADR-067…073 — completed 2026-04-13. See `docs/plans/impl-reports/23-branch-chat-implementation-report.md`.
+
+- [x] Plan 22 Revision Part 3 — cron reliability + Telegram UX + prompt structure: removed `builtin_` prefix on built-in tool names (ADR-064), `simulate_typing` per-send defaults (ADR-065), heartbeat cron parser → croner (ADR-066), markdown-structured system prompt with `LabeledSegment[]`, `extra_system_prepend` for hard rules above base prompt, `/reset` command in Telegram, cron context decoupling (ADR-061) via `cron_tasks.context jsonb`, side-effectful tool dedup on replay (ADR-060), `[Cron Trigger]` preamble to prevent loops + silent failures, Telegram connector usage log parity, audit-log non-UUID actor guard, project default timezone (`Asia/Jakarta`), Company & Team + Project Context runtime segments, agent-side target CRUD. Migrations `0019` (admin perms backfill), `0020` (cron context), `0021/0022` (project timezone), `0023` (simulate_typing column rollback) — completed 2026-04-13. See `docs/plans/22-channel-system-v2.md` (Revision appendix).
+
+- [x] Fix `plugin-permissions` loader UUID error — non-UUID caller ids (`'system'`, `'connector:*'`) no longer reach `project_memberships.user_id` — completed 2026-04-13.
 
 - [x] Plan 20 — Multi Browser Profile + Browser Adapter System: `BrowserAdapter` abstraction in `@jiku/kit`, per-project browser profiles (DB `browser_profiles` + migration 0016), plugin `ctx.browser.register()` hook, unified `browser` tool with `profile_id` routing, multi-profile tabbed UI + Add Profile modal, CamoFox plugin (REST REST adapter on port 9377 — NOT CDP), `@jiku/camofox` Docker wrapper package, custom action registry (`browser_list_actions` / `browser_run_action`) with 7 CamoFox custom actions, compose + env wiring for both dokploy and local dev — completed 2026-04-13. See `docs/plans/impl-reports/20-multi-browser-profile-implementation-report.md`.
 - [x] Plan 19 — Memory Learning Loop + Skills Loader v2: memory typing (episodic/semantic/procedural/reflective) + health decay, durable `background_jobs` queue + `BackgroundWorker` (SKIP LOCKED, retry), compaction-flush hook, post-run reflection (opt-in per agent), 3-phase dreaming engine (light/deep/REM) with explicit credential+model picker, FS-first skills with YAML frontmatter (skills.sh compatible), plugin `ctx.skills.register()` API, progressive-disclosure XML hint, per-agent access mode (`manual`/`all_on_demand`), eligibility gate, GitHub tarball + ZIP import (accepts `npx skills add` URL form), universal `recordLLMUsage()` usage tracker (all sources), usage page source filter + duration column + color-coded badges, memory browser Type/Health columns + clickable detail/edit dialog, FK names shortened in plugin_granted_permissions, `fs.read` unwrap fix, `refetchOnWindowFocus: false` globally, credential rate limit 30→120/min, deleted orphan `settings/memory` page — completed 2026-04-12. See `docs/plans/impl-reports/19-memory-skills-implementation-report.md`.

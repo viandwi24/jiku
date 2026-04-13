@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, boolean, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, jsonb, integer, index, type AnyPgColumn } from 'drizzle-orm/pg-core'
 import { agents } from './agents.ts'
 import { users } from './users.ts'
 
@@ -19,6 +19,8 @@ export const conversations = pgTable('conversations', {
   started_at:              timestamp('started_at'),
   finished_at:             timestamp('finished_at'),
   error_message:           text('error_message'),
+  // Plan 23: active branch tip — leaf message of the currently-selected branch.
+  active_tip_message_id:   uuid('active_tip_message_id').references((): AnyPgColumn => messages.id, { onDelete: 'set null' }),
   created_at:              timestamp('created_at').defaultNow(),
   updated_at:              timestamp('updated_at').defaultNow(),
   deleted_at:              timestamp('deleted_at'),
@@ -26,15 +28,22 @@ export const conversations = pgTable('conversations', {
   index('idx_conv_agent_type').on(t.agent_id, t.type, t.created_at),
   index('idx_conv_parent').on(t.parent_conversation_id),
   index('idx_conv_run_status').on(t.run_status, t.created_at),
+  index('idx_conv_active_tip').on(t.active_tip_message_id),
 ])
 
 export const messages = pgTable('messages', {
-  id:              uuid('id').primaryKey().defaultRandom(),
-  conversation_id: uuid('conversation_id').references(() => conversations.id).notNull(),
-  role:            varchar('role', { length: 20 }).notNull(),
-  parts:           jsonb('parts').notNull(),
-  created_at:      timestamp('created_at').defaultNow(),
-})
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  conversation_id:    uuid('conversation_id').references(() => conversations.id).notNull(),
+  role:               varchar('role', { length: 20 }).notNull(),
+  parts:              jsonb('parts').notNull(),
+  // Plan 23: message-level branching.
+  parent_message_id:  uuid('parent_message_id').references((): AnyPgColumn => messages.id, { onDelete: 'cascade' }),
+  branch_index:       integer('branch_index').notNull().default(0),
+  created_at:         timestamp('created_at').defaultNow(),
+}, (t) => [
+  index('idx_messages_parent').on(t.parent_message_id),
+  index('idx_messages_conv_parent').on(t.conversation_id, t.parent_message_id),
+])
 
 export type Conversation = typeof conversations.$inferSelect
 export type NewConversation = typeof conversations.$inferInsert

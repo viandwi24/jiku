@@ -1,5 +1,116 @@
 # Decisions
 
+## ADR-067 — Message-level branching via `parent_message_id` (Plan 23)
+
+**Context:** Want Claude.ai/ChatGPT-style edit & regenerate UX. Two options: (a) conv-level branching (clone conversation per branch — bloats sidebar, breaks deep links), (b) message-level branching inside one conversation.
+
+**Decision:** Option b. `messages.parent_message_id` (self-FK, `ON DELETE CASCADE`) + `messages.branch_index` (int) form a tree. Conversation id and URL stay stable.
+
+**Consequences:** Every reader of `messages` for chat must now traverse the active branch path instead of scanning the flat list. Backfill is safe: existing rows form a single linear branch (parent = previous-by-created_at, branch_index = 0).
+
+---
+
+## ADR-068 — Conversation tracks `active_tip_message_id` server-side (Plan 23)
+
+**Context:** Need to know which leaf the user is currently viewing across reloads, devices, and tabs. Client-only state would race when two tabs are open and lose state on reload.
+
+**Decision:** `conversations.active_tip_message_id uuid REFERENCES messages(id) ON DELETE SET NULL`. Updated atomically inside `addBranchedMessage` (insert + tip update in one tx) and via `setActiveTip` on branch switch / regenerate.
+
+**Consequences:** Last-writer-wins for multi-tab — acceptable. Cleared automatically if the message is deleted (rare; we don't expose hard delete yet).
+
+---
+
+## ADR-069 — Active path loaded via single recursive CTE (Plan 23)
+
+**Context:** Branch navigator needs `sibling_count` + `sibling_ids` per row alongside the linear active path. Two-query approach (path then per-row siblings) means N+1.
+
+**Decision:** Single Postgres recursive CTE — walks tip → root via parent links, then per-row sub-selects use `IS NOT DISTINCT FROM` so root messages (parent NULL) compare correctly. Index on `(conversation_id, parent_message_id)` keeps sibling sub-selects O(log n).
+
+**Consequences:** All branch-navigator data flows in one round-trip. Postgres-only — in-memory adapter falls back to flat `getMessages`.
+
+---
+
+## ADR-070 — Branching is implicit, not via a dedicated endpoint (Plan 23)
+
+**Context:** Could expose `POST /branch` to fork a conversation explicitly, or branch as a side-effect of normal sends.
+
+**Decision:** Implicit. Server always sets `parent_message_id` on inserts and computes `branch_index = max(siblings)+1`. Edit-message and regenerate flows just supply a different `parent_message_id` from the chat client — the data model handles "is this a branch" automatically.
+
+**Consequences:** Only one new write endpoint (`/regenerate`) — purely because regenerate skips the user-message save. Send + edit reuse `POST /chat`.
+
+---
+
+## ADR-071 — Branch switch uses "latest leaf" descent (Plan 23)
+
+**Context:** When the user clicks `→` on a sibling navigator, the chosen sibling may itself have descendants (sub-branches). Which tip do we land on?
+
+**Decision:** Walk down from the chosen sibling, always picking the child with the highest `branch_index`, until a leaf. Deterministic, no extra `last_visited_at` tracking, matches "newest first" intuition.
+
+**Consequences:** A user who explored an old sub-branch and then walked away will not auto-resume there — they get the newest leaf. Acceptable for v1; can revisit if users complain.
+
+---
+
+## ADR-072 — Branch / regenerate / edit blocked while a run is in progress (Plan 23)
+
+**Context:** Switching tip mid-stream would corrupt the active path the streaming run is appending to. Concurrent regenerate would double-bill the model and create racey assistant rows.
+
+**Decision:** All three operations are disabled in the UI while `streaming|submitted` and rejected with 503 (`/active-tip`) or 409 (`/regenerate`) on the server when `streamRegistry.isRunning(convId)`.
+
+**Consequences:** UX cost is small (runs are short). Clean alternative would be cancel-first-then-switch — defer until user demand exists.
+
+---
+
+## ADR-073 — Compaction is branch-aware and append-only (Plan 23, revised)
+
+**Context:** Initial Plan 23 disabled compaction whenever any branching existed because `replaceMessages(conv, [...summary, ...recent])` deletes every message in the conversation — destroying alternate branches. That made branched conversations hit context limits faster.
+
+**Decision:** Compaction now operates per active branch and is **append-only**:
+- Token threshold check (`checkCompactionThreshold`) measures the active branch path only, not the flat conversation.
+- When triggered, summarize the older portion of the active path, then insert a new assistant message `[Context Summary]\n…` via `addBranchedMessage(parent = current_tip)`. Old rows are NOT deleted — other branches still walk through them.
+- Reuses the existing `applyCompactBoundary()` filter, which already trims everything before the latest `[Context Summary]` checkpoint when loading history. No new schema, no new abstractions.
+- Skipped on explicit branch forks (edit-message flow with `parent_message_id !== current_tip`) and on regenerate, so the user moving away from a branch doesn't dump a checkpoint into it on the way out.
+- Linear extends after compaction automatically chain off the new checkpoint (see ADR-067/068 — `desiredParent` falls through to the latest tip when the client sent "extend off current tip").
+
+**Consequences:** Branched conversations now compact correctly. Storage cost slightly higher than the old `replaceMessages` because old rows stay in the DB — acceptable price for never-destroy-a-branch semantics. In-memory adapter (no `addBranchedMessage`) still uses `replaceMessages` as a fallback.
+
+---
+
+## ADR-073-old (superseded) — Compaction disabled on branched conversations
+
+Original: skip compaction when any sibling group exists. Replaced by the append-only design above once it became clear `applyCompactBoundary` already supports the marker pattern and only `replaceMessages` was destructive.
+
+---
+
+## ADR-064 — Built-in tools use bare `meta.id` as `tool_name` (no `builtin_` prefix)
+
+**Context:** Previously the runner prefixed every built-in tool's exposed `tool_name` with `builtin_` (e.g. `connector_send` → `builtin_connector_send`). System prompts authored by Studio (cron preamble, capability hints, delivery instructions) referenced bare names like `connector_send(...)`, but the AI SDK's tool list saw `builtin_connector_send`. Models could not match the two and frequently refused with "I cannot access that tool". Workaround was to repeat the prefix in every prompt — wasteful tokens + maintenance churn.
+
+**Decision:** Built-in tools now use `tool_name = meta.id`. The internal `resolved_id` keeps the `__builtin__:<id>` namespace for tool_states + audit. Plugin tools still use the existing `<plugin_id>:<id>` sanitized name so collisions with built-ins remain impossible (plugin tool names always carry the plugin id).
+
+**Consequences:** Prompts can reference tools by their natural name (`cron_create`, `connector_send`, `fs_read`). Token-cost drops in tool list + system prompt. No collision risk because plugin namespacing is preserved on the plugin side. Risk: a plugin would have to choose a `meta.id` matching a built-in to collide — but plugin tools sit under the plugin namespace anyway, so they'd surface as `jiku_xyz_cron_create` not `cron_create`.
+
+---
+
+## ADR-065 — Auto-reply path defaults `simulate_typing: true`; agent tools default false
+
+**Context:** "Typing simulation" (placeholder + progressive edit) is great UX when a user is waiting for a reply, terrible when a cron-triggered agent broadcasts a notification. Earlier iterations placed the toggle on the binding (too coarse) or as a per-call agent param (forces every agent to remember to set it).
+
+**Decision:** Two-tier default. The connector auto-reply path (`executeConversationAdapter` in event-router) hardcodes `simulate_typing: true` because by definition the user is waiting. Agent-callable tools (`connector_send`, `connector_send_to_target`) accept `simulate_typing` as an optional input defaulting `false` — agents must opt in for proactive sends where they want the effect.
+
+**Consequences:** Zero-config UX win for chat replies (Telegram users see typing). Notifications/broadcasts stay clean by default. Agent retains opt-in. Implementation: `ConnectorContent.simulate_typing` flag flows through `sendMessage`; TelegramAdapter does the placeholder/edit dance only when set + text-only + ≤4000 chars.
+
+---
+
+## ADR-066 — Heartbeat cron parser uses `croner`, not hand-rolled
+
+**Context:** `task/heartbeat.ts` had a minimal hand-rolled cron parser that only matched literal integer minute/hour fields. Expressions with `*/N` step syntax, ranges, lists (`MON-FRI`, `0,30`) silently failed by hitting the "every minute" fallback. Symptoms in the wild: `*/30 * * * *` configured by a user fired every minute with stats showing "in <1 min" forever.
+
+**Decision:** Replace with `croner` (already used by `cron/scheduler.ts` and `dream-scheduler.ts`). `getNextCronDate(expr) = new Cron(expr).nextRun(from)`. Reject anything that is not exactly 5 fields — croner accepts 6-field "seconds-first" by default which would let a typo (`*/30 * * * * *`) become every-30-second runaway.
+
+**Consequences:** All standard cron syntax works. Minute resolution enforced at the heartbeat layer. Single source of cron parsing semantics across the codebase.
+
+---
+
 ## ADR-060 — Side-effectful tool dedup on replay
 
 **Context:** AI SDK replays tool executions when the user edits a previous chat message. Side-effectful tools (cron_create, connector_send, fs_write) get called again → duplicate DB rows, double-sent messages, lost delivery context.

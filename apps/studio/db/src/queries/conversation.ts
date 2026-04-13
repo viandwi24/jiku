@@ -215,6 +215,236 @@ export async function softDeleteConversation(id: string) {
   await db.update(conversations).set({ deleted_at: new Date() }).where(eq(conversations.id, id))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan 23 — Message-level branching
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MessageWithBranchMeta {
+  id: string
+  conversation_id: string
+  role: string
+  parts: unknown
+  parent_message_id: string | null
+  branch_index: number
+  created_at: Date | null
+  sibling_count: number
+  sibling_ids: string[]
+  current_sibling_index: number
+}
+
+/**
+ * Load the active branch path for a conversation using the stored
+ * `active_tip_message_id` as the leaf. Returns messages ordered from root → tip
+ * with sibling metadata attached so the UI can render branch navigators.
+ */
+export async function getActivePath(conversationId: string): Promise<MessageWithBranchMeta[]> {
+  const conv = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { id: true, active_tip_message_id: true },
+  })
+  if (!conv) return []
+  const tip = conv.active_tip_message_id
+  if (!tip) return []
+
+  const rows = await db.execute<{
+    id: string
+    conversation_id: string
+    role: string
+    parts: unknown
+    parent_message_id: string | null
+    branch_index: number
+    created_at: Date | null
+    depth: number
+    sibling_count: number
+    sibling_ids: string[]
+  }>(sql`
+    WITH RECURSIVE active_path AS (
+      SELECT m.*, 0 AS depth
+      FROM messages m
+      WHERE m.id = ${tip}
+      UNION ALL
+      SELECT m.*, ap.depth + 1
+      FROM messages m
+      INNER JOIN active_path ap ON m.id = ap.parent_message_id
+    )
+    SELECT
+      ap.id,
+      ap.conversation_id,
+      ap.role,
+      ap.parts,
+      ap.parent_message_id,
+      ap.branch_index,
+      ap.created_at,
+      ap.depth,
+      COALESCE((
+        SELECT COUNT(*)::int FROM messages s
+        WHERE s.conversation_id = ap.conversation_id
+          AND s.parent_message_id IS NOT DISTINCT FROM ap.parent_message_id
+      ), 1) AS sibling_count,
+      COALESCE((
+        SELECT array_agg(s.id ORDER BY s.branch_index ASC, s.created_at ASC)
+        FROM messages s
+        WHERE s.conversation_id = ap.conversation_id
+          AND s.parent_message_id IS NOT DISTINCT FROM ap.parent_message_id
+      ), ARRAY[ap.id]) AS sibling_ids
+    FROM active_path ap
+    ORDER BY ap.depth DESC
+  `)
+
+  const list = (rows as unknown as { rows?: typeof rows }).rows ?? (rows as unknown as typeof rows)
+  return (list as unknown as Array<{
+    id: string
+    conversation_id: string
+    role: string
+    parts: unknown
+    parent_message_id: string | null
+    branch_index: number
+    created_at: Date | null
+    sibling_count: number
+    sibling_ids: string[]
+  }>).map(r => ({
+    id: r.id,
+    conversation_id: r.conversation_id,
+    role: r.role,
+    parts: r.parts,
+    parent_message_id: r.parent_message_id,
+    branch_index: r.branch_index,
+    created_at: r.created_at,
+    sibling_count: Number(r.sibling_count),
+    sibling_ids: r.sibling_ids ?? [r.id],
+    current_sibling_index: Math.max(0, (r.sibling_ids ?? [r.id]).indexOf(r.id)),
+  }))
+}
+
+/**
+ * Walk parent pointers from a tip backwards and return the linear branch
+ * messages root → tip (what the runner needs as model history).
+ */
+export async function getMessagesByPath(tipMessageId: string) {
+  const rows = await db.execute<{
+    id: string
+    conversation_id: string
+    role: string
+    parts: unknown
+    parent_message_id: string | null
+    branch_index: number
+    created_at: Date | null
+    depth: number
+  }>(sql`
+    WITH RECURSIVE path AS (
+      SELECT m.*, 0 AS depth
+      FROM messages m
+      WHERE m.id = ${tipMessageId}
+      UNION ALL
+      SELECT m.*, p.depth + 1
+      FROM messages m
+      INNER JOIN path p ON m.id = p.parent_message_id
+    )
+    SELECT * FROM path ORDER BY depth DESC
+  `)
+  const list = (rows as unknown as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[])
+  return list as Array<typeof messages.$inferSelect>
+}
+
+/**
+ * Latest leaf inside the subtree rooted at `rootMessageId`, picking
+ * the highest `branch_index` at every descent step (ADR-064).
+ */
+export async function getLatestLeafInSubtree(rootMessageId: string): Promise<string> {
+  const rows = await db.execute<{ id: string }>(sql`
+    WITH RECURSIVE walk AS (
+      SELECT id, branch_index, created_at, 0 AS depth
+      FROM messages WHERE id = ${rootMessageId}
+      UNION ALL
+      SELECT child.id, child.branch_index, child.created_at, w.depth + 1
+      FROM messages child
+      INNER JOIN walk w ON child.parent_message_id = w.id
+      WHERE child.branch_index = (
+        SELECT MAX(branch_index) FROM messages
+        WHERE parent_message_id = w.id
+      )
+    )
+    SELECT id FROM walk
+    ORDER BY depth DESC
+    LIMIT 1
+  `)
+  const list = (rows as unknown as { rows?: { id: string }[] }).rows ?? (rows as unknown as { id: string }[])
+  return list[0]?.id ?? rootMessageId
+}
+
+/**
+ * Persist a new tip selection on a conversation.
+ */
+export async function setActiveTip(conversationId: string, tipMessageId: string | null) {
+  await db.update(conversations)
+    .set({ active_tip_message_id: tipMessageId, updated_at: new Date() })
+    .where(eq(conversations.id, conversationId))
+}
+
+/**
+ * Insert a message with correct `branch_index` and atomically update
+ * `conversations.active_tip_message_id` to the new row.
+ *
+ * Branching is implicit (ADR-063): if the parent already has children, the
+ * new row becomes a sibling with `branch_index = max(existing) + 1`.
+ */
+export async function addBranchedMessage(input: {
+  conversation_id: string
+  parent_message_id: string | null
+  role: string
+  parts: unknown
+}) {
+  return await db.transaction(async (tx) => {
+    // Compute next branch_index among siblings with the same parent.
+    const siblingRows = await tx.execute<{ max: number | null }>(sql`
+      SELECT MAX(branch_index) AS max FROM messages
+      WHERE conversation_id = ${input.conversation_id}
+        AND parent_message_id IS NOT DISTINCT FROM ${input.parent_message_id}
+    `)
+    const siblingList = (siblingRows as unknown as { rows?: { max: number | null }[] }).rows
+      ?? (siblingRows as unknown as { max: number | null }[])
+    const prevMax = siblingList[0]?.max
+    const nextIndex = prevMax === null || prevMax === undefined ? 0 : Number(prevMax) + 1
+
+    const [row] = await tx.insert(messages).values({
+      conversation_id: input.conversation_id,
+      parent_message_id: input.parent_message_id ?? undefined,
+      role: input.role,
+      parts: input.parts as NewMessage['parts'],
+      branch_index: nextIndex,
+    }).returning()
+
+    await tx.update(conversations)
+      .set({ active_tip_message_id: row!.id, updated_at: new Date() })
+      .where(eq(conversations.id, input.conversation_id))
+
+    return row!
+  })
+}
+
+export async function getMessageById(id: string) {
+  return db.query.messages.findFirst({ where: eq(messages.id, id) })
+}
+
+/**
+ * True when the conversation has more than one branch at any point — used to
+ * gate features that don't yet understand branching (e.g. compaction).
+ */
+export async function conversationHasBranching(conversationId: string): Promise<boolean> {
+  const rows = await db.execute<{ has: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM messages
+      WHERE conversation_id = ${conversationId}
+      GROUP BY parent_message_id
+      HAVING COUNT(*) > 1
+    ) AS has
+  `)
+  const list = (rows as unknown as { rows?: { has: boolean }[] }).rows
+    ?? (rows as unknown as { has: boolean }[])
+  return Boolean(list[0]?.has)
+}
+
 export async function getConversationsByProject(projectId: string, userId: string) {
   const rows = await db.query.conversations.findMany({
     where: (t, { and, eq: eqFn, isNull }) => and(eqFn(t.user_id, userId), isNull(t.deleted_at)),

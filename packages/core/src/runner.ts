@@ -186,10 +186,15 @@ export class AgentRunner {
   ): Promise<boolean> {
     if (threshold === 0) return false
 
-    const messages = await this.storage.getMessages(conversation_id)
+    // Plan 23 — measure tokens of the ACTIVE BRANCH PATH only. Other branches'
+    // messages are irrelevant to the model's current context window.
+    const messages = this.storage.getActivePathMessages
+      ? await this.storage.getActivePathMessages(conversation_id)
+      : await this.storage.getMessages(conversation_id)
     if (messages.length === 0) return false
 
-    const historyTokens = estimateTokens(JSON.stringify(messages))
+    const effective = applyCompactBoundary(messages)
+    const historyTokens = estimateTokens(JSON.stringify(effective))
     const contextWindow = getModelContextWindow(model_id)
     const usagePercent = (historyTokens / contextWindow) * 100
 
@@ -274,23 +279,56 @@ export class AgentRunner {
     const run_id = generateRunId()
     const conversation_id = conversation.id
 
-    // 4. Auto-compact if threshold exceeded
-    const shouldCompact = await this.checkCompactionThreshold(conversation_id, compaction_threshold, model_id)
+    // 4. Auto-compact if threshold exceeded. Plan 23 — compaction is now
+    // BRANCH-AWARE and APPEND-ONLY:
+    //   - Operate on the active branch path only (per-branch token budget).
+    //   - Insert the [Context Summary] checkpoint as a NEW assistant message
+    //     branched off the current tip via addBranchedMessage. Old messages
+    //     stay in the tree so other branches remain navigable. The runner's
+    //     `applyCompactBoundary()` helper trims everything before the latest
+    //     checkpoint when loading history.
+    //   - Skip compaction when the user is forking (params.parent_message_id
+    //     points to something other than the current tip) or regenerating —
+    //     those flows shouldn't pollute the old branch with a checkpoint
+    //     right when the user is moving away from it.
+    const preCompactionTip = conversation.active_tip_message_id ?? null
+    const isExplicitBranchFork = params.parent_message_id !== undefined
+      && params.parent_message_id !== preCompactionTip
+    const isRegenerate = params.regenerate === true
+    const shouldCompact = !isExplicitBranchFork
+      && !isRegenerate
+      && await this.checkCompactionThreshold(conversation_id, compaction_threshold, model_id)
     let compactSummary: string | null = null
     let compactRemovedCount = 0
     let compactTokenSaved = 0
 
     if (shouldCompact) {
-      const allMessages = await this.storage.getMessages(conversation_id)
+      const branchMessages = this.storage.getActivePathMessages
+        ? await this.storage.getActivePathMessages(conversation_id)
+        : await this.storage.getMessages(conversation_id)
       const result = await compactMessages({
-        messages: allMessages,
+        messages: branchMessages,
         conversation_id,
         keepRecent: 10,
         model,
       })
 
       if (result.removed_count > 0) {
-        await this.storage.replaceMessages(conversation_id, result.compacted)
+        // Append-only: branched conversations safe; storage keeps old rows.
+        if (this.storage.addBranchedMessage && preCompactionTip) {
+          await this.storage.addBranchedMessage({
+            conversation_id,
+            parent_message_id: preCompactionTip,
+            role: 'assistant',
+            parts: [{ type: 'text', text: `[Context Summary]\n${result.summary}` }],
+          })
+          // Reload conversation so subsequent code sees the new active tip
+          // (now the checkpoint message we just inserted).
+          conversation = await this.storage.getConversation(conversation_id) ?? conversation
+        } else {
+          // Legacy / in-memory fallback: physically replace the rows.
+          await this.storage.replaceMessages(conversation_id, result.compacted)
+        }
         compactSummary = result.summary
         compactRemovedCount = result.removed_count
         compactTokenSaved = result.token_saved
@@ -400,7 +438,34 @@ export class AgentRunner {
       skill_hint: this.skillHint ?? undefined,
     })
 
-    const history = await this.storage.getMessages(conversation_id)
+    // Plan 23 — chat conversations load the active branch path (root → tip)
+    // instead of the flat message list, so siblings from other branches don't
+    // contaminate model context.
+    //
+    // The "history reference" is whichever parent the about-to-be-saved user
+    // message will hang off:
+    //   - linear extend (no override OR override === pre-compaction tip)
+    //     → walk from the LATEST conversation tip (which now includes any
+    //       checkpoint compaction inserted above).
+    //   - explicit branch fork (override is a different uuid)
+    //     → walk from that override so the model only sees ancestors of the
+    //       point being branched from. Otherwise the about-to-be-superseded
+    //       turn would still be in the loaded path and the model would treat
+    //       the new input as a follow-up rather than a replacement.
+    //   - explicit "branch at root" (override is null) → empty history.
+    const _wasLinearExtend = params.parent_message_id === undefined
+      || params.parent_message_id === preCompactionTip
+    const historyRef: string | null = _wasLinearExtend
+      ? (conversation.active_tip_message_id ?? null)
+      : (params.parent_message_id ?? null)
+    let history: Awaited<ReturnType<typeof this.storage.getMessages>>
+    if (historyRef === null) {
+      history = []
+    } else if (this.storage.getMessagesByPath) {
+      history = await this.storage.getMessagesByPath(historyRef)
+    } else {
+      history = await this.storage.getMessages(conversation_id)
+    }
     const effectiveHistory = applyCompactBoundary(history)
 
     // Plan 22 revision — build a lookup of previously-executed side-effectful tool calls
@@ -470,6 +535,13 @@ export class AgentRunner {
         }
       }
     }
+    // Plan 23 — for regenerate, the user message we're re-running from is
+    // ALREADY the last item in `history` (we walked the path ending at that
+    // user msg). Pushing `input` again would duplicate it in model context.
+    if (params.regenerate) {
+      // intentionally skip — model sees history as-is and produces a fresh
+      // assistant response; persistence below saves it as a sibling.
+    } else
     // Build user message content — text + optional image/file attachments
     if (attachments && attachments.length > 0) {
       type UserContentPart =
@@ -504,11 +576,41 @@ export class AgentRunner {
     }
     userParts.push({ type: 'text', text: input })
 
-    await this.storage.addMessage(conversation_id, {
-      conversation_id,
-      role: 'user',
-      parts: userParts,
-    })
+    // Plan 23 — persist user message branched off the requested parent (or
+    // current active tip if not specified). When `regenerate: true`, skip the
+    // user-save entirely: regenerate replays from an existing user message
+    // that's already on the active path and only adds a new assistant sibling.
+    // Plan 23 — when the client asked for a "linear extend" (no parent
+    // override OR the override matches the pre-compaction tip), we must use
+    // the LATEST tip so the new user message chains off any checkpoint that
+    // compaction may have just inserted. Otherwise the new message would
+    // become a sibling of the checkpoint (orphaning the compaction).
+    const desiredParent = _wasLinearExtend
+      ? (conversation.active_tip_message_id ?? null)
+      : (params.parent_message_id ?? null)
+
+    let lastUserMessageId: string | null = null
+    if (params.regenerate) {
+      // For regenerate, the supplied parent_message_id MUST be a user message.
+      // Active tip on the conversation is set to it before the runner starts so
+      // history loading above already returns the path ending at that user msg.
+      lastUserMessageId = desiredParent
+    } else if (this.storage.addBranchedMessage) {
+      const saved = await this.storage.addBranchedMessage({
+        conversation_id,
+        parent_message_id: desiredParent,
+        role: 'user',
+        parts: userParts,
+      })
+      lastUserMessageId = saved.id
+    } else {
+      const saved = await this.storage.addMessage(conversation_id, {
+        conversation_id,
+        role: 'user',
+        parts: userParts,
+      })
+      lastUserMessageId = saved.id
+    }
 
     // 7. Build runtime context (shared across the run)
     const runtimeCtx: RuntimeContext = {
@@ -661,11 +763,22 @@ export class AgentRunner {
           }
 
           if (allParts.length > 0) {
-            await storage.addMessage(conversation_id, {
-              conversation_id,
-              role: 'assistant',
-              parts: allParts,
-            })
+            // Plan 23 — assistant message hangs off the user message we just saved
+            // (or off the supplied `parent_message_id` for regenerate flows).
+            if (storage.addBranchedMessage) {
+              await storage.addBranchedMessage({
+                conversation_id,
+                parent_message_id: lastUserMessageId,
+                role: 'assistant',
+                parts: allParts,
+              })
+            } else {
+              await storage.addMessage(conversation_id, {
+                conversation_id,
+                role: 'assistant',
+                parts: allParts,
+              })
+            }
           }
 
           if (mode === 'task') {
@@ -921,13 +1034,18 @@ export class AgentRunner {
     let historyTokens = 0
     let compactionCount = 0
     if (params.conversation_id) {
-      const msgs = await this.storage.getMessages(params.conversation_id)
-      // Count all [Context Summary] checkpoint messages in DB
-      compactionCount = msgs.filter(m =>
+      // Plan 23 — preview reflects the ACTIVE BRANCH the user is currently
+      // viewing. Counting tokens across all branches would over-report and
+      // misrepresent the per-branch context budget shown in the UI.
+      const branchMsgs = this.storage.getActivePathMessages
+        ? await this.storage.getActivePathMessages(params.conversation_id)
+        : await this.storage.getMessages(params.conversation_id)
+      // Count all [Context Summary] checkpoint messages in the active path
+      compactionCount = branchMsgs.filter(m =>
         m.role === 'assistant' &&
         m.parts.some(p => p.type === 'text' && (p as { type: 'text'; text: string }).text.startsWith('[Context Summary]'))
       ).length
-      const effective = applyCompactBoundary(msgs)
+      const effective = applyCompactBoundary(branchMsgs)
       historyTokens = estimateTokens(JSON.stringify(effective))
     }
 

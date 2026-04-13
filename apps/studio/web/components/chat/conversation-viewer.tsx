@@ -16,7 +16,9 @@ import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai
 import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from '@jiku/ui/components/ai-elements/attachments.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
-import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip, Pencil } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip, Pencil, RefreshCw } from 'lucide-react'
+import { BranchNavigator } from './branch-navigator'
+import { MessageEditInput } from './message-edit-input'
 import { ImageGallery, ImageGalleryTrigger } from '@/components/ui/image-gallery'
 import type { GalleryImage } from '@/components/ui/image-gallery'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
@@ -276,10 +278,26 @@ function ConversationTitleEdit({ convId, title, agentName }: { convId: string; t
   )
 }
 
+interface BranchMeta {
+  parent_message_id: string | null
+  branch_index: number
+  sibling_count: number
+  sibling_ids: string[]
+  current_sibling_index: number
+}
+
 export function ConversationViewer({ convId, mode, conversation, initialMessages, projectId }: ConversationViewerProps) {
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [memorySheetOpen, setMemorySheetOpen] = useState(false)
   const [showUsageTip, setShowUsageTip] = useState(false)
+  // Plan 23 — branch state
+  const [activeTip, setActiveTip] = useState<string | null>(null)
+  const [branchMeta, setBranchMeta] = useState<Map<string, BranchMeta>>(new Map())
+  const [editingId, setEditingId] = useState<string | null>(null)
+  // Ref mirror so the transport callback (which captures the initial closure)
+  // always reads the latest active tip without rebuilding the transport.
+  const activeTipRef = useRef<string | null>(null)
+  useEffect(() => { activeTipRef.current = activeTip }, [activeTip])
   const qc = useQueryClient()
 
   const agentId = conversation?.agent.id ?? ''
@@ -314,6 +332,9 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
           body: {
             id,
             messages: lastUser ? [lastUser] : [],
+            // Plan 23 — tell the server which branch tip to hang the new
+            // message off. Null falls back to server-side active_tip.
+            parent_message_id: activeTipRef.current,
           },
         }
       },
@@ -330,21 +351,193 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
 
   const isStreaming = status === 'streaming' || status === 'submitted'
 
-  // ── readonly mode: poll live-parts for realtime streaming view ────────────
-  const { liveMessage, isStreaming: liveStreaming, start: startLive, stop: stopLive } = useLiveConversation({
-    conversationId: convId,
-    autoDetect: mode === 'readonly',
-    onDone: async () => {
+  // Plan 23 — hydrate branch metadata from a /messages response.
+  const hydrateBranchMeta = useCallback((payload: {
+    active_tip_message_id?: string | null
+    messages: Array<{
+      id: string
+      parent_message_id?: string | null
+      branch_index?: number
+      sibling_count?: number
+      sibling_ids?: string[]
+      current_sibling_index?: number
+    }>
+  }) => {
+    setActiveTip(payload.active_tip_message_id ?? null)
+    const map = new Map<string, BranchMeta>()
+    for (const m of payload.messages) {
+      if (typeof m.sibling_count !== 'number') continue
+      map.set(m.id, {
+        parent_message_id: m.parent_message_id ?? null,
+        branch_index: m.branch_index ?? 0,
+        sibling_count: m.sibling_count,
+        sibling_ids: m.sibling_ids ?? [m.id],
+        current_sibling_index: m.current_sibling_index ?? 0,
+      })
+    }
+    setBranchMeta(map)
+  }, [])
+
+  // Fetch fresh messages + hydrate both UI messages & branch meta.
+  const refreshMessages = useCallback(async () => {
+    const fresh = await api.conversations.messages(convId)
+    hydrateBranchMeta(fresh)
+    setMessages(fresh.messages.map(m => ({
+      id: m.id,
+      role: m.role as 'user' | 'assistant',
+      parts: m.parts as UIMessage['parts'],
+      metadata: {},
+    })))
+  }, [convId, hydrateBranchMeta, setMessages])
+
+  // Hydrate ONLY branch meta + active tip (don't touch the UI messages array).
+  // Used on mount where touching messages would race with useChat's optimistic
+  // send from the pending_message handler — that race makes the user's just-
+  // typed message disappear behind a thinking indicator until the response
+  // finishes.
+  const hydrateBranchMetaOnly = useCallback(async () => {
+    try {
       const fresh = await api.conversations.messages(convId)
-      setMessages(fresh.messages.map(m => ({
+      hydrateBranchMeta(fresh)
+    } catch { /* ignore */ }
+  }, [convId, hydrateBranchMeta])
+
+  useEffect(() => {
+    hydrateBranchMetaOnly()
+  }, [convId, hydrateBranchMetaOnly])
+
+  // Plan 23 — switch to the sibling branch whose root is `siblingId`.
+  const switchBranch = useCallback(async (siblingId: string) => {
+    if (isStreaming) return
+    try {
+      const { tip_message_id } = await api.conversations.resolveSiblingTip(convId, siblingId)
+      const resp = await api.conversations.setActiveTip(convId, tip_message_id)
+      hydrateBranchMeta({
+        active_tip_message_id: resp.active_tip_message_id,
+        messages: resp.messages as Parameters<typeof hydrateBranchMeta>[0]['messages'],
+      })
+      const msgs = resp.messages as Array<{
+        id: string; role: string; parts: unknown; created_at: string | null
+      }>
+      setMessages(msgs.map(m => ({
         id: m.id,
         role: m.role as 'user' | 'assistant',
         parts: m.parts as UIMessage['parts'],
         metadata: {},
       })))
+    } catch (err) {
+      console.error('[chat] switchBranch failed:', err)
+    }
+  }, [convId, isStreaming, hydrateBranchMeta, setMessages])
+
+  // Plan 23 — submit an edit: create a new user message branched off the
+  // parent of the edited one, then let the model run.
+  const submitEdit = useCallback(async (messageId: string, newText: string) => {
+    if (isStreaming) return
+    let meta = branchMeta.get(messageId)
+    // If the user just sent a turn before clicking edit, branchMeta may not
+    // yet contain the edited message. Refetch and look it up before sending —
+    // if we ship without a parent the server's null-vs-undefined fallback
+    // would silently degrade the edit into a linear append.
+    if (!meta) {
+      try {
+        const fresh = await api.conversations.messages(convId)
+        const found = fresh.messages.find(m => m.id === messageId)
+        if (found && typeof found.sibling_count === 'number') {
+          meta = {
+            parent_message_id: found.parent_message_id ?? null,
+            branch_index: found.branch_index ?? 0,
+            sibling_count: found.sibling_count,
+            sibling_ids: found.sibling_ids ?? [found.id],
+            current_sibling_index: found.current_sibling_index ?? 0,
+          }
+          // Hydrate state for any subsequent UI ops in this turn.
+          hydrateBranchMeta(fresh)
+        }
+      } catch {
+        // fall through — we'll still attempt the edit, just without a parent
+      }
+    }
+    if (!meta) {
+      console.error('[chat] cannot edit: branch metadata missing for', messageId)
+      return
+    }
+    const parent = meta.parent_message_id ?? null
+    setActiveTip(parent)
+    activeTipRef.current = parent
+    setEditingId(null)
+    // Optimistically drop the edited message and everything after it so the UI
+    // looks branched immediately. Without this the new message + streaming
+    // response visually append below the old turn until the post-stream
+    // refresh swaps in the canonical active path.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === messageId)
+      return idx >= 0 ? prev.slice(0, idx) : prev
+    })
+    sendMessage({ text: newText })
+  }, [branchMeta, convId, hydrateBranchMeta, isStreaming, sendMessage, setMessages])
+
+  // ── live-parts polling (used by readonly observers AND by edit-mode
+  // regenerate, which streams via the connection-less /live-parts buffer
+  // because it doesn't go through useChat). Declared here so `regenerate`
+  // below can call `startLive` / `stopLive`.
+  const { liveMessage, isStreaming: liveStreaming, start: startLive, stop: stopLive } = useLiveConversation({
+    conversationId: convId,
+    autoDetect: mode === 'readonly',
+    onDone: async () => {
+      await refreshMessages()
       qc.invalidateQueries({ queryKey: ['conversations'] })
     },
   })
+
+  // Plan 23 — regenerate an assistant message. Hits the dedicated endpoint
+  // which sets the active tip to the preceding user message, runs the model,
+  // and streams back as a new assistant sibling. We start live-parts polling
+  // immediately so the UI streams the new response in real time instead of
+  // silently working in the background.
+  const regenerate = useCallback(async (assistantMessageId: string) => {
+    if (isStreaming || liveStreaming) return
+    const meta = branchMeta.get(assistantMessageId)
+    const userMsgId = meta?.parent_message_id
+    if (!userMsgId) return
+    // Optimistically drop the old assistant message so the user sees the
+    // thinking indicator + streaming reply land in the same slot.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === assistantMessageId)
+      return idx >= 0 ? prev.slice(0, idx) : prev
+    })
+    // Start live-parts polling BEFORE firing the request so the very first
+    // chunks are caught.
+    startLive()
+    try {
+      const res = await api.conversations.regenerate(convId, userMsgId)
+      if (!res.ok) {
+        stopLive()
+        const text = await res.text().catch(() => '')
+        throw new Error(`regenerate failed: ${res.status} ${text}`)
+      }
+      // Drain the response body so the SSE stream actually flows on the
+      // server (fetch leaves it unread otherwise → backpressure stalls
+      // writes). We render from useLiveConversation, not from this body.
+      ;(async () => {
+        try {
+          const reader = res.body?.getReader()
+          if (reader) {
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const { done } = await reader.read()
+              if (done) break
+            }
+          }
+        } catch { /* ignore */ }
+        // useLiveConversation's onDone (wired below) will refresh the path
+        // when polling sees `running: false`.
+      })()
+    } catch (err) {
+      stopLive()
+      console.error('[chat] regenerate failed:', err)
+    }
+  }, [branchMeta, convId, isStreaming, liveStreaming, setMessages, startLive, stopLive])
 
   // Detect jiku-compact data parts in assistant messages
   useEffect(() => {
@@ -366,13 +559,7 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   const { attach } = useConversationObserver({
     conversationId: convId,
     onDone: async () => {
-      const fresh = await api.conversations.messages(convId)
-      setMessages(fresh.messages.map(m => ({
-        id: m.id,
-        role: m.role as 'user' | 'assistant',
-        parts: m.parts as UIMessage['parts'],
-        metadata: {},
-      })))
+      await refreshMessages()
       qc.invalidateQueries({ queryKey: ['conversations'] })
     },
   })
@@ -425,13 +612,24 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, mode])
 
-  // Refresh sidebar + usage + conversation after each turn (edit mode only)
+  // Refresh sidebar + usage + conversation after each turn (edit mode only).
+  // Plan 23 — also refresh branch metadata, otherwise the next edit/regenerate
+  // can't find the just-saved messages in `branchMeta` and silently degrades
+  // into a linear send (parent falls back to active_tip on the server).
+  // IMPORTANT: only fire when isStreaming TRANSITIONS from true → false. Naive
+  // `!isStreaming` would also fire on initial mount and the async fetch would
+  // race with `sendMessage` from the pending_message handler — wiping the
+  // user's just-typed message until the stream completes.
+  const wasStreamingRef = useRef(false)
   useEffect(() => {
-    if (mode === 'edit' && !isStreaming) {
-      qc.invalidateQueries({ queryKey: ['conversations'] })
-      qc.invalidateQueries({ queryKey: ['conversation', convId] })
-      if (agentId) qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })
-    }
+    if (mode !== 'edit') { wasStreamingRef.current = isStreaming; return }
+    const justFinished = wasStreamingRef.current && !isStreaming
+    wasStreamingRef.current = isStreaming
+    if (!justFinished) return
+    qc.invalidateQueries({ queryKey: ['conversations'] })
+    qc.invalidateQueries({ queryKey: ['conversation', convId] })
+    if (agentId) qc.invalidateQueries({ queryKey: ['usage', agentId, 'latest'] })
+    refreshMessages().catch(() => { /* ignore */ })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming])
 
@@ -492,12 +690,16 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
     })
   }
 
-  // Build display messages — append live message for readonly observers
-  const displayMessages = (mode === 'readonly' && liveMessage)
+  // Build display messages — append live message for readonly observers AND
+  // for edit-mode regenerate (which streams via /live-parts because it
+  // doesn't go through useChat).
+  const displayMessages = liveMessage
     ? [...messages, liveMessage]
     : messages
 
-  const displayStreaming = mode === 'edit' ? isStreaming : liveStreaming
+  // Edit mode is "streaming" when either useChat is active OR the live-parts
+  // poller is catching a regenerate stream.
+  const displayStreaming = mode === 'edit' ? (isStreaming || liveStreaming) : liveStreaming
 
   return (
     <div className="flex flex-col h-full">
@@ -567,24 +769,77 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
                 .join('\n\n')
               const isStreamingThisMsg =
                 displayStreaming && idx === lastIdx && msg.role === 'assistant'
+              const meta = branchMeta.get(msg.id)
+              const showNavigator = !!meta && meta.sibling_count > 1
+              const isEditing = editingId === msg.id
+              const canEdit = mode === 'edit' && !displayStreaming && msg.role === 'user'
+              const canRegen = mode === 'edit' && !displayStreaming && msg.role === 'assistant' && !!meta?.parent_message_id
               return (
-                <Message key={msg.id} from={msg.role} className="flex">
-                  <MessageContent>
-                    <MessageParts msg={msg} />
-                    {isStreamingThisMsg && (
-                      <span
-                        className="inline-block w-2 h-2 rounded-full bg-primary align-middle ml-1 animate-pulse"
-                        aria-label="assistant is responding"
-                        title="assistant is responding"
-                      />
+                <div key={msg.id} className="flex flex-col">
+                  <Message from={msg.role} className="flex">
+                    <MessageContent>
+                      {isEditing ? (
+                        <MessageEditInput
+                          initialText={textContent}
+                          onSubmit={(text) => submitEdit(msg.id, text)}
+                          onCancel={() => setEditingId(null)}
+                          disabled={displayStreaming}
+                        />
+                      ) : (
+                        <>
+                          <MessageParts msg={msg} />
+                          {isStreamingThisMsg && (
+                            <span
+                              className="inline-block w-2 h-2 rounded-full bg-primary align-middle ml-1 animate-pulse"
+                              aria-label="assistant is responding"
+                              title="assistant is responding"
+                            />
+                          )}
+                        </>
+                      )}
+                    </MessageContent>
+                    {!isEditing && textContent && !isStreamingThisMsg && (
+                      <div className={`flex items-center gap-1 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} transition-opacity`}>
+                        <CopyButton text={textContent} />
+                        {showNavigator && meta && (
+                          <BranchNavigator
+                            currentIndex={meta.current_sibling_index + 1}
+                            total={meta.sibling_count}
+                            disabled={displayStreaming}
+                            onPrev={() => {
+                              const target = meta.sibling_ids[meta.current_sibling_index - 1]
+                              if (target) switchBranch(target)
+                            }}
+                            onNext={() => {
+                              const target = meta.sibling_ids[meta.current_sibling_index + 1]
+                              if (target) switchBranch(target)
+                            }}
+                          />
+                        )}
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingId(msg.id)}
+                            title="Edit & re-run"
+                            className="flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {canRegen && (
+                          <button
+                            type="button"
+                            onClick={() => regenerate(msg.id)}
+                            title="Regenerate response"
+                            className="flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     )}
-                  </MessageContent>
-                  {textContent && !isStreamingThisMsg && (
-                    <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} transition-opacity`}>
-                      <CopyButton text={textContent} />
-                    </div>
-                  )}
-                </Message>
+                  </Message>
+                </div>
               )
             })
           })()}

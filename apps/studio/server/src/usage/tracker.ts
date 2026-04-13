@@ -36,6 +36,8 @@ export type UsageSource =
   | 'dreaming.deep'
   | 'dreaming.rem'
   | 'flush'
+  | 'compaction'
+  | 'embedding'
   | `plugin:${string}`
   | 'custom'
 
@@ -54,6 +56,7 @@ export interface RecordLLMUsageInput {
   mode?: string
   raw_system_prompt?: string | null
   raw_messages?: unknown
+  raw_response?: string | null
 }
 
 export function recordLLMUsage(input: RecordLLMUsageInput): void {
@@ -72,6 +75,7 @@ export function recordLLMUsage(input: RecordLLMUsageInput): void {
     duration_ms: input.duration_ms ?? null,
     raw_system_prompt: typeof input.raw_system_prompt === 'string' ? input.raw_system_prompt : null,
     raw_messages: (input.raw_messages ?? null) as Record<string, unknown> | null,
+    raw_response: typeof input.raw_response === 'string' ? input.raw_response : null,
   }).catch((err) => {
     console.warn('[usage] failed to record LLM usage:', err instanceof Error ? err.message : err)
   })

@@ -107,6 +107,12 @@ export interface CompactionHook {
     agent_id: string
     summary: string
     removed_count: number
+    /** Usage metadata for the summarizer LLM call — for usage logging. */
+    raw_system_prompt?: string
+    raw_user_message?: string
+    input_tokens?: number
+    output_tokens?: number
+    duration_ms?: number
   }): void
 }
 
@@ -274,6 +280,11 @@ export class AgentRunner {
             agent_id: this.agent.meta.id,
             summary: result.summary,
             removed_count: result.removed_count,
+            raw_system_prompt: result.raw_system_prompt,
+            raw_user_message: result.raw_user_message,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            duration_ms: result.duration_ms,
           })
         } catch (err) {
           // Hook must never interrupt the run
@@ -587,10 +598,14 @@ export class AgentRunner {
         // Wait for completion then persist + emit final usage
         const [steps, usage] = await Promise.all([result.steps, result.usage])
 
+        // Aggregate final assistant text across all steps for usage logging.
+        const finalResponseText = steps.map(s => s.text).filter(Boolean).join('\n')
+
         // Emit raw snapshot for usage log debug
         jikuWriter.write('jiku-run-snapshot', {
           system_prompt: systemPrompt,
           messages,
+          response: finalResponseText,
         })
 
         jikuWriter.write('jiku-usage', {

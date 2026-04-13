@@ -1040,7 +1040,7 @@ export interface UsageLog {
   project_id: string | null
   user_id: string | null
   mode: string
-  /** 'chat' | 'task' | 'title' | 'reflection' | 'dreaming.light|deep|rem' | 'flush' | 'plugin:<id>' | 'custom' */
+  /** 'chat' | 'task' | 'title' | 'reflection' | 'dreaming.light|deep|rem' | 'flush' | 'compaction' | 'embedding' | 'plugin:<id>' | 'custom' */
   source: string
   provider_id: string | null
   model_id: string | null
@@ -1049,6 +1049,7 @@ export interface UsageLog {
   duration_ms: number | null
   raw_system_prompt: string | null
   raw_messages: unknown | null
+  raw_response: string | null
   created_at: string
   user?: { id: string; name: string | null; email: string } | null
   conversation?: { id: string; mode: string; type: string } | null

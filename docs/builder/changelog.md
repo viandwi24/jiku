@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-04-13 — Usage log: capture response + cover every LLM call site
+
+- **`usage_logs.raw_response` column added.** Until now prompts + messages were stored but the LLM reply was dropped on the floor. New migration `0015_usage_logs_raw_response.sql` adds a nullable `varchar` column; schema + `recordLLMUsage()` + web types extended.
+- **Every LLM call site now flows through `recordLLMUsage()` with response captured:**
+  - `chat` (routes/chat.ts) — switched from direct `createUsageLog()` to `recordLLMUsage()`, includes duration + response aggregated from all steps.
+  - `task` / heartbeat (task/runner.ts) — uses `runSnapshot.response` (fallback: drained `outputText`).
+  - `title` (title/generate.ts), `reflection` (jobs/handlers/reflection.ts), `dreaming.light/deep/rem` (jobs/handlers/dreaming.ts) — all pass `raw_response: text`.
+  - `compaction` (new source) — core `compactMessages()` returns usage + system + duration; `CompactionHook` plumbs them through; `buildCompactionHook()` logs with source `compaction` and resolves provider/model via agent.
+  - `embedding` (new source) — `createOpenAICompatibleEmbedding()` logs each `embed()` call with `prompt_tokens`, texts as `raw_messages`, `vectors=N, dimensions=D` as `raw_response`.
+- **Core runner emits `response` in `jiku-run-snapshot`.** Aggregates `steps.map(s => s.text).join('\n')` so chat + task consumers both see the final assistant text.
+- **Raw Data dialog (both project + agent usage pages): accordion + scrollable.** Each section (System Prompt / Messages / Response) is now a collapsible `AccordionItem`; content uses `max-h-[50vh] overflow-auto` so long payloads scroll inside the dialog instead of stretching it.
+- **Files:**
+  - `apps/studio/db/src/schema/usage_logs.ts`, `apps/studio/db/src/migrations/0015_usage_logs_raw_response.sql`
+  - `apps/studio/server/src/usage/tracker.ts` (UsageSource adds `compaction`, `embedding`)
+  - `apps/studio/server/src/routes/chat.ts`, `task/runner.ts`, `title/generate.ts`
+  - `apps/studio/server/src/jobs/handlers/reflection.ts`, `jobs/handlers/dreaming.ts`
+  - `apps/studio/server/src/memory/hooks.ts` (compaction usage log), `memory/embedding.ts` (embedding usage log)
+  - `packages/types/src/index.ts` (JikuDataTypes `jiku-run-snapshot.response`)
+  - `packages/core/src/compaction.ts` (return usage/system/duration), `packages/core/src/runner.ts` (emit response, extended CompactionHook)
+  - `apps/studio/web/lib/api.ts` (UsageLog.raw_response)
+  - `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/usage/page.tsx`
+  - `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/usage/page.tsx`
+
+## 2026-04-13 — jiku.sheet plugin fixes + chat payload + task usage raw data
+
+- **jiku.sheet: binary file hints wired end-to-end.** `buildBinaryFileHints()` now imported in `runtime/manager.ts` and passed to `buildFilesystemTools(projectId, hints)`. When `fs_read` encounters a binary file (.xlsx, .csv, etc.) and a plugin adapter is registered for that extension, the agent receives a redirect hint instead of raw base64 — preventing context overflow.
+- **Plugin tool permission fix (`csv_read`, `sheet_read`).** Tools registered via `ctx.project.tools.register()` go through `resolveScope` which checks `caller.permissions.includes(resolved_permission)`. Permission `filesystem:read` was being prefixed to `jiku.sheet:filesystem:read` — a permission no caller ever has. Changed both tools to `permission: '*'` so they appear in agent tool list like built-in tools.
+- **`sheet_read` empty-string sheet bug.** Agent passes `"sheet": ""` when it doesn't know which sheet to use. `??` operator doesn't replace empty string, so `"" ?? wb.sheetNames[0]` = `""`, triggering false "workbook is empty" error. Fixed with `||` operator. Also fixed error return to include actual `wb.sheetNames` instead of hardcoded `[]`.
+- **`sheet_read` system prompt updated.** Agent now told: `sheet_read({ path: "..." })` is sufficient — don't fill optional fields unless needed; omit `sheet` to default to first sheet.
+- **Removed `/* @vite-ignore */` from dynamic import in sheet plugin.** Comment was Vite-specific and wrong for Bun/tsup builds.
+- **Express body limit raised 100KB → 10MB.** `express.json()` default 100KB was too small for long conversations with large tool results (sheet data). Fixed in `apps/studio/server/src/index.ts`.
+- **Frontend chat: only send last user message.** `prepareSendMessagesRequest` in both `chat-interface.tsx` and `conversation-viewer.tsx` now sends only `[lastUserMessage]` instead of full `messages` array. Server loads history from DB itself — sending all messages was O(n) waste that caused 413 errors on long conversations.
+- **Task runner captures `raw_system_prompt` + `raw_messages`.** Task/heartbeat runs were recording usage tokens but leaving system prompt and messages as `(not captured)` in the usage Raw Data view. Fixed by capturing `data-jiku-run-snapshot` chunk during stream drain — same pattern already used in `routes/chat.ts`.
+- **Files:**
+  - `apps/studio/server/src/runtime/manager.ts` — import + wire `buildBinaryFileHints()`
+  - `apps/studio/server/src/plugins/ui/fileViewAdapterRegistry.ts` — `buildBinaryFileHints()` + `ADAPTER_ID_TO_TOOL` map
+  - `apps/studio/server/src/filesystem/tools.ts` — `BinaryFileHints` type + `binaryHints` param + `fs_read` binary intercept + split `FS_READ_HINT`/`FS_WRITE_HINT`
+  - `apps/studio/server/src/index.ts` — `express.json({ limit: '10mb' })`
+  - `apps/studio/server/src/task/runner.ts` — capture `data-jiku-run-snapshot` → pass to `recordLLMUsage`
+  - `plugins/jiku.sheet/src/index.ts` — permission `*`, `||` fix, all_sheets fix, prompt update, remove vite-ignore
+  - `apps/studio/web/components/agent/chat/chat-interface.tsx` — last-message-only send
+  - `apps/studio/web/components/chat/conversation-viewer.tsx` — last-message-only send
+
 ## 2026-04-12 — Plan 19 post-ship polish & bug fixes
 
 - **Memory browser clickable rows → detail/edit dialog.** Content / importance /

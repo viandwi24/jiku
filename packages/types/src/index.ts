@@ -132,6 +132,8 @@ export interface JikuDataTypes {
   'jiku-run-snapshot': {
     system_prompt: string
     messages: unknown[]
+    /** Final assistant text aggregated across all steps of this run. */
+    response?: string
   }
   'jiku-step-usage': {
     step: number

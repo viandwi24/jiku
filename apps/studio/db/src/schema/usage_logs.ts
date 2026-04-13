@@ -28,6 +28,7 @@ export const usage_logs = pgTable('usage_logs', {
   // Raw data for debug/monitor
   raw_system_prompt: varchar('raw_system_prompt').default(null),
   raw_messages:    jsonb('raw_messages').default(null),
+  raw_response:    varchar('raw_response').default(null),
   created_at:      timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   index('idx_usage_agent').on(t.agent_id, t.created_at),

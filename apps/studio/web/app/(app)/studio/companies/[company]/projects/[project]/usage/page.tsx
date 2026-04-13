@@ -5,6 +5,10 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ProjectUsageLog } from '@/lib/api'
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
   Badge,
   Button,
   Dialog,
@@ -83,25 +87,54 @@ function RawDataDialog({ log }: { log: ProjectUsageLog }) {
         Raw
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+        <DialogContent className="min-w-[45vw] max-w-[45vw] max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-sm font-mono">
               Raw Data — {log.agent?.name ?? log.agent_id?.slice(0, 8) ?? 'unknown'} / {log.id.slice(0, 8)}
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto space-y-4 text-xs font-mono">
-            <div>
-              <p className="text-muted-foreground mb-1">System Prompt</p>
-              <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word">
-                {log.raw_system_prompt ?? '(not captured)'}
-              </pre>
-            </div>
-            <div>
-              <p className="text-muted-foreground mb-1">Messages</p>
-              <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word">
-                {log.raw_messages ? JSON.stringify(log.raw_messages, null, 2) : '(not captured)'}
-              </pre>
-            </div>
+          <div className="flex-1 overflow-auto text-xs font-mono">
+            <Accordion type="multiple" className="w-full">
+              <AccordionItem value="system-prompt">
+                <AccordionTrigger className="text-xs">
+                  System Prompt
+                  <span className="ml-auto mr-2 text-[10px] text-muted-foreground">
+                    {log.raw_system_prompt ? `${log.raw_system_prompt.length} chars` : 'empty'}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word max-h-[50vh] overflow-auto">
+                    {log.raw_system_prompt ?? '(not captured)'}
+                  </pre>
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="messages">
+                <AccordionTrigger className="text-xs">
+                  Messages
+                  <span className="ml-auto mr-2 text-[10px] text-muted-foreground">
+                    {Array.isArray(log.raw_messages) ? `${log.raw_messages.length} items` : log.raw_messages ? '1 item' : 'empty'}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word max-h-[50vh] overflow-auto">
+                    {log.raw_messages ? JSON.stringify(log.raw_messages, null, 2) : '(not captured)'}
+                  </pre>
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="response">
+                <AccordionTrigger className="text-xs">
+                  Response
+                  <span className="ml-auto mr-2 text-[10px] text-muted-foreground">
+                    {log.raw_response ? `${log.raw_response.length} chars` : 'empty'}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <pre className="bg-muted rounded p-3 whitespace-pre-wrap wrap-break-word max-h-[50vh] overflow-auto">
+                    {log.raw_response ?? '(not captured)'}
+                  </pre>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </div>
         </DialogContent>
       </Dialog>

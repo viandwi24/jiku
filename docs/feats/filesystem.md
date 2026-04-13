@@ -37,13 +37,27 @@ Max size: 5 MB
 | Tool | Description |
 |------|-------------|
 | `fs_list` | List files and virtual folders at path |
-| `fs_read` | Read file content |
+| `fs_read` | Read file content — intercepts binary files (see below) |
 | `fs_write` | Write/create file |
 | `fs_move` | Move/rename file |
 | `fs_delete` | Delete file |
 | `fs_search` | Search files by name/path pattern |
 
 All tagged `group: 'filesystem'`, `permission: '*'`. Active in `chat` and `task` modes.
+
+Read tools (`fs_list`, `fs_read`, `fs_search`) include a prompt hint: "check disk FIRST before asking user to upload." Write tools (`fs_write`, `fs_move`, `fs_delete`) include: "only write when explicitly asked."
+
+### Binary file interception in `fs_read`
+
+Binary files are stored with a `__b64__:` prefix in the filesystem. `fs_read` intercepts this instead of passing raw base64 to the model (which wastes context and can overflow it):
+
+1. **Registered adapter exists** (e.g. `.xlsx` → `sheet_read` from jiku.sheet plugin): returns structured redirect — `{ type: 'binary', suggested_tool: 'sheet_read', note: '...' }`. Agent is instructed to use the specialized tool instead.
+2. **No adapter, file > 256 KB**: returns metadata + hint to find a specialized tool or ask user for text format.
+3. **No adapter, file ≤ 256 KB**: passes content as-is (useful for small images with vision models).
+
+The extension→tool hint map is built by `buildBinaryFileHints()` in `fileViewAdapterRegistry.ts` and passed to `buildFilesystemTools(projectId, hints)` in the runtime manager. Plugins register adapters via `ctx.fileViewAdapters.register()` which also populates this map.
+
+**`BinaryFileHints`** = `Map<string, string>` from lowercase extension (e.g. `"xlsx"`) to tool name (e.g. `"sheet_read"`). Built fresh on each `wakeUp`.
 
 ## API Routes
 

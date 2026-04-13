@@ -41,6 +41,7 @@ export async function generateConversationTitle(
         { role: 'user', content: userMessage },
         { role: 'assistant', content: text },
       ],
+      raw_response: text,
     })
 
     const title = text.trim().slice(0, 50)

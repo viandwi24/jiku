@@ -1,5 +1,21 @@
 # Memory
 
+## Plugin tools need `permission: '*'` to be visible — named permissions are silently invisible
+
+`ctx.project.tools.register()` / `ctx.tools.register()` tools go through `resolveScope` which checks `caller.permissions.includes(tool.resolved_permission)`. The loader prefixes non-`*` permissions: `filesystem:read` → `jiku.sheet:filesystem:read`. No caller has that compound string, so the tool silently disappears from agent tool lists. **Always use `permission: '*'`** for tools that should be available unconditionally. For genuinely access-controlled tools, use `ToolMeta.required_plugin_permission` (Plan 18 path).
+
+## Chat frontend: only send last user message — don't send full history
+
+`prepareSendMessagesRequest` in both `chat-interface.tsx` and `conversation-viewer.tsx` filters to `[lastUserMessage]` only. The server loads conversation history from DB via `StudioStorageAdapter`. Sending all messages scales O(n) with conversation length and causes 413 errors for long conversations with large tool results. Do not revert this — if you need to pass client-side context, add explicit extra body fields, not via `messages`.
+
+## Task runner must capture `data-jiku-run-snapshot` for usage raw data
+
+When draining a task run stream, capture the `data-jiku-run-snapshot` chunk and pass its `system_prompt` + `messages` to `recordLLMUsage` as `raw_system_prompt` / `raw_messages`. Without this, the usage Raw Data dialog shows `(not captured)`. Pattern already established in `routes/chat.ts` — `task/runner.ts` now follows the same pattern. Any future stream-draining code (heartbeat, cron, etc.) that calls `recordLLMUsage` should do the same.
+
+## `??` vs `||` when handling optional string params from LLM tool calls
+
+LLMs often pass `""` (empty string) for optional fields they don't know the value of. `??` only replaces `null`/`undefined` — `"" ?? fallback` = `""`. Use `||` when you want to treat empty string as missing: `args.sheet || wb.sheetNames[0]`. This bit `sheet_read` where the agent passed `"sheet": ""` and got a false "workbook is empty" error.
+
 ## Every LLM call MUST log via `recordLLMUsage`
 
 Any code that invokes `generateText` / `streamText` / `generateObject` in

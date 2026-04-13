@@ -107,6 +107,7 @@ export const reflectionHandler: JobHandler = async (rawPayload) => {
         { role: 'user', content: conversationText },
         { role: 'assistant', content: insight },
       ],
+      raw_response: insight,
     })
   } catch (err) {
     console.warn('[jobs:reflection] LLM call failed:', err instanceof Error ? err.message : err)

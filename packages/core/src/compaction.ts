@@ -7,6 +7,15 @@ export interface CompactResult {
   compacted: Omit<Message, 'id' | 'created_at'>[]
   removed_count: number
   token_saved: number
+  /** Raw system prompt used for the summarizer call — for usage logging. */
+  raw_system_prompt?: string
+  /** Raw conversation text fed to the summarizer — for usage logging. */
+  raw_user_message?: string
+  /** Token usage of the summarizer call. */
+  input_tokens?: number
+  output_tokens?: number
+  /** Wall-clock duration of the summarizer call. */
+  duration_ms?: number
 }
 
 /**
@@ -87,17 +96,21 @@ export async function compactMessages(opts: {
 
   const tokenSaved = estimateTokens(conversationText)
 
-  const result = await generateText({
-    model,
-    system: `You are a conversation summarizer. Create a concise summary of the conversation history below.
+  const compactSystem = `You are a conversation summarizer. Create a concise summary of the conversation history below.
 Preserve: key facts, decisions made, tool results, important data points, user preferences.
 Skip: greetings, filler, redundant tool calls, verbose outputs.
 Write in the same language as the conversation.
-Format as a brief narrative paragraph, not bullet points.`,
+Format as a brief narrative paragraph, not bullet points.`
+
+  const t0 = Date.now()
+  const result = await generateText({
+    model,
+    system: compactSystem,
     prompt: conversationText,
   })
 
   const summary = result.text
+  const duration_ms = Date.now() - t0
 
   // Build checkpoint message (prepends toKeep)
   const checkpoint: Omit<Message, 'id' | 'created_at'> = {
@@ -120,5 +133,10 @@ Format as a brief narrative paragraph, not bullet points.`,
     compacted,
     removed_count: toCompact.length,
     token_saved: tokenSaved,
+    raw_system_prompt: compactSystem,
+    raw_user_message: conversationText,
+    input_tokens: result.usage?.inputTokens ?? 0,
+    output_tokens: result.usage?.outputTokens ?? 0,
+    duration_ms,
   }
 }

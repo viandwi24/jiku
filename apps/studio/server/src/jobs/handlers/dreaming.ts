@@ -158,6 +158,7 @@ async function runLightDream(
           { role: 'user', content: joined },
           { role: 'assistant', content: text },
         ],
+        raw_response: text,
       })
       const consolidated = text.trim().slice(0, 500)
       if (!consolidated) continue
@@ -237,6 +238,7 @@ async function runDeepDream(
           { role: 'user', content: joined },
           { role: 'assistant', content: text },
         ],
+        raw_response: text,
       })
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 5)
       const representative = pool[0]!
@@ -316,6 +318,7 @@ async function runRemDream(
         { role: 'user', content: joined },
         { role: 'assistant', content: text },
       ],
+      raw_response: text,
     })
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
     const representative = pool[0]!

@@ -1,5 +1,25 @@
 # Decisions
 
+## ADR-049 — Plugin tools must use `permission: '*'` to be visible to agents
+
+**Context:** Tools registered via `ctx.project.tools.register()` go through `resolveScope` which filters by `caller.permissions.includes(tool.resolved_permission)`. The prefix function turns `permission: 'filesystem:read'` into `jiku.sheet:filesystem:read`. No caller ever has that compound permission, so the tools are silently invisible in agent tool lists, context preview, and at runtime.
+
+**Decision:** Plugin tools that should be available to all agents unconditionally MUST use `permission: '*'`. This short-circuits the permission check in `resolveScope` the same way built-in tools (which are force-set to `resolved_permission: '*'`) bypass it. Security-sensitive plugin tools that should be explicitly gated should use `required_plugin_permission` in `ToolMeta` (Plan 18 path) rather than `permission`.
+
+**Consequences:** Any plugin tool with a non-`*` permission that was silently invisible will need to be audited. `csv_read` and `sheet_read` fixed in this session. Check `jiku.analytics` and `jiku.social` tools if they're also invisible.
+
+---
+
+## ADR-050 — Chat route: frontend sends only last user message, server loads history from DB
+
+**Context:** `useChat` from `@ai-sdk/react` sends the full `messages` array on every request by default. For long conversations with large tool results (e.g. sheet data with hundreds of rows), the body grew to 200KB+ and hit the 100KB `express.json()` limit. The server never used `messages` beyond extracting the last user message text and its file parts — full history was already in the DB via `StudioStorageAdapter`.
+
+**Decision:** `prepareSendMessagesRequest` in both chat components filters to `[lastUserMessage]` only. Body size is now O(1) regardless of conversation length. The 10MB limit is kept as a safety net for edge cases (large file attachments in the message part). No server changes needed — the server already only reads `lastUser` from the array.
+
+**Consequences:** Any future feature that needs to send additional client-side context (e.g. draft state, optimistic UI data) must add it as explicit extra fields in the body, not via the `messages` array.
+
+---
+
 ## ADR-048 — Skills loader: DB is a cache, filesystem is the authority
 
 **Context:** Plan 15 stored skill content in DB. Plan 19 needed to accept external

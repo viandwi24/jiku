@@ -1,5 +1,16 @@
 ## Backlog
 
+### Plan 20 — Multi Browser Profile + Browser Adapter System
+- [ ] Phase 1: Buat `packages/kit/src/browser-adapter.ts` — abstract BrowserAdapter class
+- [ ] Phase 2: BrowserAdapterRegistry + extend plugin context (`ctx.browser.registerAdapter()`)
+- [ ] Phase 3: DB migration — tabel `browser_profiles` + migration data dari kolom lama
+- [ ] Phase 4: Wrap existing browser logic jadi `JikuBrowserVercelAdapter`
+- [ ] Phase 5: Update `browser/tool.ts` — unified tool dengan `profile_id` routing
+- [ ] Phase 6: API routes — `/browser/adapters`, `/browser/profiles` CRUD + ping/preview/status
+- [ ] Phase 7: Frontend — rewrite browser page jadi multi-profile tabbed UI + Add Profile modal
+- [ ] Phase 8: Plugin `jiku.camofox` — CamofoxAdapter (baca repo dulu sebelum implement execute)
+- [ ] Phase 9: Update docs — feats/browser.md + changelog
+
 ### Plan 19 follow-ups
 - [ ] Sandboxed `skill_exec_file` runtime (separate plan — needs JS/TS/Python sandbox)
 - [ ] Private-repo skill import via GitHub PAT (credentials vault integration)
@@ -23,6 +34,9 @@
 - [ ] axe-core a11y CI check for plugin slot variations
 - [ ] Add `jiku plugin reload <id> --project <p>` CLI command (needs server-side invalidate endpoint)
 - [ ] Migrate `jiku.skills` / `jiku.social` to contribute UI entries (pattern now trivial)
+
+### jiku.sheet follow-ups
+- [ ] Verify `sheet_read` path-based read with projectId from `toolCtx.runtime['project_id']` works correctly end-to-end in production (dynamic import path from plugin to server filesystem service)
 
 ### Other
 - [ ] Cron Task System nice-to-haves (schedule_paused state, timezone support, run history pagination)

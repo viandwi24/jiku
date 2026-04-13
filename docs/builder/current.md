@@ -1,4 +1,57 @@
-## Phase (2026-04-12) — Plan 19: Memory Learning Loop + Skills Loader v2 — SHIPPED + tested
+## Phase (2026-04-13) — Plan 20: Multi Browser Profile + Browser Adapter System — Starting Implementation
+
+### Usage log response capture — SHIPPED (2026-04-13)
+- [x] `usage_logs.raw_response` column + migration `0015_usage_logs_raw_response.sql`
+- [x] `recordLLMUsage()` accepts `raw_response`; `UsageSource` adds `compaction`, `embedding`
+- [x] Core runner emits `response` in `jiku-run-snapshot`; `CompactionHook` plumbs summarizer usage
+- [x] Chat, task, title, reflection, dreaming×3, compaction, embedding — all log response
+- [x] Raw Data dialog (project + agent pages) rebuilt as accordion w/ per-section `max-h-[50vh]` scroll
+- [x] **Action required:** `cd apps/studio/db && bun run db:push` (or run migration `0015`) before restart
+
+### jiku.sheet + filesystem fixes — SHIPPED (2026-04-13)
+- [x] Binary file hints wired: `buildBinaryFileHints()` → `buildFilesystemTools()` in manager
+- [x] Plugin tool permission fixed: `csv_read` + `sheet_read` now `permission: '*'`
+- [x] `sheet_read` empty-string sheet bug fixed (`??` → `||`)
+- [x] `all_sheets` in error return now populated from actual workbook
+- [x] `/* @vite-ignore */` removed from dynamic import
+- [x] Express body limit raised to 10MB
+- [x] Frontend sends only last user message (not full history) — both chat components
+- [x] Task runner captures `data-jiku-run-snapshot` for usage raw data
+
+---
+
+### Goal
+Upgrade browser feature dari satu CDP endpoint per project jadi sistem multi-profile.
+Setiap project bisa punya banyak Browser Profile, masing-masing pilih Browser Adapter.
+Plugin bisa daftarkan adapter baru lewat `ctx.browser.registerAdapter()`.
+
+### Relevant Files
+- `docs/plans/20-multi-browser-profile.md` — full plan
+- `packages/kit/src/browser-adapter.ts` — abstract class (BARU)
+- `apps/studio/server/src/browser/adapter-registry.ts` — registry (BARU)
+- `apps/studio/server/src/browser/adapters/jiku-browser-vercel.ts` — existing wrapped (BARU)
+- `apps/studio/db/src/schema/browser-profiles.ts` — schema (BARU)
+- `apps/studio/db/src/queries/browser-profiles.ts` — queries (BARU)
+- `apps/studio/server/src/routes/browser-profiles.ts` — routes (BARU)
+- `apps/studio/server/src/browser/tool.ts` — update (profile routing)
+- `apps/studio/server/src/browser/tab-manager.ts` — refactor projectId → profileId
+- `apps/studio/server/src/browser/concurrency.ts` — refactor projectId → profileId
+- `apps/studio/web/app/(app)/studio/.../browser/page.tsx` — rewrite (multi-tab UI)
+- `plugins/jiku.camofox/` — plugin baru
+- `plugins/jiku.studio/src/types.ts` — tambah PluginBrowserAdapterAPI
+
+### Important Context
+- Adapter built-in (`jiku.browser.vercel`) didaftarkan di server startup, bukan lewat plugin
+- Mutex dan tab manager berubah dari per-project ke per-profile
+- Migration data: project dengan `browser_enabled=true` auto-dapat satu default profile
+- CamoFox perlu baca repo terlebih dahulu sebelum implementasi execute()
+
+### Next Up
+Mulai implementasi dari Phase 1 (abstraction layer di `@jiku/kit`), lalu Phase 2 (registry + plugin context), lalu Phase 3 (DB migration).
+
+---
+
+## Sebelumnya — Plan 19: Memory Learning Loop + Skills Loader v2 — SHIPPED + tested
 
 Full impl report: `docs/plans/impl-reports/19-memory-skills-implementation-report.md`.
 Feature docs: `docs/feats/memory.md` (Plan 19 section), `docs/feats/skills.md`.

@@ -1,4 +1,5 @@
 import type { ResolvedMemoryConfig } from '@jiku/types'
+import { recordLLMUsage } from '../usage/tracker.ts'
 
 export interface EmbeddingService {
   embed(texts: string[]): Promise<number[][]>
@@ -69,7 +70,10 @@ export async function createEmbeddingService(projectId: string): Promise<Embeddi
       || MODEL_DIMENSIONS[embeddingConfig.model]
       || 1536
 
-    service = createOpenAICompatibleEmbedding(apiKey, baseUrl, embeddingConfig.model, dimensions)
+    service = createOpenAICompatibleEmbedding(apiKey, baseUrl, embeddingConfig.model, dimensions, {
+      projectId,
+      provider: embeddingConfig.provider,
+    })
   } catch (err) {
     console.warn('[embedding] Failed to create embedding service:', err instanceof Error ? err.message : err)
   }
@@ -120,10 +124,12 @@ function createOpenAICompatibleEmbedding(
   baseUrl: string,
   model: string,
   dimensions: number,
+  usageCtx: { projectId: string; provider: string },
 ): EmbeddingService {
   return {
     dimensions,
     async embed(texts: string[]): Promise<number[][]> {
+      const t0 = Date.now()
       const response = await fetch(baseUrl, {
         method: 'POST',
         headers: {
@@ -140,7 +146,23 @@ function createOpenAICompatibleEmbedding(
 
       const data = await response.json() as {
         data: Array<{ embedding: number[] }>
+        usage?: { prompt_tokens?: number; total_tokens?: number }
       }
+
+      const inputTokens = data.usage?.prompt_tokens ?? data.usage?.total_tokens ?? 0
+      recordLLMUsage({
+        source: 'embedding',
+        mode: 'embedding',
+        project_id: usageCtx.projectId,
+        provider: usageCtx.provider,
+        model,
+        input_tokens: inputTokens,
+        output_tokens: 0,
+        duration_ms: Date.now() - t0,
+        raw_system_prompt: null,
+        raw_messages: texts.map(t => ({ role: 'user', content: t })),
+        raw_response: `vectors=${data.data.length}, dimensions=${dimensions}`,
+      })
 
       return data.data.map(d => d.embedding)
     },

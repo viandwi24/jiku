@@ -4,7 +4,8 @@ import { resolveCaller } from '../runtime/caller.ts'
 import { runtimeManager } from '../runtime/manager.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
 import { conversationQueue } from '../runtime/conversation-queue.ts'
-import { getConversationById, getAgentById, getProjectById, createUsageLog, getAttachmentById } from '@jiku-studio/db'
+import { getConversationById, getAgentById, getProjectById, getAttachmentById } from '@jiku-studio/db'
+import { recordLLMUsage } from '../usage/tracker.ts'
 import { resolveAgentModel } from '../credentials/service.ts'
 import { getFilesystemService } from '../filesystem/service.ts'
 import { signProxyToken } from './attachments.ts'
@@ -172,7 +173,8 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
 
   // Drain broadcast branch in background — buffer chunks + forward to SSE observers
   ;(async () => {
-    let runSnapshot: { system_prompt: string; messages: unknown[] } | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string } | null = null
+    const runStart = Date.now()
     try {
       const reader = broadcastStream.getReader()
       while (true) {
@@ -187,26 +189,28 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
         const chunk = value as Record<string, unknown>
         // Buffer the raw snapshot so it's available when usage arrives
         if (chunk?.type === 'data-jiku-run-snapshot') {
-          runSnapshot = chunk.data as { system_prompt: string; messages: unknown[] }
+          runSnapshot = chunk.data as { system_prompt: string; messages: unknown[]; response?: string }
         }
         // Persist usage log when we see the final usage chunk
         if (chunk?.type === 'data-jiku-usage') {
           const data = (chunk.data as { input_tokens?: number; output_tokens?: number } | undefined)
           if (data) {
-            createUsageLog({
+            recordLLMUsage({
+              source: 'chat',
               agent_id: agent.id,
               conversation_id: conversationId,
               project_id: agent.project_id,
               user_id: userId,
               mode: 'chat',
-              source: 'chat',
-              provider_id: snapshotProviderId,
-              model_id: snapshotModelId,
+              provider: snapshotProviderId,
+              model: snapshotModelId,
               input_tokens: data.input_tokens ?? 0,
               output_tokens: data.output_tokens ?? 0,
+              duration_ms: Date.now() - runStart,
               raw_system_prompt: runSnapshot?.system_prompt ?? null,
               raw_messages: runSnapshot?.messages ?? null,
-            }).catch(err => console.error('[chat] Failed to persist usage log:', err))
+              raw_response: runSnapshot?.response ?? null,
+            })
           }
         }
       }

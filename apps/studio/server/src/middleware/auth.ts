@@ -23,14 +23,19 @@ export async function verifyJwt(token: string): Promise<Record<string, unknown> 
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization
-  if (!authHeader?.startsWith('Bearer ')) {
+  let token: string | null = null
+  if (authHeader?.startsWith('Bearer ')) {
+    token = authHeader.slice(7)
+  } else if (typeof req.query['token'] === 'string') {
+    // SSE / browser-initiated requests can't set custom headers — accept ?token=
+    token = req.query['token']
+  }
+  if (!token) {
     res.status(401).json({ error: 'Unauthorized' })
     return
   }
 
-  const token = authHeader.slice(7)
   const payload = await verifyJwt(token)
-
   if (!payload || typeof payload.user_id !== 'string') {
     res.status(401).json({ error: 'Invalid token' })
     return

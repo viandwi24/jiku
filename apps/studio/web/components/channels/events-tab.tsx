@@ -1,0 +1,299 @@
+'use client'
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import {
+  Badge, Button, Input,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
+} from '@jiku/ui'
+import { Activity, ArrowDown, ArrowUp, Circle, Filter, RefreshCw, X } from 'lucide-react'
+import { api } from '@/lib/api'
+import type { ConnectorEventListItem, ConnectorEventFilters } from '@/lib/api'
+
+interface EventsTabProps {
+  projectId: string
+  initialConnectorId?: string
+}
+
+const ALL = '__all__'
+
+const STATUS_COLORS: Record<string, string> = {
+  routed: 'text-green-600',
+  dropped: 'text-muted-foreground',
+  pending_approval: 'text-amber-600',
+  rate_limited: 'text-orange-600',
+  error: 'text-destructive',
+  received: 'text-blue-600',
+}
+
+const EVENT_TYPE_COLORS: Record<string, string> = {
+  message: 'bg-blue-500/10 text-blue-600',
+  reaction: 'bg-amber-500/10 text-amber-600',
+  edit: 'bg-violet-500/10 text-violet-600',
+  delete: 'bg-red-500/10 text-red-600',
+  join: 'bg-green-500/10 text-green-600',
+  leave: 'bg-slate-500/10 text-slate-600',
+}
+
+export function EventsTab({ projectId, initialConnectorId }: EventsTabProps) {
+  const [connectorId, setConnectorId] = useState<string>(initialConnectorId ?? ALL)
+  const [direction, setDirection] = useState<string>(ALL)
+  const [eventType, setEventType] = useState<string>(ALL)
+  const [status, setStatus] = useState<string>(ALL)
+  const [from, setFrom] = useState<string>('')
+  const [to, setTo] = useState<string>('')
+
+  const [isLive, setIsLive] = useState(false)
+  const [liveItems, setLiveItems] = useState<ConnectorEventListItem[]>([])
+  const esRef = useRef<EventSource | null>(null)
+
+  const [selected, setSelected] = useState<ConnectorEventListItem | null>(null)
+
+  const filters: ConnectorEventFilters = useMemo(() => ({
+    connector_id: connectorId === ALL ? undefined : connectorId,
+    direction: (direction === ALL ? undefined : direction) as ConnectorEventFilters['direction'],
+    event_type: eventType === ALL ? undefined : eventType,
+    status: status === ALL ? undefined : status,
+    from: from ? new Date(from).toISOString() : undefined,
+    to: to ? new Date(to).toISOString() : undefined,
+    limit: 50,
+  }), [connectorId, direction, eventType, status, from, to])
+
+  const { data: connectorsData } = useQuery({
+    queryKey: ['connectors', projectId],
+    queryFn: () => api.connectors.list(projectId),
+  })
+
+  const query = useInfiniteQuery({
+    queryKey: ['project-events', projectId, filters],
+    queryFn: ({ pageParam }) =>
+      api.connectors.listProjectEvents(projectId, { ...filters, cursor: pageParam ?? null }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+  })
+
+  useEffect(() => {
+    setLiveItems([])
+    if (!isLive) {
+      esRef.current?.close()
+      esRef.current = null
+      return
+    }
+    const url = api.connectors.projectEventsStreamUrl(projectId, filters)
+    const es = new EventSource(url)
+    es.onmessage = (e) => {
+      try {
+        const row = JSON.parse(e.data) as ConnectorEventListItem
+        setLiveItems(prev => [row, ...prev].slice(0, 200))
+      } catch { /* ignore */ }
+    }
+    es.onerror = () => { setIsLive(false) }
+    esRef.current = es
+    return () => { es.close() }
+  }, [isLive, projectId, filters])
+
+  useEffect(() => () => { esRef.current?.close() }, [])
+
+  const persisted = query.data?.pages.flatMap(p => p.events) ?? []
+  const liveIds = new Set(liveItems.map(i => i.id))
+  const items = [...liveItems, ...persisted.filter(i => !liveIds.has(i.id))]
+
+  const connectors = connectorsData?.connectors ?? []
+  const hasFilter = connectorId !== ALL || direction !== ALL || eventType !== ALL || status !== ALL || from || to
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+        <Select value={connectorId} onValueChange={setConnectorId}>
+          <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue placeholder="Connector" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All connectors</SelectItem>
+            {connectors.map(c => (
+              <SelectItem key={c.id} value={c.id}>{c.display_name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={direction} onValueChange={setDirection}>
+          <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue placeholder="Direction" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>In + Out</SelectItem>
+            <SelectItem value="inbound">Inbound</SelectItem>
+            <SelectItem value="outbound">Outbound</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={eventType} onValueChange={setEventType}>
+          <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue placeholder="Event type" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All types</SelectItem>
+            <SelectItem value="message">message (in)</SelectItem>
+            <SelectItem value="reaction">reaction</SelectItem>
+            <SelectItem value="edit">edit</SelectItem>
+            <SelectItem value="delete">delete</SelectItem>
+            <SelectItem value="join">join</SelectItem>
+            <SelectItem value="leave">leave</SelectItem>
+            <SelectItem value="send_message">send_message (out)</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>Any status</SelectItem>
+            <SelectItem value="routed">routed</SelectItem>
+            <SelectItem value="dropped">dropped</SelectItem>
+            <SelectItem value="pending_approval">pending_approval</SelectItem>
+            <SelectItem value="rate_limited">rate_limited</SelectItem>
+            <SelectItem value="error">error</SelectItem>
+            <SelectItem value="received">received</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)}
+          className="h-8 w-[180px] text-xs" />
+        <Input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)}
+          className="h-8 w-[180px] text-xs" />
+        {hasFilter && (
+          <Button size="sm" variant="ghost" className="h-7 text-xs gap-1"
+            onClick={() => { setConnectorId(ALL); setDirection(ALL); setEventType(ALL); setStatus(ALL); setFrom(''); setTo('') }}
+          >
+            <X className="h-3 w-3" /> Clear
+          </Button>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="ghost" className="h-7 text-xs gap-1.5"
+            onClick={() => query.refetch()} disabled={query.isFetching}
+          >
+            <RefreshCw className={`h-3 w-3 ${query.isFetching ? 'animate-spin' : ''}`} />
+          </Button>
+          <Button size="sm" variant={isLive ? 'default' : 'outline'} className="h-7 text-xs gap-1.5"
+            onClick={() => setIsLive(v => !v)}
+          >
+            <Circle className={`h-2 w-2 ${isLive ? 'fill-current animate-pulse' : ''}`} />
+            {isLive ? 'Live' : 'Go Live'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 border-b">
+            <tr className="text-xs text-muted-foreground">
+              <th className="text-left font-medium px-3 py-2 w-[150px]">Time</th>
+              <th className="text-left font-medium px-3 py-2 w-[40px]"></th>
+              <th className="text-left font-medium px-3 py-2 w-[110px]">Type</th>
+              <th className="text-left font-medium px-3 py-2 w-[160px]">Connector</th>
+              <th className="text-left font-medium px-3 py-2">Ref / Drop reason</th>
+              <th className="text-left font-medium px-3 py-2 w-[130px]">Status</th>
+              <th className="text-left font-medium px-3 py-2 w-[60px]">Took</th>
+            </tr>
+          </thead>
+          <tbody>
+            {query.isLoading ? (
+              <tr><td colSpan={7} className="text-center py-8 text-xs text-muted-foreground">Loading events...</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={7} className="text-center py-12 text-xs text-muted-foreground">
+                <Activity className="h-6 w-6 mx-auto mb-2 opacity-30" />
+                No events match the current filters.
+              </td></tr>
+            ) : items.map(ev => (
+              <tr key={ev.id}
+                onClick={() => setSelected(ev)}
+                className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors"
+              >
+                <td className="px-3 py-2 text-xs font-mono text-muted-foreground">
+                  {new Date(ev.created_at).toLocaleString()}
+                </td>
+                <td className="px-3 py-2">
+                  {ev.direction === 'outbound'
+                    ? <ArrowUp className="h-3 w-3 text-green-600" />
+                    : <ArrowDown className="h-3 w-3 text-blue-600" />}
+                </td>
+                <td className="px-3 py-2">
+                  <Badge className={`text-[10px] px-1.5 py-0.5 font-normal ${EVENT_TYPE_COLORS[ev.event_type] ?? 'bg-muted text-muted-foreground'}`}>
+                    {ev.event_type}
+                  </Badge>
+                </td>
+                <td className="px-3 py-2 text-xs">{ev.connector_name}</td>
+                <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-0">
+                  <div className="truncate">
+                    {ev.drop_reason ? `(${ev.drop_reason}) ` : ''}{JSON.stringify(ev.ref_keys)}
+                  </div>
+                </td>
+                <td className={`px-3 py-2 text-xs font-mono ${STATUS_COLORS[ev.status] ?? 'text-muted-foreground'}`}>
+                  {ev.status}
+                </td>
+                <td className="px-3 py-2 text-[10px] text-muted-foreground/60">
+                  {ev.processing_ms != null ? `${ev.processing_ms}ms` : ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {query.hasNextPage && (
+          <div className="border-t bg-muted/20 p-2 text-center">
+            <Button size="sm" variant="ghost" className="h-7 text-xs"
+              disabled={query.isFetchingNextPage}
+              onClick={() => query.fetchNextPage()}
+            >
+              {query.isFetchingNextPage ? 'Loading...' : 'Load more'}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
+        <SheetContent className="w-[520px] sm:max-w-[520px] overflow-y-auto">
+          {selected && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="text-sm">Event Detail</SheetTitle>
+                <SheetDescription className="text-xs">
+                  {new Date(selected.created_at).toLocaleString()} · {selected.connector_name}
+                </SheetDescription>
+              </SheetHeader>
+              <div className="px-4 pb-6 space-y-4 text-xs">
+                <DetailField label="ID" value={selected.id} mono />
+                <DetailField label="Direction" value={selected.direction} />
+                <DetailField label="Type" value={selected.event_type} />
+                <DetailField label="Status" value={selected.status} />
+                {selected.drop_reason && <DetailField label="Drop reason" value={selected.drop_reason} />}
+                {selected.processing_ms != null && (
+                  <DetailField label="Processing" value={`${selected.processing_ms}ms`} />
+                )}
+                <DetailField label="Ref Keys" json={selected.ref_keys} />
+                {selected.target_ref_keys && (
+                  <DetailField label="Target Ref Keys" json={selected.target_ref_keys} />
+                )}
+                {selected.raw_payload != null && (
+                  <DetailField label="Raw Payload (platform-side)" json={selected.raw_payload} />
+                )}
+                <DetailField label="Parsed Payload" json={selected.payload} />
+                {selected.metadata && <DetailField label="Metadata" json={selected.metadata} />}
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+    </div>
+  )
+}
+
+function DetailField({ label, value, json, mono }: {
+  label: string
+  value?: string
+  json?: unknown
+  mono?: boolean
+}) {
+  return (
+    <div>
+      <p className="text-[11px] text-muted-foreground/70 mb-1">{label}</p>
+      {json !== undefined ? (
+        <pre className="font-mono text-[11px] bg-muted/30 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64">
+          {JSON.stringify(json, null, 2)}
+        </pre>
+      ) : (
+        <p className={`${mono ? 'font-mono' : ''} text-xs bg-muted/30 rounded px-2 py-1`}>{value}</p>
+      )}
+    </div>
+  )
+}

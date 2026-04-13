@@ -54,6 +54,8 @@ export class DefaultAgentAdapter implements AgentAdapter {
       system_prompt: ctx.systemPrompt,
       messages: ctx.messages,
       response: finalResponseText,
+      tools: Object.keys(ctx.aiTools),
+      adapter: this.id,
     })
 
     await ctx.persistAssistantMessage(steps)

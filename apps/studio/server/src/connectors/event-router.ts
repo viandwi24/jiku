@@ -16,6 +16,19 @@ import {
   setScopeConversationId,
 } from '@jiku-studio/db'
 import { connectorRegistry } from './registry.ts'
+import { broadcastProjectEvent, broadcastProjectMessage } from './sse-hub.ts'
+
+async function logEv(projectId: string, args: Parameters<typeof logConnectorEvent>[0]) {
+  const row = await logConnectorEvent(args)
+  broadcastProjectEvent(projectId, row as unknown as Record<string, unknown>)
+  return row
+}
+
+async function logMsg(projectId: string, args: Parameters<typeof logConnectorMessage>[0]) {
+  const row = await logConnectorMessage(args)
+  broadcastProjectMessage(projectId, row as unknown as Record<string, unknown>)
+  return row
+}
 import { streamRegistry } from '../runtime/stream-registry.ts'
 import { conversationQueue } from '../runtime/conversation-queue.ts'
 import { evaluateAutoReply } from '../auto-reply/evaluator.ts'
@@ -383,12 +396,13 @@ export async function routeConnectorEvent(
           ).catch(() => {})
         }
       }
-      await logConnectorEvent({
+      await logEv(projectId, {
         connector_id: connectorUuid,
         identity_id: identity.id,
         event_type: event.type,
         ref_keys: event.ref_keys,
         payload: event as unknown as Record<string, unknown>,
+        raw_payload: event.raw_payload,
         status: 'pending_approval',
         drop_reason: 'no_binding',
         processing_ms: Date.now() - start,
@@ -439,13 +453,14 @@ export async function routeConnectorEvent(
 
     // 3. Approval check
     if (typedIdentity.status === 'blocked') {
-      await logConnectorEvent({
+      await logEv(projectId, {
         connector_id: connector.id,
         binding_id: typedBinding.id,
         identity_id: typedIdentity.id,
         event_type: event.type,
         ref_keys: event.ref_keys,
         payload: event as unknown as Record<string, unknown>,
+        raw_payload: event.raw_payload,
         status: 'dropped',
         drop_reason: 'blocked',
         processing_ms: Date.now() - start,
@@ -454,13 +469,14 @@ export async function routeConnectorEvent(
     }
 
     if (typedIdentity.status === 'pending') {
-      await logConnectorEvent({
+      await logEv(projectId, {
         connector_id: connector.id,
         binding_id: typedBinding.id,
         identity_id: typedIdentity.id,
         event_type: event.type,
         ref_keys: event.ref_keys,
         payload: event as unknown as Record<string, unknown>,
+        raw_payload: event.raw_payload,
         status: 'pending_approval',
         processing_ms: Date.now() - start,
       })
@@ -481,13 +497,14 @@ export async function routeConnectorEvent(
     if (typedBinding.rate_limit_rpm) {
       const ok = checkRateLimit(typedIdentity.id, typedBinding.rate_limit_rpm)
       if (!ok) {
-        await logConnectorEvent({
+        await logEv(projectId, {
           connector_id: connector.id,
           binding_id: typedBinding.id,
           identity_id: typedIdentity.id,
           event_type: event.type,
           ref_keys: event.ref_keys,
           payload: event as unknown as Record<string, unknown>,
+        raw_payload: event.raw_payload,
           status: 'rate_limited',
           processing_ms: Date.now() - start,
         })
@@ -497,7 +514,7 @@ export async function routeConnectorEvent(
     }
 
     // 5. Log event
-    const loggedEvent = await logConnectorEvent({
+    const loggedEvent = await logEv(projectId, {
       connector_id: connector.id,
       binding_id: typedBinding.id,
       identity_id: typedIdentity.id,
@@ -505,6 +522,7 @@ export async function routeConnectorEvent(
       ref_keys: event.ref_keys,
       target_ref_keys: event.target_ref_keys,
       payload: event as unknown as Record<string, unknown>,
+      raw_payload: event.raw_payload,
       metadata: event.metadata,
       status: 'routed',
       processing_ms: Date.now() - start,
@@ -723,12 +741,13 @@ async function executeConversationAdapter(
 
   try {
     const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId)
-    await logConnectorMessage({
+    await logMsg(projectId, {
       connector_id: connectorId,
       conversation_id: conversationId,
       direction: 'inbound',
       ref_keys: event.ref_keys,
       content_snapshot: event.content?.text,
+      raw_payload: event.raw_payload,
       status: 'sent',
     })
 
@@ -770,7 +789,7 @@ async function executeConversationAdapter(
     let usageOutput = 0
     let providerId: string | null = null
     let modelId: string | null = null
-    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string } | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string } | null = null
 
     const reader = drainStream.getReader()
     try {
@@ -791,7 +810,7 @@ async function executeConversationAdapter(
           providerId = d?.provider_id ?? providerId
           modelId = d?.model_id ?? modelId
         } else if (v.type === 'data-jiku-run-snapshot') {
-          runSnapshot = v.data as { system_prompt: string; messages: unknown[]; response?: string }
+          runSnapshot = v.data as { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string }
         }
       }
     } finally {
@@ -814,6 +833,8 @@ async function executeConversationAdapter(
         raw_system_prompt: runSnapshot?.system_prompt ?? null,
         raw_messages: runSnapshot?.messages ?? null,
         raw_response: runSnapshot?.response ?? (responseText || null),
+        active_tools: runSnapshot?.tools ?? null,
+        agent_adapter: runSnapshot?.adapter ?? null,
       })
     }
 
@@ -827,13 +848,24 @@ async function executeConversationAdapter(
         { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
         { text: responseText, markdown: true, simulate_typing: true },
       )
-      await logConnectorMessage({
+      await logMsg(projectId, {
         connector_id: connectorId,
         conversation_id: conversationId,
         direction: 'outbound',
         ref_keys: sendResult.ref_keys ?? event.ref_keys,
         content_snapshot: responseText,
+        raw_payload: sendResult,
         status: sendResult.success ? 'sent' : 'failed',
+      })
+      await logEv(projectId, {
+        connector_id: connectorId,
+        event_type: 'send_message',
+        direction: 'outbound',
+        ref_keys: sendResult.ref_keys ?? event.ref_keys,
+        target_ref_keys: event.ref_keys,
+        payload: { text: responseText, markdown: true, source: 'auto_reply' },
+        raw_payload: sendResult,
+        status: sendResult.success ? 'routed' : 'error',
       })
     }
   } finally {

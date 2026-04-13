@@ -7,6 +7,7 @@ import { DefaultChatTransport } from 'ai'
 import { isToolUIPart, isTextUIPart, isStaticToolUIPart, getToolName } from 'ai'
 import type { UIMessage } from 'ai'
 import { api } from '@/lib/api'
+import { dbPartsToUIParts } from '@/lib/messages'
 import { getToken } from '@/lib/auth'
 import { useConversationObserver } from '@/hooks/use-conversation-observer'
 import { useLiveConversation } from '@/hooks/use-live-conversation'
@@ -379,15 +380,32 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   }, [])
 
   // Fetch fresh messages + hydrate both UI messages & branch meta.
+  //
+  // IMPORTANT: DB stores tool parts as `{ type: 'tool-invocation', args, result, state: 'result' }`,
+  // but AI SDK v6's renderer (`isToolUIPart`, `ToolInput`, `ToolOutput`) expects
+  // `{ type: 'dynamic-tool', input, output, state: 'output-available' }`. Without
+  // `dbPartsToUIParts` conversion the tool accordions render blank after the
+  // post-stream refresh — the part shape matches `isToolUIPart` (starts with
+  // `tool-`) but `input`/`output` are undefined because DB uses `args`/`result`.
   const refreshMessages = useCallback(async () => {
     const fresh = await api.conversations.messages(convId)
     hydrateBranchMeta(fresh)
-    setMessages(fresh.messages.map(m => ({
+    const converted = fresh.messages.map(m => ({
       id: m.id,
       role: m.role as 'user' | 'assistant',
-      parts: m.parts as UIMessage['parts'],
+      parts: dbPartsToUIParts(m.parts as unknown[]),
       metadata: {},
-    })))
+    }))
+    // TEMP debug — verify conversion is active and what part shapes are produced.
+    // Look for part.type: should be 'dynamic-tool' (good) or 'tool-invocation' (bug, conversion didn't run).
+    if (typeof window !== 'undefined') {
+      console.log('[refreshMessages] converted parts sample:',
+        converted
+          .filter(m => m.role === 'assistant')
+          .map(m => ({ id: m.id, partTypes: (m.parts as Array<{ type: string }>).map(p => p.type) }))
+      )
+    }
+    setMessages(converted)
   }, [convId, hydrateBranchMeta, setMessages])
 
   // Hydrate ONLY branch meta + active tip (don't touch the UI messages array).
@@ -422,7 +440,7 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       setMessages(msgs.map(m => ({
         id: m.id,
         role: m.role as 'user' | 'assistant',
-        parts: m.parts as UIMessage['parts'],
+        parts: dbPartsToUIParts(m.parts as unknown[]),
         metadata: {},
       })))
     } catch (err) {

@@ -178,7 +178,7 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
 
   // Drain broadcast branch in background — buffer chunks + forward to SSE observers
   ;(async () => {
-    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string } | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string } | null = null
     const runStart = Date.now()
     try {
       const reader = broadcastStream.getReader()
@@ -194,7 +194,7 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
         const chunk = value as Record<string, unknown>
         // Buffer the raw snapshot so it's available when usage arrives
         if (chunk?.type === 'data-jiku-run-snapshot') {
-          runSnapshot = chunk.data as { system_prompt: string; messages: unknown[]; response?: string }
+          runSnapshot = chunk.data as { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string }
         }
         // Persist usage log when we see the final usage chunk
         if (chunk?.type === 'data-jiku-usage') {
@@ -215,6 +215,8 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
               raw_system_prompt: runSnapshot?.system_prompt ?? null,
               raw_messages: runSnapshot?.messages ?? null,
               raw_response: runSnapshot?.response ?? null,
+              active_tools: runSnapshot?.tools ?? null,
+              agent_adapter: runSnapshot?.adapter ?? null,
             })
           }
         }

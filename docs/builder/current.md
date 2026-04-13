@@ -1,3 +1,37 @@
+## Phase (2026-04-13) — Channels UI revision + event direction + raw_payload — SHIPPED
+
+Follow-up to the channels tab refactor:
+- `connector_events` now has `direction` (`inbound` | `outbound`) and `raw_payload` columns; `connector_messages` also has `raw_payload`. Migration `0026_connector_raw_payload.sql`.
+- Outbound bot actions (send, run_action, auto-reply) are logged as outbound events with the platform response captured in `raw_payload`.
+- Inbound webhook attaches the original webhook body to `event.raw_payload` before routing so the raw platform JSON (Telegram update etc.) is stored.
+- Detail drawer shows a "Raw Payload (platform-side)" block alongside parsed payload/ref_keys/metadata.
+- Events tab has a direction filter + per-row direction arrow.
+
+---
+
+## Phase (2026-04-13) — Channels UI revision (3-tab + project-level events/messages) — SHIPPED
+
+Channels page is now tabbed: `Connectors | Messages | Events`. Tab state lives in URL (`?tab=...`). Messages and Events tabs each render a project-wide table (joined across all connectors in the project) with:
+- Server-side keyset (cursor) pagination (`Load more`)
+- Filters: connector, direction (msgs) / event_type (events), status, date range
+- Row click → Sheet drawer with full payload/ref_keys/metadata
+- Live SSE toggle (project-scoped stream, filter-aware)
+
+Connector detail page Events/Messages buttons now redirect to the new tabs with `connector_id` pre-filtered. Old per-connector pages (`[connector]/events`, `[connector]/messages`) deleted.
+
+Relevant files:
+- `apps/studio/db/src/queries/connector.ts` — `listConnectorEventsForProject`, `listConnectorMessagesForProject` (keyset on `(created_at, id) DESC`)
+- `apps/studio/server/src/connectors/sse-hub.ts` — project-level SSE pub/sub with filter matching
+- `apps/studio/server/src/connectors/event-router.ts` — `logEv`/`logMsg` wrappers that broadcast after each insert
+- `apps/studio/server/src/routes/connectors.ts` — `GET /projects/:pid/connector-events`, `connector-messages`, `+/stream`
+- `apps/studio/server/src/middleware/auth.ts` — accepts `?token=` for SSE (EventSource can't set headers)
+- `apps/studio/web/lib/api.ts` — `listProjectEvents`, `listProjectMessages`, `projectEventsStreamUrl`, `projectMessagesStreamUrl`
+- `apps/studio/web/components/channels/{connectors,messages,events}-tab.tsx`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/page.tsx` — tabbed shell
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx` — quick-nav buttons rewired
+
+---
+
 ## Phase (2026-04-13) — Cron one-shot + archive — SHIPPED
 
 Cron tasks now support `mode: 'once'` (one-shot, fires at `run_at`, auto-archives after success) alongside the existing `mode: 'recurring'`. Archived tasks are hidden from default lists and the scheduler; they remain in the DB for history/audit. No retry on failure (per spec). `cron_list` tool accepts `include_archived`; new `cron_archive`/`cron_restore` tools. REST routes: `POST .../archive`, `POST .../restore`, and `?status=archived` / `?include_archived=1` on list. UI: Active/Archived tabs on list page; mode picker (Recurring cron expression vs Once datetime-local) on create + detail pages.

@@ -490,14 +490,43 @@ export const api = {
         request<{ ok: boolean }>(`/api/connectors/${connectorId}/invite-codes/${codeId}`, { method: 'DELETE' }),
     },
 
-    events: {
-      list: (connectorId: string, limit?: number) =>
-        request<{ events: ConnectorEventItem[] }>(`/api/connectors/${connectorId}/events${limit ? `?limit=${limit}` : ''}`),
+    // ─── Project-level paginated lists with filters ──────────────────────────
+    listProjectEvents: (projectId: string, filters: ConnectorEventFilters = {}) => {
+      const qs = buildConnectorListQuery(filters)
+      return request<{ events: ConnectorEventListItem[]; next_cursor: string | null }>(
+        `/api/projects/${projectId}/connector-events${qs}`,
+      )
     },
 
-    messages: {
-      list: (connectorId: string, limit?: number) =>
-        request<{ messages: ConnectorMessageItem[] }>(`/api/connectors/${connectorId}/messages${limit ? `?limit=${limit}` : ''}`),
+    listProjectMessages: (projectId: string, filters: ConnectorMessageFilters = {}) => {
+      const qs = buildConnectorListQuery(filters)
+      return request<{ messages: ConnectorMessageListItem[]; next_cursor: string | null }>(
+        `/api/projects/${projectId}/connector-messages${qs}`,
+      )
+    },
+
+    // ─── SSE stream URL builders (for use with EventSource) ──────────────────
+    projectEventsStreamUrl: (projectId: string, filters: ConnectorEventFilters = {}) => {
+      const headers = getAuthHeaders() as Record<string, string>
+      const token = headers['Authorization']?.replace('Bearer ', '') ?? ''
+      const params = new URLSearchParams()
+      if (token) params.set('token', token)
+      if (filters.connector_id) params.set('connector_id', filters.connector_id)
+      if (filters.event_type) params.set('event_type', filters.event_type)
+      if (filters.direction) params.set('direction', filters.direction)
+      if (filters.status) params.set('status', filters.status)
+      return `${BASE_URL}/api/projects/${projectId}/connector-events/stream?${params.toString()}`
+    },
+
+    projectMessagesStreamUrl: (projectId: string, filters: ConnectorMessageFilters = {}) => {
+      const headers = getAuthHeaders() as Record<string, string>
+      const token = headers['Authorization']?.replace('Bearer ', '') ?? ''
+      const params = new URLSearchParams()
+      if (token) params.set('token', token)
+      if (filters.connector_id) params.set('connector_id', filters.connector_id)
+      if (filters.direction) params.set('direction', filters.direction)
+      if (filters.status) params.set('status', filters.status)
+      return `${BASE_URL}/api/projects/${projectId}/connector-messages/stream?${params.toString()}`
     },
   },
 
@@ -1237,6 +1266,10 @@ export interface UsageLog {
   raw_system_prompt: string | null
   raw_messages: unknown | null
   raw_response: string | null
+  /** Debug — tool names actually registered at run time. */
+  active_tools: string[] | null
+  /** Debug — agent adapter id (e.g. 'jiku.agent.default'). */
+  agent_adapter: string | null
   created_at: string
   user?: { id: string; name: string | null; email: string } | null
   conversation?: { id: string; mode: string; type: string } | null
@@ -1656,15 +1689,58 @@ export interface ConnectorInviteCode {
   created_at: string
 }
 
+export interface ConnectorEventFilters {
+  connector_id?: string
+  event_type?: string
+  direction?: 'inbound' | 'outbound'
+  status?: string
+  from?: string  // ISO
+  to?: string
+  cursor?: string | null
+  limit?: number
+  [k: string]: unknown
+}
+
+export interface ConnectorMessageFilters {
+  connector_id?: string
+  direction?: 'inbound' | 'outbound'
+  status?: string
+  from?: string
+  to?: string
+  cursor?: string | null
+  limit?: number
+  [k: string]: unknown
+}
+
+function buildConnectorListQuery(f: Record<string, unknown>): string {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(f)) {
+    if (v == null || v === '') continue
+    p.set(k, String(v))
+  }
+  const s = p.toString()
+  return s ? `?${s}` : ''
+}
+
+export interface ConnectorEventListItem extends ConnectorEventItem {
+  connector_name: string
+}
+
+export interface ConnectorMessageListItem extends ConnectorMessageItem {
+  connector_name: string
+}
+
 export interface ConnectorEventItem {
   id: string
   connector_id: string
   binding_id?: string | null
   identity_id?: string | null
   event_type: string
+  direction: 'inbound' | 'outbound'
   ref_keys: Record<string, string>
   target_ref_keys?: Record<string, string> | null
   payload: Record<string, unknown>
+  raw_payload?: unknown | null
   metadata?: Record<string, unknown> | null
   status: string
   drop_reason?: string | null
@@ -1679,6 +1755,7 @@ export interface ConnectorMessageItem {
   direction: 'inbound' | 'outbound'
   ref_keys: Record<string, string>
   content_snapshot?: string | null
+  raw_payload?: unknown | null
   status: string
   created_at: string
 }

@@ -85,6 +85,33 @@ function RawDataDialog({ log }: { log: UsageLog }) {
                   </pre>
                 </AccordionContent>
               </AccordionItem>
+              <AccordionItem value="active-tools">
+                <AccordionTrigger className="text-xs">
+                  Active Tools
+                  <span className="ml-auto mr-2 text-[10px] text-muted-foreground">
+                    {Array.isArray(log.active_tools) ? `${log.active_tools.length} tools` : 'not captured'}
+                    {log.agent_adapter ? ` · ${log.agent_adapter}` : ''}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <div className="bg-muted rounded p-3 max-h-[50vh] overflow-auto">
+                    {log.agent_adapter && (
+                      <div className="mb-2 text-[11px] text-muted-foreground">
+                        adapter: <code>{log.agent_adapter}</code>
+                      </div>
+                    )}
+                    {Array.isArray(log.active_tools) && log.active_tools.length > 0 ? (
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {log.active_tools.map(t => (
+                          <li key={t}><code>{t}</code></li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-muted-foreground">(not captured)</p>
+                    )}
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
             </Accordion>
           </div>
         </DialogContent>

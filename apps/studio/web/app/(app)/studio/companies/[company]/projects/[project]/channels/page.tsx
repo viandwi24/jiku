@@ -1,48 +1,34 @@
 'use client'
 
-import { use, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useRouter } from 'next/navigation'
-import { api } from '@/lib/api'
-import type { ConnectorItem } from '@/lib/api'
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@jiku/ui'
-import { Webhook, Plus, AlertCircle, CheckCircle2, Circle, Trash2, Settings } from 'lucide-react'
+import { use } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { api } from '@/lib/api'
+import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@jiku/ui'
+import { Webhook, Plus } from 'lucide-react'
+import { ConnectorsTab } from '@/components/channels/connectors-tab'
+import { MessagesTab } from '@/components/channels/messages-tab'
+import { EventsTab } from '@/components/channels/events-tab'
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
 }
 
-function StatusBadge({ status }: { status: ConnectorItem['status'] }) {
-  if (status === 'active') return (
-    <Badge variant="outline" className="gap-1 text-green-600 border-green-500/40 bg-green-500/5">
-      <CheckCircle2 className="h-3 w-3" /> Active
-    </Badge>
-  )
-  if (status === 'error') return (
-    <Badge variant="outline" className="gap-1 text-destructive border-destructive/40 bg-destructive/5">
-      <AlertCircle className="h-3 w-3" /> Error
-    </Badge>
-  )
-  return (
-    <Badge variant="outline" className="gap-1 text-muted-foreground">
-      <Circle className="h-3 w-3" /> Inactive
-    </Badge>
-  )
+type TabValue = 'connectors' | 'messages' | 'events'
+
+function parseTab(v: string | null): TabValue {
+  return v === 'messages' || v === 'events' ? v : 'connectors'
 }
 
 function ChannelsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const router = useRouter()
-  const qc = useQueryClient()
+  const searchParams = useSearchParams()
+
+  const tab = parseTab(searchParams.get('tab'))
+  const initialConnectorId = searchParams.get('connector_id') ?? undefined
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -57,20 +43,16 @@ function ChannelsPage({ params }: PageProps) {
   })
 
   const project = projectsData?.projects.find(p => p.slug === projectSlug)
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['connectors', project?.id],
-    queryFn: () => api.connectors.list(project!.id),
-    enabled: !!project?.id,
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.connectors.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['connectors', project?.id] }),
-  })
-
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}`
-  const connectors = data?.connectors ?? []
+
+  function setTab(next: TabValue) {
+    const sp = new URLSearchParams(searchParams.toString())
+    if (next === 'connectors') sp.delete('tab')
+    else sp.set('tab', next)
+    if (next === 'connectors') sp.delete('connector_id')
+    const qs = sp.toString()
+    router.replace(`${base}/channels${qs ? `?${qs}` : ''}`, { scroll: false })
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -81,7 +63,7 @@ function ChannelsPage({ params }: PageProps) {
             Channels
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Connect agents to external platforms via connectors
+            Connect agents to external platforms — inspect events &amp; message traffic
           </p>
         </div>
         <Button size="sm" asChild>
@@ -92,88 +74,25 @@ function ChannelsPage({ params }: PageProps) {
         </Button>
       </div>
 
-      {isLoading && (
-        <div className="text-sm text-muted-foreground">Loading connectors...</div>
-      )}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)}>
+        <TabsList>
+          <TabsTrigger value="connectors">Connectors</TabsTrigger>
+          <TabsTrigger value="messages">Messages</TabsTrigger>
+          <TabsTrigger value="events">Events</TabsTrigger>
+        </TabsList>
 
-      {!isLoading && connectors.length === 0 && (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center justify-center py-12 gap-3">
-            <Webhook className="h-10 w-10 text-muted-foreground/30" />
-            <p className="text-sm font-medium">No connectors yet</p>
-            <p className="text-xs text-muted-foreground text-center max-w-xs">
-              Add a connector to let your agents receive messages from Telegram, Discord, and more.
-            </p>
-            <Button size="sm" variant="outline" asChild>
-              <Link href={`${base}/channels/new`}>
-                <Plus className="h-4 w-4" />
-                Add your first connector
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="grid gap-4">
-        {connectors.map(connector => (
-          <Card key={connector.id} className="group">
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
-                    <Webhook className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-sm font-medium">{connector.display_name}</CardTitle>
-                    <CardDescription className="text-xs">{connector.plugin_id}</CardDescription>
-                  </div>
-                </div>
-                <StatusBadge status={connector.status} />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              {connector.error_message && (
-                <p className="text-xs text-destructive mb-3 flex items-center gap-1">
-                  <AlertCircle className="h-3 w-3 shrink-0" />
-                  {connector.error_message}
-                </p>
-              )}
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-                  <Link href={`${base}/channels/${connector.id}`}>
-                    <Settings className="h-3 w-3" />
-                    Manage
-                  </Link>
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-                  <Link href={`${base}/channels/${connector.id}/events`}>
-                    Events
-                  </Link>
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-                  <Link href={`${base}/channels/${connector.id}/messages`}>
-                    Messages
-                  </Link>
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-destructive hover:text-destructive ml-auto opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={() => {
-                    if (confirm('Delete this connector?')) {
-                      deleteMutation.mutate(connector.id)
-                    }
-                  }}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+        <TabsContent value="connectors" className="mt-4">
+          {project && <ConnectorsTab projectId={project.id} baseUrl={base} />}
+        </TabsContent>
+        <TabsContent value="messages" className="mt-4">
+          {project && <MessagesTab projectId={project.id} initialConnectorId={initialConnectorId} />}
+        </TabsContent>
+        <TabsContent value="events" className="mt-4">
+          {project && <EventsTab projectId={project.id} initialConnectorId={initialConnectorId} />}
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
-import { withPermissionGuard } from '@/components/permissions/permission-guard'
+
 export default withPermissionGuard(ChannelsPage, 'channels:read')

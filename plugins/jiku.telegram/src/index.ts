@@ -742,9 +742,10 @@ class TelegramAdapter extends ConnectorAdapter {
       return {
         success: true,
         ref_keys: { message_id: String(lastSent!.message_id), chat_id: String(lastSent!.chat.id) },
+        raw_payload: lastSent,
       }
     } catch (err) {
-      return { success: false, error: String(err) }
+      return { success: false, error: String(err), raw_payload: { error: String(err) } }
     }
   }
 

@@ -44,10 +44,21 @@ export function buildCronCreateTool(
     input: z.object({
       name: z.string().max(255).describe('Human-readable name for the cron task. Short, unique, descriptive — e.g. "Reminder jam pulang (Budi)", "Daily sales digest — #sales topic".'),
       description: z.string().optional().describe('Optional description — summarize who asked for it, why, and the expected output. Useful for audit.'),
-      mode: z.enum(['recurring', 'once']).default('recurring').describe(
-        'Execution mode. "recurring" (default) uses `cron_expression` and fires repeatedly until disabled. ' +
-        '"once" uses `run_at` and fires exactly once, then auto-archives — perfect for one-off reminders ' +
-        '("ingatkan saya besok jam 9" → mode: "once", run_at: <besok 09:00 UTC ISO>).',
+      mode: z.enum(['recurring', 'once']).describe(
+        'Execution mode. REQUIRED — no default; pick deliberately based on what the user asked for.\n' +
+        '\n' +
+        'USE "once" (fires exactly once at `run_at`, then auto-archives) when:\n' +
+        '- User says a SPECIFIC single time: "jam 23.44", "besok jam 9", "nanti malam", "30 menit lagi", "15 Mei jam 10".\n' +
+        '- User asks for a one-off reminder without frequency words ("harian", "tiap", "setiap", "daily").\n' +
+        '- Indonesian hint: "ingetin saya jam X untuk Y" (tanpa "tiap hari" / "setiap") → ALMOST ALWAYS once.\n' +
+        '\n' +
+        'USE "recurring" (fires repeatedly on `cron_expression` until disabled) ONLY when:\n' +
+        '- User EXPLICITLY says frequency: "tiap hari", "setiap senin", "daily", "every morning", "mingguan", "jam 9 pagi setiap hari".\n' +
+        '- Periodic digests, reports, heartbeats, automations that repeat by design.\n' +
+        '\n' +
+        'WHEN AMBIGUOUS: default to "once". Do NOT silently upgrade a one-off request into a recurring schedule — that creates unwanted daily spam. If unsure, ask the user first.\n' +
+        '\n' +
+        'HARD RULE: your confirmation sentence to the user MUST match the mode you picked. Saying "sudah ku-set pengingat satu kali" but passing mode: "recurring" = lying to the user. Saying "sudah ku-set tiap hari" but passing mode: "once" = misleading.',
       ),
       cron_expression: z.string().max(100).optional().describe(
         'Required when `mode` is "recurring". 5-field cron expression evaluated in UTC. Convert from the user\'s local time BEFORE passing. ' +

@@ -29,6 +29,10 @@ export const usage_logs = pgTable('usage_logs', {
   raw_system_prompt: varchar('raw_system_prompt').default(null),
   raw_messages:    jsonb('raw_messages').default(null),
   raw_response:    varchar('raw_response').default(null),
+  /** Plan 24 debug — tool names (meta.id) actually registered for this run. Helps diagnose "tool should exist but model didn't call it" cases. */
+  active_tools:    jsonb('active_tools'),
+  /** Plan 24 debug — agent adapter id that executed the run (e.g. 'jiku.agent.default'). */
+  agent_adapter:   varchar('agent_adapter', { length: 100 }),
   created_at:      timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   index('idx_usage_agent').on(t.agent_id, t.created_at),

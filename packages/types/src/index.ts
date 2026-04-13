@@ -1151,6 +1151,8 @@ export interface ConnectorEvent {
     raw?: unknown
   }
   metadata?: Record<string, unknown>
+  /** Original platform-side payload (e.g. Telegram update JSON) — preserved for inspection in the channels UI. */
+  raw_payload?: unknown
   timestamp: Date
 }
 
@@ -1204,6 +1206,8 @@ export interface ConnectorSendResult {
   success: boolean
   ref_keys?: Record<string, string>
   error?: string
+  /** Raw response from the platform API (e.g. Telegram sendMessage response) for inspection. */
+  raw_payload?: unknown
 }
 
 export interface ConnectorContext {

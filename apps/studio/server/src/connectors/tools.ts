@@ -16,9 +16,12 @@ import {
   createConnectorTarget,
   updateConnectorTarget,
   deleteConnectorTarget,
+  logConnectorEvent,
+  logConnectorMessage,
 } from '@jiku-studio/db'
 import type { ConnectorTarget } from '@jiku/types'
 import { connectorRegistry } from './registry.ts'
+import { broadcastProjectEvent, broadcastProjectMessage } from './sse-hub.ts'
 
 /**
  * Build connector built-in tools.
@@ -133,10 +136,32 @@ export function buildConnectorTools(projectId: string) {
         }
         const adapter = connectorRegistry.getAdapterForConnector(connector_id)
         if (!adapter) return { success: false, error: 'Connector not active' }
-        return adapter.sendMessage(
+        const sendResult = await adapter.sendMessage(
           { ref_keys: target_ref_keys, reply_to_ref_keys },
           { text, markdown, simulate_typing },
         )
+        // Log outbound message + outbound event for inspection in channels UI
+        const msgRow = await logConnectorMessage({
+          connector_id,
+          direction: 'outbound',
+          ref_keys: sendResult.ref_keys ?? target_ref_keys,
+          content_snapshot: text,
+          raw_payload: sendResult,
+          status: sendResult.success ? 'sent' : 'failed',
+        }).catch(() => null)
+        if (msgRow) broadcastProjectMessage(projectId, msgRow as unknown as Record<string, unknown>)
+        const evRow = await logConnectorEvent({
+          connector_id,
+          event_type: 'send_message',
+          direction: 'outbound',
+          ref_keys: sendResult.ref_keys ?? target_ref_keys,
+          target_ref_keys: reply_to_ref_keys,
+          payload: { text, markdown, simulate_typing },
+          raw_payload: sendResult,
+          status: sendResult.success ? 'routed' : 'error',
+        }).catch(() => null)
+        if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
+        return sendResult
       },
     }),
 
@@ -204,8 +229,29 @@ export function buildConnectorTools(projectId: string) {
 
         try {
           const result = await adapter.runAction(action_id, params)
+          // Log outbound event so it shows up in the channels Events tab
+          const evRow = await logConnectorEvent({
+            connector_id,
+            event_type: action_id,
+            direction: 'outbound',
+            ref_keys: (params['target_ref_keys'] as Record<string, string>) ?? {},
+            payload: params,
+            raw_payload: result,
+            status: 'routed',
+          }).catch(() => null)
+          if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
           return { success: true, result }
         } catch (err) {
+          const evRow = await logConnectorEvent({
+            connector_id,
+            event_type: action_id,
+            direction: 'outbound',
+            ref_keys: (params['target_ref_keys'] as Record<string, string>) ?? {},
+            payload: params,
+            raw_payload: { error: err instanceof Error ? err.message : String(err) },
+            status: 'error',
+          }).catch(() => null)
+          if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
           return { success: false, error: err instanceof Error ? err.message : String(err) }
         }
       },

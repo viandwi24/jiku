@@ -4,6 +4,15 @@
 
 Connectors allow agents to receive input from and send output to third-party platforms (Telegram, Discord, etc.) in a unified way. All runs go through `runtime.run()` — no special paths. Binding rules route incoming events to specific agents and adapter types.
 
+## Channels UI revision (2026-04-13)
+
+- **Project channels page is tabbed**: `Connectors | Messages | Events`. Tab + filters live in URL search params (`?tab=events&connector_id=...`).
+- **Project-level paginated lists** with cursor (keyset on `(created_at, id) DESC`) + filters (connector, direction, event_type|—, status, date range): `GET /projects/:pid/connector-events`, `GET /projects/:pid/connector-messages`. Cursors are base64(`<iso>|<uuid>`).
+- **Project-level SSE streams** (`/stream` suffix) with same filters; `sse-hub.ts` is a shared in-memory pub/sub. Broadcast happens after each insert in `event-router.ts` (via `logEv`/`logMsg` wrappers) and `tools.ts` (after `connector_send` / `connector_run_action`). EventSource auth via `?token=` query (added to `authMiddleware`).
+- **Events have direction** (`inbound` | `outbound`). Outbound entries are written for bot-initiated sends (event_type = `send_message`) and `runAction` calls (event_type = action id, e.g. `send_reaction`). DB column added with default `'inbound'`; old rows are inbound by definition.
+- **Raw payload preserved** on both events and messages (`raw_payload jsonb`). Inbound: webhook handler stores `req.body` on `event.raw_payload` before routing. Outbound: adapter `sendMessage`/`runAction` results captured. Visible in the detail Sheet drawer.
+- **Connector detail Events/Messages buttons** redirect to channels?tab=…&connector_id=…; old per-connector pages removed.
+
 ## Plan 22 additions (2026-04-13)
 
 - **`scope_key` conversation isolation** (ADR-056): multi-chat platforms (Telegram groups, forum topics) now get per-scope conversations. DMs keep using `identity.conversation_id`. New table `connector_scope_conversations(connector_id, scope_key, agent_id, conversation_id)`.

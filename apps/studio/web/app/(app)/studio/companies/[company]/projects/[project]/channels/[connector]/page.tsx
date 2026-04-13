@@ -481,13 +481,17 @@ export default function ConnectorDetailPage({ params }: PageProps) {
         </p>
       )}
 
-      {/* Quick nav */}
+      {/* Quick nav — jump to project channels page with this connector pre-filtered */}
       <div className="flex gap-2">
         <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-          <Link href={`${base}/events`}>Events</Link>
+          <Link href={`/studio/companies/${companySlug}/projects/${projectSlug}/channels?tab=events&connector_id=${connectorId}`}>
+            Events
+          </Link>
         </Button>
         <Button size="sm" variant="outline" className="h-7 text-xs" asChild>
-          <Link href={`${base}/messages`}>Messages</Link>
+          <Link href={`/studio/companies/${companySlug}/projects/${projectSlug}/channels?tab=messages&connector_id=${connectorId}`}>
+            Messages
+          </Link>
         </Button>
       </div>
 

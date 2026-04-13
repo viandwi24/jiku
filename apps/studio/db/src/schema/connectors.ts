@@ -147,9 +147,11 @@ export const connector_events = pgTable('connector_events', {
   binding_id:      uuid('binding_id').references(() => connector_bindings.id, { onDelete: 'set null' }),
   identity_id:     uuid('identity_id').references(() => connector_identities.id, { onDelete: 'set null' }),
   event_type:      text('event_type').notNull(),
+  direction:       text('direction').notNull().default('inbound'),  // 'inbound' | 'outbound'
   ref_keys:        jsonb('ref_keys').notNull(),
   target_ref_keys: jsonb('target_ref_keys'),
   payload:         jsonb('payload').notNull(),
+  raw_payload:     jsonb('raw_payload'),
   metadata:        jsonb('metadata'),
   status:          text('status').notNull().default('received'),
   drop_reason:     text('drop_reason'),
@@ -169,6 +171,7 @@ export const connector_messages = pgTable('connector_messages', {
   direction:        text('direction').notNull(),  // 'inbound' | 'outbound'
   ref_keys:         jsonb('ref_keys').notNull(),
   content_snapshot: text('content_snapshot'),
+  raw_payload:      jsonb('raw_payload'),
   status:           text('status').notNull().default('sent'),
   created_at:       timestamp('created_at').notNull().defaultNow(),
 }, t => [

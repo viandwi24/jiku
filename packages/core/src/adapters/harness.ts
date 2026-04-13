@@ -1,101 +1,65 @@
 import { streamText, stepCountIs } from 'ai'
-import type { ModelMessage, StepResult, ToolSet, JSONValue } from 'ai'
 import type { AgentAdapter, AgentRunContext } from '../adapter.ts'
 import type { JikuRunParams, PolicyRule, SubjectMatcher } from '@jiku/types'
 
 const DEFAULT_HARNESS_MAX_ITERATIONS = 40
-const DEFAULT_MAX_TOOL_CALLS_PER_ITERATION = 1
+const DEFAULT_STALL_TIMEOUT_MS = 120_000
 
 /**
- * System prompt addendum injected ONLY during phase 1 (narration). Tells the
- * model that tool_choice=none is a temporary harness constraint, not a lack of
- * capability — otherwise GPT will apologize with "I can't access files" which
- * contradicts the phase 2 tool call that follows.
- */
-const NARRATION_PHASE_INSTRUCTION = `
-
----
-
-## HARNESS PHASE 1 — NARRATION ONLY (CRITICAL)
-
-This response is a NARRATION-ONLY turn inside a two-phase harness loop:
-- Right now tool calls are temporarily disabled. This is a mechanical constraint for THIS response only.
-- In the VERY NEXT response, tool calls will be re-enabled and you WILL be called again with the exact same messages to execute the tool you describe here.
-- All the tools you need ARE available in this run. Check the tool list in your context — do not claim you lack capability.
-
-Your job in this narration turn:
-1. Write 1–2 short sentences in first person describing what tool you are about to call and why (e.g. "Let me list the files at / to see what's there.").
-2. STOP after those 1–2 sentences. Do NOT produce a full answer. Do NOT list options. Do NOT ask the user for clarification unless the request is genuinely ambiguous.
-3. Do NOT apologize. Do NOT say "I can't" or "I don't have access" — that is false, tools WILL be available in the next response.
-4. Do NOT describe what you already did; describe what you are about to do next.
-
-When to write the FINAL answer directly (instead of a narration):
-- The user's question can be fully answered without any tool call (e.g. general knowledge, math, simple greeting).
-- All the work the user asked for has already been done in previous tool results — the task is complete.
-- The previous tool result already fully answers the user's request and no more tools are needed.
-
-In those cases, write the final summary/answer here (no action-intent phrasing like "I'll…"). In ALL OTHER cases, write a short action-intent narration (e.g. "I'll list the files first.").
-
-CRITICAL:
-- Look at the conversation history. If a tool call already accomplished what you're about to announce, DO NOT re-announce it. Skip straight to the final answer.
-- Do NOT claim you lack access to tools or files — the tools listed in your context ARE available and have been working in prior turns of this same conversation.
-- Never announce a new action unless it is genuinely the next step left to do.`
-
-
-/**
- * Does the narration text announce an impending tool call?
- * Covers common English + Indonesian phrasings. We use this to decide
- * whether phase 2 should run (action intent present → run phase 2, force
- * tool) or skip (no action intent → narration IS the final answer).
+ * Harness adapter — `jiku.agent.harness`.
  *
- * Prompt-only "phase 2 please stay silent if already answered" works on
- * Claude but GPT is unreliable — it either duplicates the answer or drops
- * a clearly-requested tool call. Hence the deterministic gate here.
+ * Mirrors the claude-code / clawcode iterative loop pattern:
+ *   - Single agentic loop with `tool_choice: 'auto'` throughout.
+ *   - Model natively decides text + tool_use per step.
+ *   - Exit condition is structural: when the model stops emitting tool calls
+ *     the run is done (AI SDK's `stopWhen` drives this).
+ *   - No regex, no forced-narration phase.
+ *
+ * Architectural value vs. the default adapter:
+ *   - **Stall watchdog.** Each model step must complete within
+ *     `stall_timeout_ms`; if a step hangs, the watchdog aborts the run and
+ *     emits `jiku-harness-stall`. The default adapter has no such safety net.
+ *   - **Per-step iteration events.** Emits `jiku-harness-iteration` on every
+ *     step completion so operators can observe multi-turn runs.
+ *   - **Extension point.** All per-step hooks (future approval prompts,
+ *     interrupt checks, per-iteration model switching) go through the single
+ *     `onStepFinish` path.
+ *
+ * We deliberately use a SINGLE `streamText` call with `stopWhen(stepCountIs)`
+ * rather than a manual outer `while` loop. An earlier revision did the manual
+ * loop (one `streamText` per iteration, merging each into `sdkWriter`) but
+ * breaks the AI SDK UI message protocol — merged streams create conflicting
+ * part IDs and message boundaries, causing tool-invocation UI to render blank
+ * until the page is refreshed. Letting AI SDK drive the step loop keeps the
+ * UI stream coherent; we retain harness-level control through `onStepFinish`
+ * and the stall watchdog.
+ *
+ * Reference: `refs-clawcode/rust/crates/runtime/src/conversation.rs:342-500` —
+ * same shape (loop; `tool_choice: Auto`; exit when no `ContentBlock::ToolUse`
+ * appears in the step).
  */
-const ACTION_INTENT_RE =
-  /\b(i['’]?ll|i will|let me|let['’]s|first[, ]|i['’]?m going to|i am going to|next,? i['’]?ll|now i['’]?ll|now i will|checking|calling|invoking|looking up|fetching|going to (?:call|check|run|list|read|write|open|fetch|search|query)|akan (?:saya|gue|aku)|(?:saya|gue|aku) akan|biar (?:saya|gue|aku)|mari (?:kita|saya)|sebentar,? (?:saya|gue|aku)|(?:gue|saya|aku) (?:cek|baca|panggil|list|lihat|buka|ambil|cari)(?!\w))/i
-
-/**
- * Normalize non-JSON values (Date, undefined, etc.) that tool outputs may
- * return directly from DB queries — AI SDK v6 validates messages against a
- * strict JSONValue schema.
- */
-function toJsonValue(v: unknown): JSONValue {
-  if (v === undefined) return null
-  try {
-    return JSON.parse(JSON.stringify(v)) as JSONValue
-  } catch {
-    return null
-  }
-}
-
 export class HarnessAgentAdapter implements AgentAdapter {
   readonly id = 'jiku.agent.harness'
   readonly displayName = 'Harness Agent'
   readonly description =
-    'Iterative agent. Tiap iterasi dipecah jadi dua fase: (1) narasi dipaksa via tool_choice=none, (2) aksi tool via tool_choice=auto. Pola ini menjamin urutan text → tool → text → tool pada model OpenAI Chat Completions yang secara native tidak bisa mix text+tool_call dalam satu response.'
+    'Iterative single-phase agent loop (claude-code/clawcode parity). One `streamText` with `tool_choice=auto`; exits when the model emits no more tool calls. Adds per-step stall detection, iteration events, and hook points on top of AI SDK\'s step loop.'
 
   readonly configSchema = {
     type: 'object',
     properties: {
       max_iterations: {
         type: 'number',
-        default: 40,
+        default: DEFAULT_HARNESS_MAX_ITERATIONS,
         minimum: 1,
         maximum: 100,
-        description: 'Maksimum iterasi loop narasi → tool.',
+        description: 'Maximum number of harness iterations (model steps). A step ends whenever the model either stops emitting tool calls or this budget is exhausted.',
       },
-      max_tool_calls_per_iteration: {
+      stall_timeout_ms: {
         type: 'number',
-        default: 1,
-        minimum: 1,
-        maximum: 40,
-        description: 'Maksimum tool call steps di tool phase per iterasi. Default 1 → pattern narasi→1 tool→narasi→1 tool. Naikkan kalau mau phase 2 bisa chain beberapa tool internally (akan batch tanpa narasi di antara).',
-      },
-      force_narration: {
-        type: 'boolean',
-        default: true,
-        description: 'Paksa narasi (tool_choice=none) sebelum tiap tool phase. Matikan kalau pakai model yang natively interleave (Claude) — hemat 1 LLM call per iterasi.',
+        default: DEFAULT_STALL_TIMEOUT_MS,
+        minimum: 10_000,
+        maximum: 600_000,
+        description: 'Per-step stall timeout in ms. If a single model step takes longer than this, the run is aborted and `jiku-harness-stall` is emitted. Resets on every step completion.',
       },
     },
   }
@@ -106,178 +70,113 @@ export class HarnessAgentAdapter implements AgentAdapter {
   ): Promise<void> {
     const cfg = ctx.modeConfig?.config ?? {}
     const maxIterations = (cfg['max_iterations'] as number | undefined) ?? DEFAULT_HARNESS_MAX_ITERATIONS
-    const maxToolCallsPerIteration =
-      (cfg['max_tool_calls_per_iteration'] as number | undefined) ?? DEFAULT_MAX_TOOL_CALLS_PER_ITERATION
-    const forceNarration = (cfg['force_narration'] as boolean | undefined) ?? true
+    const stallTimeoutMs = (cfg['stall_timeout_ms'] as number | undefined) ?? DEFAULT_STALL_TIMEOUT_MS
 
     const tools = Object.keys(ctx.aiTools).length > 0 ? ctx.aiTools : undefined
 
-    let messages: ModelMessage[] = [...ctx.messages]
-    let iteration = 0
-    let totalInputTokens = 0
-    let totalOutputTokens = 0
-    const allSteps: StepResult<ToolSet>[] = []
-    let streamStarted = false
+    // Stall watchdog — aborts the run if no step completes within
+    // `stallTimeoutMs`. Resets on every `onStepFinish`. Composed with the
+    // caller's abort signal so either trigger cancels the run.
+    const stallController = new AbortController()
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
+    let stalled = false
 
-    const mergePhase = (result: ReturnType<typeof streamText>, sendFinish: boolean) => {
-      ctx.sdkWriter.merge(
-        result.toUIMessageStream({
-          sendStart: !streamStarted,
-          sendFinish,
-          sendReasoning: true,
-          sendSources: true,
-        }),
-      )
-      streamStarted = true
+    const armStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => {
+        stalled = true
+        ctx.writer.write('jiku-harness-stall', {
+          timeout_ms: stallTimeoutMs,
+        })
+        console.warn(`[harness] step stalled after ${stallTimeoutMs}ms — aborting run`)
+        stallController.abort()
+      }, stallTimeoutMs)
     }
-
-    const runPhase = (toolChoice: 'auto' | 'none', stepBudget: number) => {
-      const system =
-        toolChoice === 'none'
-          ? ctx.systemPrompt + NARRATION_PHASE_INSTRUCTION
-          : ctx.systemPrompt
-      return streamText({
-        model: ctx.model,
-        system,
-        messages,
-        tools,
-        toolChoice,
-        stopWhen: stepCountIs(stepBudget),
-        abortSignal: params.abort_signal,
-        onStepFinish: (event) => {
-          ctx.writer.write('jiku-step-usage', {
-            step: event.stepNumber,
-            input_tokens: event.usage.inputTokens ?? 0,
-            output_tokens: event.usage.outputTokens ?? 0,
-          })
-        },
-      })
+    const clearStallTimer = () => {
+      if (stallTimer) {
+        clearTimeout(stallTimer)
+        stallTimer = null
+      }
     }
+    armStallTimer()
 
-    while (iteration < maxIterations) {
-      iteration++
+    const combinedSignal = params.abort_signal
+      ? anySignal([params.abort_signal, stallController.signal])
+      : stallController.signal
 
-      if (iteration > 1) {
+    let iterationCount = 0
+
+    const result = streamText({
+      model: ctx.model,
+      system: ctx.systemPrompt,
+      messages: ctx.messages,
+      tools,
+      toolChoice: 'auto',
+      stopWhen: stepCountIs(maxIterations),
+      abortSignal: combinedSignal,
+      onStepFinish: (event) => {
+        iterationCount++
+        armStallTimer() // reset watchdog — next step gets a fresh budget
+
         ctx.writer.write('jiku-harness-iteration', {
-          iteration,
+          iteration: iterationCount,
           max_iterations: maxIterations,
         })
+        ctx.writer.write('jiku-step-usage', {
+          step: event.stepNumber,
+          input_tokens: event.usage.inputTokens ?? 0,
+          output_tokens: event.usage.outputTokens ?? 0,
+        })
+      },
+    })
+
+    ctx.sdkWriter.merge(
+      result.toUIMessageStream({
+        sendStart: true,
+        sendFinish: true,
+        sendReasoning: true,
+        sendSources: true,
+      }),
+    )
+
+    let steps
+    let usage
+    try {
+      ;[steps, usage] = await Promise.all([result.steps, result.usage])
+    } catch (err) {
+      clearStallTimer()
+      if (stalled) {
+        // Stall already signalled via `jiku-harness-stall`. Re-throw anyway so
+        // upstream sees the abort and can mark the conversation failed.
+        throw err
       }
-
-      // ── Phase 1: forced narration (tool_choice=none) ──────────────────────
-      // Merge immediately so phase-1 text chunks reach the UI BEFORE phase 2
-      // starts emitting its own chunks. If we deferred the merge, phase 2's
-      // tool-call chunks would arrive in the UI stream first and phase 1's
-      // text-deltas would reference a text part that's already closed —
-      // yielding "Received text-delta for missing text part" errors.
-      //
-      // NOTE: We deliberately DO NOT append phase-1 narration to `messages`.
-      // If we did, phase 2 would see an assistant turn that already "announced"
-      // the next action and (on GPT) frequently decide it's done, emitting an
-      // empty response and terminating the loop. By keeping `messages`
-      // identical across both phases (only `toolChoice` differs), phase 2 is
-      // forced to either emit the actual tool call or a genuine final text.
-      // The narration still gets persisted to the DB via `allSteps` → the
-      // runner's `persistAssistantMessage` pass.
-      let skipPhase2 = false
-      if (forceNarration && tools) {
-        const narrationResult = runPhase('none', 1)
-        mergePhase(narrationResult, false)
-        const [narrationSteps, narrationUsage] = await Promise.all([
-          narrationResult.steps,
-          narrationResult.usage,
-        ])
-        totalInputTokens += narrationUsage.inputTokens ?? 0
-        totalOutputTokens += narrationUsage.outputTokens ?? 0
-        allSteps.push(...narrationSteps)
-
-        // If narration has no action-intent phrasing (no "I'll…", no "Let
-        // me…", no "akan saya…"), it's a direct/final answer — skip phase 2
-        // to avoid duplicating the output.
-        const narrationText = narrationSteps.map(s => s.text).filter(Boolean).join('\n').trim()
-        if (narrationText && !ACTION_INTENT_RE.test(narrationText)) {
-          skipPhase2 = true
-        }
-      }
-
-      if (skipPhase2) break
-
-      // ── Phase 2: action ───────────────────────────────────────────────────
-      // Merge immediately (like phase 1) so tool-call chunks stream to the UI
-      // as they happen — otherwise the UI sees a long pause followed by all
-      // tool calls flushed at once. sendFinish is always false here; we emit
-      // a manual `{ type: 'finish' }` chunk after the outer loop exits.
-      const actionResult = runPhase('auto', maxToolCallsPerIteration)
-      mergePhase(actionResult, false)
-      const [actionSteps, actionUsage] = await Promise.all([
-        actionResult.steps,
-        actionResult.usage,
-      ])
-      totalInputTokens += actionUsage.inputTokens ?? 0
-      totalOutputTokens += actionUsage.outputTokens ?? 0
-      allSteps.push(...actionSteps)
-
-      const lastStep = actionSteps[actionSteps.length - 1]
-      const hasToolCalls = (lastStep?.toolCalls?.length ?? 0) > 0
-      // If phase 2 emitted NO tool call AND NO text, the model obeyed the
-      // "don't repeat yourself" rule from ACTION_PHASE_INSTRUCTION — phase 1
-      // was the final answer. Terminate cleanly.
-      const willContinue = hasToolCalls && iteration < maxIterations
-
-      if (!willContinue) break
-
-      // Append ALL phase 2 steps to history — not just the last one. With
-      // `max_tool_calls_per_iteration > 1`, phase 2 can internally chain
-      // multiple tool calls (AI SDK's own multi-step loop under stepCountIs).
-      // If we only persisted the last step, iter N+1 would see an incomplete
-      // history: the model would not remember what the first 4 of 5 tools
-      // did, and may duplicate work or get confused. Iterating every step
-      // rebuilds the exact conversation AI SDK constructed internally.
-      type AssistantPart =
-        | { type: 'text'; text: string }
-        | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
-      for (const step of actionSteps) {
-        const assistantContent: AssistantPart[] = []
-        if (step.text) assistantContent.push({ type: 'text', text: step.text })
-        for (const tc of step.toolCalls ?? []) {
-          assistantContent.push({
-            type: 'tool-call',
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            input: tc.input,
-          })
-        }
-        if (assistantContent.length > 0) {
-          messages = [...messages, { role: 'assistant', content: assistantContent }]
-        }
-
-        const toolResults = (step.toolResults ?? []).map((tr) => ({
-          type: 'tool-result' as const,
-          toolCallId: tr.toolCallId,
-          toolName: tr.toolName,
-          output: { type: 'json' as const, value: toJsonValue(tr.output) },
-        }))
-        if (toolResults.length > 0) {
-          messages = [...messages, { role: 'tool', content: toolResults }]
-        }
-      }
+      throw err
     }
+    clearStallTimer()
 
-    // Close the UI message manually. We always merge phase streams with
-    // sendFinish=false (so chunks can flow in real time); this emits the
-    // terminal finish chunk once the outer loop is done.
-    if (streamStarted) {
-      ctx.sdkWriter.write({ type: 'finish' })
-    }
-
-    const finalResponseText = allSteps.map(s => s.text).filter(Boolean).join('\n')
+    const finalResponseText = steps.map(s => s.text).filter(Boolean).join('\n')
     ctx.writer.write('jiku-run-snapshot', {
       system_prompt: ctx.systemPrompt,
       messages: ctx.messages,
       response: finalResponseText,
+      tools: Object.keys(ctx.aiTools),
+      adapter: this.id,
     })
 
-    await ctx.persistAssistantMessage(allSteps)
-    ctx.emitUsage({ inputTokens: totalInputTokens, outputTokens: totalOutputTokens })
+    await ctx.persistAssistantMessage(steps)
+    ctx.emitUsage(usage)
   }
+}
+
+/** Merge multiple AbortSignals into one — aborts as soon as any input aborts. */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController()
+  for (const sig of signals) {
+    if (sig.aborted) {
+      controller.abort()
+      break
+    }
+    sig.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+  return controller.signal
 }

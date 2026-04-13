@@ -57,6 +57,10 @@ export interface RecordLLMUsageInput {
   raw_system_prompt?: string | null
   raw_messages?: unknown
   raw_response?: string | null
+  /** Tool names (meta.id) registered for this run. */
+  active_tools?: string[] | null
+  /** Agent adapter id (e.g. 'jiku.agent.default'). */
+  agent_adapter?: string | null
 }
 
 export function recordLLMUsage(input: RecordLLMUsageInput): void {
@@ -76,6 +80,8 @@ export function recordLLMUsage(input: RecordLLMUsageInput): void {
     raw_system_prompt: typeof input.raw_system_prompt === 'string' ? input.raw_system_prompt : null,
     raw_messages: (input.raw_messages ?? null) as Record<string, unknown> | null,
     raw_response: typeof input.raw_response === 'string' ? input.raw_response : null,
+    active_tools: Array.isArray(input.active_tools) ? (input.active_tools as unknown as Record<string, unknown>) : null,
+    agent_adapter: typeof input.agent_adapter === 'string' ? input.agent_adapter : null,
   }).catch((err) => {
     console.warn('[usage] failed to record LLM usage:', err instanceof Error ? err.message : err)
   })

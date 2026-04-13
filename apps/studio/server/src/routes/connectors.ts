@@ -17,6 +17,8 @@ import {
   updateIdentity,
   getConnectorEvents,
   getConnectorMessages,
+  listConnectorEventsForProject,
+  listConnectorMessagesForProject,
   getInviteCodesForConnector,
   createInviteCode,
   revokeInviteCode,
@@ -31,6 +33,8 @@ import {
 import { connectorRegistry } from '../connectors/registry.ts'
 import { routeConnectorEvent } from '../connectors/event-router.ts'
 import { activateConnector, deactivateConnector } from '../connectors/activation.ts'
+import { subscribeProjectEvents, subscribeProjectMessages } from '../connectors/sse-hub.ts'
+import { runtimeManager } from '../runtime/manager.ts'
 import { loadPerms } from '../middleware/permission.ts'
 import type { ConnectorEvent } from '@jiku/types'
 import type { Request, Response, NextFunction } from 'express'
@@ -98,8 +102,17 @@ router.post('/projects/:pid/connectors', authMiddleware, requirePermission('chan
       })
       // Re-fetch to get updated status
       const updated = await getConnectorById(connector.id)
+      // Invalidate shared tools cache so agents pick up connector_send etc.
+      // (Without this, first-connector-of-a-project would never register connector tools
+      //  until server restart — cron/task runs would then have no delivery tool.)
+      runtimeManager.syncProjectTools(req.params['pid']!).catch(err =>
+        console.warn('[connector] syncProjectTools failed:', err)
+      )
       res.status(201).json({ connector: updated ?? connector })
     } else {
+      runtimeManager.syncProjectTools(req.params['pid']!).catch(err =>
+        console.warn('[connector] syncProjectTools failed:', err)
+      )
       res.status(201).json({ connector })
     }
   } catch (err) {
@@ -132,7 +145,13 @@ router.patch('/connectors/:id', authMiddleware, requireConnectorPermission('chan
 /** DELETE /connectors/:id */
 router.delete('/connectors/:id', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   try {
+    const projectId = res.locals['project_id'] as string | undefined
     await deleteConnector(req.params['id']!)
+    if (projectId) {
+      runtimeManager.syncProjectTools(projectId).catch(err =>
+        console.warn('[connector] syncProjectTools failed:', err)
+      )
+    }
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: String(err) })
@@ -477,6 +496,8 @@ router.post('/webhook/:project_id/connector/:connector_id', async (req, res) => 
       res.status(200).json({ ok: true, skipped: true })
       return
     }
+    // Attach the original webhook body so it can be inspected from channels UI
+    if (event.raw_payload === undefined) event.raw_payload = req.body
 
     // Broadcast to SSE listeners
     const listeners = connectorSseMap.get(connector_id)
@@ -498,6 +519,115 @@ router.post('/webhook/:project_id/connector/:connector_id', async (req, res) => 
     console.error('[webhook] error:', err)
     res.status(500).json({ error: String(err) })
   }
+})
+
+// ─── Project-level Events & Messages (paginated + filtered + SSE) ──────────
+
+function parseDateParam(v: unknown): Date | undefined {
+  if (typeof v !== 'string' || !v) return undefined
+  const d = new Date(v)
+  return isNaN(d.getTime()) ? undefined : d
+}
+
+function parseCursorParam(v: unknown): { created_at: Date; id: string } | undefined {
+  if (typeof v !== 'string' || !v) return undefined
+  try {
+    const decoded = Buffer.from(v, 'base64').toString('utf-8')
+    const [iso, id] = decoded.split('|')
+    if (!iso || !id) return undefined
+    const created_at = new Date(iso)
+    if (isNaN(created_at.getTime())) return undefined
+    return { created_at, id }
+  } catch { return undefined }
+}
+
+function encodeCursor(c: { created_at: Date; id: string } | null): string | null {
+  if (!c) return null
+  return Buffer.from(`${c.created_at.toISOString()}|${c.id}`).toString('base64')
+}
+
+/** GET /projects/:pid/connector-events */
+router.get('/projects/:pid/connector-events', authMiddleware, requirePermission('channels:read'), async (req, res) => {
+  try {
+    const q = req.query as Record<string, string | undefined>
+    const dir = q['direction']
+    const result = await listConnectorEventsForProject({
+      project_id: req.params['pid']!,
+      connector_id: q['connector_id'] || undefined,
+      event_type: q['event_type'] || undefined,
+      direction: dir === 'inbound' || dir === 'outbound' ? dir : undefined,
+      status: q['status'] || undefined,
+      from: parseDateParam(q['from']),
+      to: parseDateParam(q['to']),
+      cursor: parseCursorParam(q['cursor']) ?? null,
+      limit: q['limit'] ? parseInt(q['limit'], 10) : 50,
+    })
+    res.json({ events: result.items, next_cursor: encodeCursor(result.next_cursor) })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** GET /projects/:pid/connector-messages */
+router.get('/projects/:pid/connector-messages', authMiddleware, requirePermission('channels:read'), async (req, res) => {
+  try {
+    const q = req.query as Record<string, string | undefined>
+    const direction = q['direction']
+    const result = await listConnectorMessagesForProject({
+      project_id: req.params['pid']!,
+      connector_id: q['connector_id'] || undefined,
+      direction: direction === 'inbound' || direction === 'outbound' ? direction : undefined,
+      status: q['status'] || undefined,
+      from: parseDateParam(q['from']),
+      to: parseDateParam(q['to']),
+      cursor: parseCursorParam(q['cursor']) ?? null,
+      limit: q['limit'] ? parseInt(q['limit'], 10) : 50,
+    })
+    res.json({ messages: result.items, next_cursor: encodeCursor(result.next_cursor) })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** GET /projects/:pid/connector-events/stream — SSE live stream for project events */
+router.get('/projects/:pid/connector-events/stream', authMiddleware, requirePermission('channels:read'), (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  const ping = setInterval(() => res.write(':ping\n\n'), 15_000)
+  const q = req.query as Record<string, string | undefined>
+  const unsubscribe = subscribeProjectEvents(req.params['pid']!, {
+    res,
+    filter: {
+      connector_id: q['connector_id'] || undefined,
+      event_type: q['event_type'] || undefined,
+      direction: q['direction'] || undefined,
+      status: q['status'] || undefined,
+    },
+  })
+  req.on('close', () => { clearInterval(ping); unsubscribe() })
+})
+
+/** GET /projects/:pid/connector-messages/stream — SSE live stream for project messages */
+router.get('/projects/:pid/connector-messages/stream', authMiddleware, requirePermission('channels:read'), (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  const ping = setInterval(() => res.write(':ping\n\n'), 15_000)
+  const q = req.query as Record<string, string | undefined>
+  const unsubscribe = subscribeProjectMessages(req.params['pid']!, {
+    res,
+    filter: {
+      connector_id: q['connector_id'] || undefined,
+      direction: q['direction'] || undefined,
+      status: q['status'] || undefined,
+    },
+  })
+  req.on('close', () => { clearInterval(ping); unsubscribe() })
 })
 
 // ─── Available connector plugins ─────────────────────────────────────────────

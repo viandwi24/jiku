@@ -85,7 +85,7 @@ export async function runTaskConversation(
     let usageOutput = 0
     let providerId: string | null = null
     let modelId: string | null = null
-    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string } | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string } | null = null
 
     while (true) {
       const { done, value } = await reader.read()
@@ -95,7 +95,7 @@ export async function runTaskConversation(
         if (v.type === 'text-delta') {
           outputText += v.delta ?? ''
         } else if (v.type === 'data-jiku-run-snapshot') {
-          runSnapshot = v.data as { system_prompt: string; messages: unknown[]; response?: string }
+          runSnapshot = v.data as { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string }
         } else if (v.type === 'data-jiku-usage') {
           const d = v.data as { input_tokens?: number; output_tokens?: number } | undefined
           if (d) {
@@ -125,6 +125,8 @@ export async function runTaskConversation(
         raw_system_prompt: runSnapshot?.system_prompt ?? null,
         raw_messages: runSnapshot?.messages ?? null,
         raw_response: runSnapshot?.response ?? (outputText || null),
+        active_tools: runSnapshot?.tools ?? null,
+        agent_adapter: runSnapshot?.adapter ?? null,
       })
     }
 

@@ -1,4 +1,4 @@
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, gte, lte } from 'drizzle-orm'
 import { db } from '../client.ts'
 import {
   connectors,
@@ -235,9 +235,11 @@ export async function logConnectorEvent(data: {
   binding_id?: string
   identity_id?: string
   event_type: string
+  direction?: 'inbound' | 'outbound'
   ref_keys: Record<string, string>
   target_ref_keys?: Record<string, string>
   payload: Record<string, unknown>
+  raw_payload?: unknown
   metadata?: Record<string, unknown>
   status?: string
   drop_reason?: string
@@ -245,7 +247,7 @@ export async function logConnectorEvent(data: {
 }) {
   const rows = await db
     .insert(connector_events)
-    .values({ ...data, status: data.status ?? 'received' })
+    .values({ ...data, direction: data.direction ?? 'inbound', status: data.status ?? 'received' })
     .returning()
   return rows[0]!
 }
@@ -264,6 +266,66 @@ export async function getConnectorEvents(connectorId: string, limit = 50) {
     .limit(limit)
 }
 
+// Keyset-paginated events scoped to a project (joins connectors for project_id filter)
+export interface ListConnectorEventsOptions {
+  project_id: string
+  connector_id?: string
+  event_type?: string
+  direction?: 'inbound' | 'outbound'
+  status?: string
+  from?: Date
+  to?: Date
+  cursor?: { created_at: Date; id: string } | null
+  limit?: number
+}
+
+export async function listConnectorEventsForProject(opts: ListConnectorEventsOptions) {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const conds = [eq(connectors.project_id, opts.project_id)]
+  if (opts.connector_id) conds.push(eq(connector_events.connector_id, opts.connector_id))
+  if (opts.event_type) conds.push(eq(connector_events.event_type, opts.event_type))
+  if (opts.direction) conds.push(eq(connector_events.direction, opts.direction))
+  if (opts.status) conds.push(eq(connector_events.status, opts.status))
+  if (opts.from) conds.push(gte(connector_events.created_at, opts.from))
+  if (opts.to) conds.push(lte(connector_events.created_at, opts.to))
+  if (opts.cursor) {
+    conds.push(sql`(${connector_events.created_at}, ${connector_events.id}) < (${opts.cursor.created_at.toISOString()}::timestamp, ${opts.cursor.id}::uuid)`)
+  }
+
+  const rows = await db
+    .select({
+      id: connector_events.id,
+      connector_id: connector_events.connector_id,
+      binding_id: connector_events.binding_id,
+      identity_id: connector_events.identity_id,
+      event_type: connector_events.event_type,
+      direction: connector_events.direction,
+      ref_keys: connector_events.ref_keys,
+      target_ref_keys: connector_events.target_ref_keys,
+      payload: connector_events.payload,
+      raw_payload: connector_events.raw_payload,
+      metadata: connector_events.metadata,
+      status: connector_events.status,
+      drop_reason: connector_events.drop_reason,
+      processing_ms: connector_events.processing_ms,
+      created_at: connector_events.created_at,
+      connector_name: connectors.display_name,
+    })
+    .from(connector_events)
+    .innerJoin(connectors, eq(connector_events.connector_id, connectors.id))
+    .where(and(...conds))
+    .orderBy(desc(connector_events.created_at), desc(connector_events.id))
+    .limit(limit + 1)
+
+  const hasMore = rows.length > limit
+  const items = hasMore ? rows.slice(0, limit) : rows
+  const last = items[items.length - 1]
+  const next_cursor = hasMore && last
+    ? { created_at: last.created_at, id: last.id }
+    : null
+  return { items, next_cursor }
+}
+
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 export async function logConnectorMessage(data: {
@@ -272,6 +334,7 @@ export async function logConnectorMessage(data: {
   direction: string
   ref_keys: Record<string, string>
   content_snapshot?: string
+  raw_payload?: unknown
   status?: string
 }) {
   const rows = await db
@@ -288,6 +351,57 @@ export async function getConnectorMessages(connectorId: string, limit = 50) {
     .where(eq(connector_messages.connector_id, connectorId))
     .orderBy(desc(connector_messages.created_at))
     .limit(limit)
+}
+
+export interface ListConnectorMessagesOptions {
+  project_id: string
+  connector_id?: string
+  direction?: 'inbound' | 'outbound'
+  status?: string
+  from?: Date
+  to?: Date
+  cursor?: { created_at: Date; id: string } | null
+  limit?: number
+}
+
+export async function listConnectorMessagesForProject(opts: ListConnectorMessagesOptions) {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const conds = [eq(connectors.project_id, opts.project_id)]
+  if (opts.connector_id) conds.push(eq(connector_messages.connector_id, opts.connector_id))
+  if (opts.direction) conds.push(eq(connector_messages.direction, opts.direction))
+  if (opts.status) conds.push(eq(connector_messages.status, opts.status))
+  if (opts.from) conds.push(gte(connector_messages.created_at, opts.from))
+  if (opts.to) conds.push(lte(connector_messages.created_at, opts.to))
+  if (opts.cursor) {
+    conds.push(sql`(${connector_messages.created_at}, ${connector_messages.id}) < (${opts.cursor.created_at.toISOString()}::timestamp, ${opts.cursor.id}::uuid)`)
+  }
+
+  const rows = await db
+    .select({
+      id: connector_messages.id,
+      connector_id: connector_messages.connector_id,
+      conversation_id: connector_messages.conversation_id,
+      direction: connector_messages.direction,
+      ref_keys: connector_messages.ref_keys,
+      content_snapshot: connector_messages.content_snapshot,
+      raw_payload: connector_messages.raw_payload,
+      status: connector_messages.status,
+      created_at: connector_messages.created_at,
+      connector_name: connectors.display_name,
+    })
+    .from(connector_messages)
+    .innerJoin(connectors, eq(connector_messages.connector_id, connectors.id))
+    .where(and(...conds))
+    .orderBy(desc(connector_messages.created_at), desc(connector_messages.id))
+    .limit(limit + 1)
+
+  const hasMore = rows.length > limit
+  const items = hasMore ? rows.slice(0, limit) : rows
+  const last = items[items.length - 1]
+  const next_cursor = hasMore && last
+    ? { created_at: last.created_at, id: last.id }
+    : null
+  return { items, next_cursor }
 }
 
 export async function logConnectorMessageEvent(data: {

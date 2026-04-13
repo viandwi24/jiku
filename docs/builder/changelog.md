@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-04-14 — harness: replace 2-phase narration with clawcode-parity single-phase loop
+
+- **Problem:** Previous harness adapter was 2-phase (forced narration via `tool_choice=none` → action via `tool_choice=auto`). The skip-phase-2 shortcut relied on a regex (`ACTION_INTENT_RE`) to classify narration as action-intent vs final-answer. Regex false-negatived on Indonesian meN- verb forms ("Mengirim…") causing cron-triggered runs to complete phase 1 but never reach phase 2 — the delivery tool call silently dropped. Regex-based natural-language classification was inherently fragile.
+- **Fix:** Rewrote `HarnessAgentAdapter` to match the claude-code / clawcode loop pattern (`refs-clawcode/rust/crates/runtime/src/conversation.rs:342-500`). One explicit outer `while` loop; each iteration runs a single model step with `tool_choice: 'auto'` (`stopWhen: stepCountIs(1)`). Model natively interleaves text + tool_use. Exit condition is purely structural — `step.toolCalls.length === 0` → done. No regex, no narration forcing.
+- **Architectural value vs. default adapter:** explicit per-iteration control. Enables `jiku-harness-iteration` progress events, per-iteration stall timeout (new `stall_timeout_ms` config, default 120s), emits `jiku-harness-stall` event on timeout, and creates room for future hooks (approval prompts, model switching, interrupt checks) without fighting AI SDK's internal loop.
+- Config changes: `force_narration` and `max_tool_calls_per_iteration` removed (obsolete); `stall_timeout_ms` added.
+- Files: `packages/core/src/adapters/harness.ts` (full rewrite).
+
+## 2026-04-13 — Connector events: direction (in/out) + raw_payload preserved
+
+- Added `connector_events.direction` (`'inbound' | 'outbound'`, default `'inbound'`) and `raw_payload jsonb` columns; same `raw_payload` added to `connector_messages`. Migration: `0026_connector_raw_payload.sql`.
+- Bot-initiated actions (`connector_send`, `connector_run_action`, auto-reply) now log an outbound event with the platform response captured in `raw_payload` so reactions/edits/deletes/sends are visible alongside inbound events in the channels Events tab.
+- Inbound webhook entry attaches `req.body` to `event.raw_payload` so the original platform JSON (e.g. Telegram update) is stored and shown in the detail drawer.
+- Telegram adapter `sendMessage` now returns `raw_payload` (the Telegram API response).
+- Events tab gets a direction filter + per-row direction arrow; both Events and Messages drawers render `Raw Payload (platform-side)` block.
+- Files: `apps/studio/db/src/migrations/0026_connector_raw_payload.sql`, `apps/studio/db/src/schema/connectors.ts`, `apps/studio/db/src/queries/connector.ts`, `packages/types/src/index.ts` (`ConnectorEvent.raw_payload`, `ConnectorSendResult.raw_payload`), `apps/studio/server/src/connectors/{event-router.ts,tools.ts,sse-hub.ts}`, `apps/studio/server/src/routes/connectors.ts`, `plugins/jiku.telegram/src/index.ts`, `apps/studio/web/{lib/api.ts,components/channels/{events,messages}-tab.tsx}`.
+
+## 2026-04-13 — Channels page tabbed (Connectors / Messages / Events)
+
+- Project channels page is now a 3-tab UI; tab + `connector_id` filter live in URL.
+- New project-level endpoints with cursor pagination + filters (connector / direction|event_type / status / date range): `GET /projects/:pid/connector-events`, `/connector-messages` and matching `/stream` SSE endpoints.
+- Project-level SSE hub (`sse-hub.ts`) broadcasts events/messages after each DB log; subscribers filter server-side.
+- `authMiddleware` now also accepts `?token=` so EventSource (which cannot set custom headers) can authenticate.
+- Connector detail Events/Messages buttons jump to `channels?tab=…&connector_id=…` (auto-applied filter). Old per-connector pages deleted.
+- Row click opens a Sheet drawer with full payload, ref_keys, metadata, status/drop_reason.
+- Files: `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/connectors/{sse-hub.ts,event-router.ts}`, `apps/studio/server/src/routes/connectors.ts`, `apps/studio/server/src/middleware/auth.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/components/channels/{connectors,messages,events}-tab.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`.
+
+## 2026-04-13 — fix: connector tools missing in cron task runs
+
+- **Root cause:** `runtimeManager.resolveSharedTools()` gates `connectorTools` behind `connectorRows.length > 0`, and the result is cached per project. No connector CRUD route was invalidating this cache — so the first connector added to a project registered in the DB but was NEVER reflected in the agent toolset until server restart. Cron-triggered task runs then received a [Cron Delivery] prompt claiming `connector_send` exists, while the tool was actually missing from `aiTools`; the model complied by emitting the args as plain JSON text instead of a tool call.
+- **Fix:** `POST /projects/:pid/connectors` (with and without credential) and `DELETE /connectors/:id` now call `runtimeManager.syncProjectTools(projectId)` after the DB write. First-connector-of-a-project now immediately registers connector tools for every agent; last-connector deletion immediately removes them.
+- Files: `apps/studio/server/src/routes/connectors.ts`.
+
 ## 2026-04-13 — Cron one-shot mode + archive lifecycle
 
 - Added `mode: 'once' | 'recurring'` and `status: 'active' | 'archived'` to `cron_tasks`. One-shot fires at `run_at` then auto-archives on success (no retry). Archived tasks excluded from default lists and scheduler but preserved in DB.

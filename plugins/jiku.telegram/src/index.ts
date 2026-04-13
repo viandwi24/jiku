@@ -545,6 +545,18 @@ class TelegramAdapter extends ConnectorAdapter {
     return ''
   }
 
+  /** Produce a stable, filesystem-friendly target name from a channel title. */
+  private slugifyChannelTitle(title: string): string {
+    const slug = title
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-_]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 60)
+    return slug || `channel-${Date.now()}`
+  }
+
   private async loadFilesystemBuffer(filePath: string): Promise<{ buffer: Buffer; name: string; mime_type: string }> {
     if (!this.projectId) throw new Error('Project context not available')
     const { getFilesystemService } = await import('../../../apps/studio/server/src/filesystem/service.ts')
@@ -646,7 +658,134 @@ class TelegramAdapter extends ConnectorAdapter {
       await ctx.onEvent(event)
     })
 
-    this.bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
+    // ── Channel posts — treat as messages so AI can read channel content ────
+    // `channel_post` fires for new posts in channels/supergroups where the bot
+    // is present. We normalize to a `message` event so bindings + routing work
+    // the same as DM/group messages. `msg.from` is typically null for channel
+    // broadcasts (posts are signed by the channel, not a user).
+    this.bot.on('channel_post', async (gramCtx: any) => {
+      const msg = gramCtx.channelPost
+      const { media, mediaMetadata } = extractTelegramMedia(msg)
+      const event: ConnectorEvent = {
+        type: 'message',
+        connector_id: this.id,
+        ref_keys: {
+          message_id: String(msg.message_id),
+          chat_id: String(msg.chat.id),
+          ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
+        },
+        sender: {
+          external_id: String(msg.sender_chat?.id ?? msg.chat.id),
+          display_name: msg.sender_chat?.title ?? ('title' in msg.chat ? msg.chat.title : undefined),
+          username: msg.sender_chat?.username,
+        },
+        content: { text: msg.text ?? msg.caption, media },
+        metadata: {
+          client_timestamp: new Date(msg.date * 1000).toISOString(),
+          chat_type: msg.chat.type,
+          chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+          is_channel_post: true,
+          ...mediaMetadata,
+        },
+        timestamp: new Date(msg.date * 1000),
+        raw_payload: gramCtx.update,
+      }
+      await ctx.onEvent(event)
+    })
+
+    // ── Bot membership changes — auto-register channels as named targets ────
+    // Telegram sends `my_chat_member` when the bot's status in a chat changes
+    // (added/removed/promoted/demoted). When the bot becomes an administrator
+    // in a channel or supergroup, we auto-create a `connector_target` so the
+    // AI can address it by name via `connector_send_to_target`. Removal
+    // results in a `leave` event for observability (target is kept in DB so
+    // the admin can decide whether to re-enable or clean up manually).
+    this.bot.on('my_chat_member', async (gramCtx: any) => {
+      const update = gramCtx.update.my_chat_member
+      const chat = update.chat
+      const newStatus = update.new_chat_member?.status as string | undefined
+      const oldStatus = update.old_chat_member?.status as string | undefined
+
+      const isAdminNow = newStatus === 'administrator' || newStatus === 'creator'
+      const wasAdminBefore = oldStatus === 'administrator' || oldStatus === 'creator'
+      const isChannelOrSupergroup = chat.type === 'channel' || chat.type === 'supergroup'
+
+      // Bot added/promoted to admin in a channel → auto-create target.
+      if (isAdminNow && !wasAdminBefore && isChannelOrSupergroup) {
+        try {
+          const { createConnectorTarget, getConnectorTargetByName } = await import('@jiku-studio/db')
+          const targetName = this.slugifyChannelTitle(chat.title ?? `channel-${chat.id}`)
+          const existing = await getConnectorTargetByName(this.projectId!, targetName, ctx.connectorId).catch(() => null)
+          if (!existing) {
+            await createConnectorTarget({
+              connector_id: ctx.connectorId,
+              name: targetName,
+              display_name: chat.title ?? null,
+              description: `Auto-registered ${chat.type} — bot became admin on ${new Date().toISOString()}`,
+              ref_keys: { chat_id: String(chat.id) },
+              scope_key: `chat:${chat.id}`,
+              metadata: {
+                auto_registered: true,
+                chat_type: chat.type,
+                chat_title: chat.title,
+                registered_at: new Date().toISOString(),
+              },
+            })
+            console.log(`[telegram] auto-registered channel target "${targetName}" (chat_id=${chat.id})`)
+          }
+        } catch (err) {
+          console.warn('[telegram] failed to auto-register channel target:', err)
+        }
+      }
+
+      // Emit join/leave event for routing + audit trail.
+      const eventType: ConnectorEvent['type'] =
+        isAdminNow && !wasAdminBefore ? 'join'
+        : !isAdminNow && wasAdminBefore ? 'leave'
+        : 'custom'
+
+      const event: ConnectorEvent = {
+        type: eventType,
+        connector_id: this.id,
+        ref_keys: {
+          chat_id: String(chat.id),
+        },
+        sender: {
+          external_id: String(update.from?.id ?? chat.id),
+          display_name: [update.from?.first_name, update.from?.last_name].filter(Boolean).join(' ') || undefined,
+          username: update.from?.username,
+        },
+        content: {
+          text: `Bot status in ${chat.type} "${chat.title ?? chat.id}" changed: ${oldStatus ?? '(none)'} → ${newStatus ?? '(none)'}`,
+          raw: { old_status: oldStatus, new_status: newStatus },
+        },
+        metadata: {
+          chat_type: chat.type,
+          chat_title: 'title' in chat ? chat.title : undefined,
+          membership_change: true,
+        },
+        timestamp: new Date(update.date * 1000),
+        raw_payload: gramCtx.update,
+      }
+      await ctx.onEvent(event)
+    })
+
+    // Telegram's getUpdates omits `my_chat_member`, `channel_post`, and
+    // `message_reaction` by default — must be explicitly opted in via
+    // allowed_updates. Without this, my_chat_member handler never fires and
+    // channel auto-registration silently does nothing.
+    this.bot.start({
+      drop_pending_updates: true,
+      allowed_updates: [
+        'message',
+        'edited_message',
+        'channel_post',
+        'edited_channel_post',
+        'my_chat_member',
+        'chat_member',
+        'message_reaction',
+      ],
+    }).catch((err: unknown) => {
       console.error('[telegram] polling error:', err)
     })
 

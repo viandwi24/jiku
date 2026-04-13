@@ -66,19 +66,25 @@ export function buildConnectorTools(projectId: string) {
       meta: {
         id: 'connector_get_events',
         name: 'Get Message Events',
-        description: 'Query events (reactions, edits, etc.) on a specific message or chat',
+        description: 'Query events (reactions, edits, receive_message, send_message, etc.) on a connector. Supports direction + event_type filters so you can fetch only inbound (user → bot) or outbound (bot → user) activity. Raw platform payload is included so you can extract Telegram entities, emoji metadata, etc.',
         group: 'connector',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
         connector_id: z.string().describe('Connector ID'),
-        event_types: z.array(z.string()).optional().describe('Filter by event types'),
+        direction: z.enum(['inbound', 'outbound']).optional().describe('Filter by direction: "inbound" = from user, "outbound" = from bot/system. Omit to get both.'),
+        event_type: z.string().optional().describe('Filter by exact event_type, e.g. "receive_message", "send_message", "reaction_add".'),
         limit: z.number().int().min(1).max(100).default(20),
       }),
       execute: async (args) => {
-        const { connector_id, limit } = args as { connector_id: string; event_types?: string[]; limit: number }
-        const events = await getConnectorEvents(connector_id, limit)
+        const { connector_id, direction, event_type, limit } = args as {
+          connector_id: string
+          direction?: 'inbound' | 'outbound'
+          event_type?: string
+          limit: number
+        }
+        const events = await getConnectorEvents(connector_id, limit, { direction, event_type })
         return { events }
       },
     }),
@@ -89,18 +95,23 @@ export function buildConnectorTools(projectId: string) {
       meta: {
         id: 'connector_get_thread',
         name: 'Get Thread Messages',
-        description: 'Get recent messages from a connector conversation',
+        description: 'Get recent messages logged for a connector. Supports direction filter: "inbound" = messages FROM users, "outbound" = messages FROM the bot. Each row includes `raw_payload` (the original platform object) so you can extract entities, custom_emoji metadata, attachments, etc. — useful for saving message templates.',
         group: 'connector',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
         connector_id: z.string().describe('Connector ID'),
+        direction: z.enum(['inbound', 'outbound']).optional().describe('Filter by direction. Omit to get both.'),
         limit: z.number().int().min(1).max(50).default(10),
       }),
       execute: async (args) => {
-        const { connector_id, limit } = args as { connector_id: string; limit: number }
-        const messages = await getConnectorMessages(connector_id, limit)
+        const { connector_id, direction, limit } = args as {
+          connector_id: string
+          direction?: 'inbound' | 'outbound'
+          limit: number
+        }
+        const messages = await getConnectorMessages(connector_id, limit, { direction })
         return { messages }
       },
     }),

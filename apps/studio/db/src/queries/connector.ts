@@ -257,11 +257,18 @@ export async function getConnectorEventById(id: string) {
   return rows[0] ?? null
 }
 
-export async function getConnectorEvents(connectorId: string, limit = 50) {
+export async function getConnectorEvents(
+  connectorId: string,
+  limit = 50,
+  opts?: { direction?: 'inbound' | 'outbound'; event_type?: string },
+) {
+  const conds = [eq(connector_events.connector_id, connectorId)]
+  if (opts?.direction) conds.push(eq(connector_events.direction, opts.direction))
+  if (opts?.event_type) conds.push(eq(connector_events.event_type, opts.event_type))
   return db
     .select()
     .from(connector_events)
-    .where(eq(connector_events.connector_id, connectorId))
+    .where(and(...conds))
     .orderBy(desc(connector_events.created_at))
     .limit(limit)
 }
@@ -344,11 +351,17 @@ export async function logConnectorMessage(data: {
   return rows[0]!
 }
 
-export async function getConnectorMessages(connectorId: string, limit = 50) {
+export async function getConnectorMessages(
+  connectorId: string,
+  limit = 50,
+  opts?: { direction?: 'inbound' | 'outbound' },
+) {
+  const conds = [eq(connector_messages.connector_id, connectorId)]
+  if (opts?.direction) conds.push(eq(connector_messages.direction, opts.direction))
   return db
     .select()
     .from(connector_messages)
-    .where(eq(connector_messages.connector_id, connectorId))
+    .where(and(...conds))
     .orderBy(desc(connector_messages.created_at))
     .limit(limit)
 }

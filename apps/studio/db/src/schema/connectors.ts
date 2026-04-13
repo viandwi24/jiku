@@ -65,10 +65,53 @@ export const connector_bindings = pgTable('connector_bindings', {
   rate_limit_rpm:       integer('rate_limit_rpm'),
   include_sender_info:  boolean('include_sender_info').notNull().default(true),
 
+  // ── Scope filter (Plan 22) ───────────────────────────────────────────────
+  /** Scope key pattern, e.g. null = all, "group:*" = group chats only, "dm:*" = DMs, exact = specific scope. */
+  scope_key_pattern:    text('scope_key_pattern'),
+
   enabled:              boolean('enabled').notNull().default(true),
   created_at:           timestamp('created_at').notNull().defaultNow(),
 }, t => [
   index('idx_bindings_connector').on(t.connector_id),
+])
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connector_scope_conversations — scope-scoped conversation mapping (Plan 22)
+// One row per (connector, scope_key, agent_id). Null scope = DM (uses identity.conversation_id).
+// ─────────────────────────────────────────────────────────────────────────────
+export const connector_scope_conversations = pgTable('connector_scope_conversations', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  connector_id:     uuid('connector_id').notNull(),
+  scope_key:        text('scope_key').notNull(),
+  agent_id:         uuid('agent_id'),
+  conversation_id:  uuid('conversation_id'),
+  last_activity_at: timestamp('last_activity_at').notNull().defaultNow(),
+  created_at:       timestamp('created_at').notNull().defaultNow(),
+}, t => [
+  uniqueIndex('uq_scope_conv').on(t.connector_id, t.scope_key, t.agent_id),
+  index('idx_scope_conv_connector').on(t.connector_id, t.scope_key),
+  foreignKey({ name: 'fk_scope_conv_connector', columns: [t.connector_id], foreignColumns: [connectors.id] }).onDelete('cascade'),
+  foreignKey({ name: 'fk_scope_conv_agent',     columns: [t.agent_id],     foreignColumns: [agents.id] }).onDelete('set null'),
+  foreignKey({ name: 'fk_scope_conv_conv',      columns: [t.conversation_id], foreignColumns: [conversations.id] }).onDelete('set null'),
+])
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connector_targets — named outbound destinations per connector (Plan 22)
+// ─────────────────────────────────────────────────────────────────────────────
+export const connector_targets = pgTable('connector_targets', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  connector_id: uuid('connector_id').notNull().references(() => connectors.id, { onDelete: 'cascade' }),
+  name:         text('name').notNull(),          // slug: "morning-briefing"
+  display_name: text('display_name'),
+  description:  text('description'),
+  ref_keys:     jsonb('ref_keys').notNull(),     // { "chat_id": "-1001234567890" }
+  scope_key:    text('scope_key'),               // optional
+  metadata:     jsonb('metadata').notNull().default({}),
+  created_at:   timestamp('created_at').notNull().defaultNow(),
+  updated_at:   timestamp('updated_at').notNull().defaultNow(),
+}, t => [
+  uniqueIndex('uq_targets_connector_name').on(t.connector_id, t.name),
+  index('idx_targets_connector').on(t.connector_id),
 ])
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -242,6 +242,25 @@ router.post('/projects/:pid/files', requirePermission('agents:read'), async (req
   }
 })
 
+// ─── Create folder ───────────────────────────────────────────────────────────
+
+// POST /projects/:pid/files/folder  { path }
+router.post('/projects/:pid/files/folder', requirePermission('agents:read'), async (req, res) => {
+  const projectId = req.params['pid']!
+  const { path: folderPath } = req.body as { path: string }
+
+  if (!folderPath) return res.status(400).json({ error: 'path is required' })
+
+  try {
+    const fs = await getFilesystemService(projectId)
+    if (!fs) return res.status(503).json({ error: 'Filesystem not configured' })
+    await fs.mkdir(folderPath)
+    return res.status(201).json({ ok: true, path: folderPath })
+  } catch (err) {
+    return handleFsError(res, err)
+  }
+})
+
 // ─── Move ─────────────────────────────────────────────────────────────────────
 
 // PATCH /projects/:pid/files/move  { from, to }

@@ -216,4 +216,22 @@ export abstract class ConnectorAdapter {
    * Called by the connector_run_action tool.
    */
   runAction?(actionId: string, params: Record<string, unknown>): Promise<unknown>
+
+  /**
+   * Plan 22 — Compute scope_key for a parsed event.
+   * Default returns undefined (DM/single-chat adapters do not need to override).
+   * Multi-chat adapters (Telegram, Discord) MUST override.
+   *
+   * Examples:
+   *   DM:                   undefined
+   *   Telegram group:       "group:-1001234"
+   *   Telegram forum topic: "group:-1001234:topic:42"
+   */
+  computeScopeKey?(event: { ref_keys: Record<string, string>; metadata?: Record<string, unknown> }): string | undefined
+
+  /**
+   * Plan 22 — Build a ConnectorTarget from a scope_key.
+   * Used by event-router / tools to route outbound messages to the correct scope.
+   */
+  targetFromScopeKey?(scopeKey: string): ConnectorTarget | null
 }

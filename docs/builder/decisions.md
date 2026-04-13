@@ -1,5 +1,87 @@
 # Decisions
 
+## ADR-056 — scope_key as conversation isolation unit for multi-chat connectors
+
+**Context:** `connector_identities.conversation_id` is keyed by identity — fine for DMs, broken for group chats where many users share a "room". Topic-enabled supergroups add a second axis. Storing per-identity conversations in a group would fragment context and mis-attribute history.
+
+**Decision:** Introduce `scope_key` — a string computed by the adapter that names the platform-side conversation space. DM = undefined, Telegram group = `group:<chat_id>`, Telegram forum topic = `group:<chat_id>:topic:<thread_id>`. Mapping lives in new `connector_scope_conversations(connector_id, scope_key, agent_id, conversation_id)`. DM path (scope_key undefined) continues to use `identity.conversation_id`.
+
+**Consequences:** Group participants share one agent conversation. Topic isolation is free. Backward compat preserved — existing DM connectors keep working until their adapter implements `computeScopeKey()`. Per-binding override is possible via `scope_key_pattern`.
+
+---
+
+## ADR-057 — Channel Targets as named outbound destinations
+
+**Context:** Cron tasks and proactive agent runs have no "incoming event" to reply to, so `connector_send` requires the AI to know the raw `chat_id` — brittle and hard to express in a prompt.
+
+**Decision:** New table `connector_targets(name, ref_keys, scope_key)` + tools `connector_list_targets` / `connector_send_to_target`. Agents reference destinations by name (`"morning-briefing"`), Studio UI manages them. `connector_send` remains for advanced cases.
+
+**Consequences:** Cron prompts become natural ("send the daily summary to target `briefing`"). Destination renames don't break prompts. Name-uniqueness is per-connector.
+
+---
+
+## ADR-058 — Media pipeline via event log metadata (lazy fetch)
+
+**Context:** Three options for handling inbound Telegram media:
+1. Eager download at event-router time — writes every file, even ignored ones; duplicated for reacted/edited messages.
+2. In-memory Map<message_key, file_id> in adapter — lost on restart; sync with DB is fragile.
+3. Store `file_id` in `connector_events.metadata` (jsonb column already exists) and download lazily on `fetch_media(event_id)` action.
+
+**Decision:** Option 3. `file_id` never leaves the DB row; AI sees only a hint (`Media available: photo 234KB — use fetch_media(event_id="...")`) and calls the action when it actually needs the bytes.
+
+**Consequences:** Persistent across restarts, auditable, consistent with how events are already logged. Telegram `file_id` is valid indefinitely for the same bot, so late fetches still work. Media never appears in AI context unless the agent asks — keeps prompts lean.
+
+---
+
+## ADR-059 — Scope filter on bindings via `scope_key_pattern` (not source_ref_keys)
+
+**Context:** `source_ref_keys` already filters by exact ref key match (e.g. specific `chat_id`). But expressing "all groups" or "DMs only" requires a pattern, not an exact match. Adding wildcards into `source_ref_keys` would overload its semantics.
+
+**Decision:** New column `connector_bindings.scope_key_pattern` with a small pattern language: `null` = match all, `dm:*` = DMs, `group:*` = all groups, exact string = specific scope. Prefix wildcard only (no regex).
+
+**Consequences:** `source_ref_keys` stays simple and fast (exact match). Scope-level routing lives on a dedicated dimension. The two can be combined (AND).
+
+---
+
+## ADR-052 — HarnessAgentAdapter: two-phase (tool_choice=none → tool_choice=auto) per iteration
+
+**Context:** OpenAI Chat Completions API cannot emit text + tool_call in one response — a given response is either text OR tool calls. A prompt telling the model "narrate before every tool" is unreliable: GPT batches tool calls with a single final summary, which makes the harness UX feel like the default adapter. Claude doesn't have this limitation.
+
+**Decision:** Per iteration, the harness adapter runs two `streamText` calls sequentially.
+- **Phase 1** — `tool_choice: 'none'`, `stepCountIs(1)`. Forces text output (narration OR direct answer). Uses `NARRATION_PHASE_INSTRUCTION` addendum so the model doesn't hallucinate "I can't access tools".
+- **Phase 2** — `tool_choice: 'auto'`, `stepCountIs(max_tool_calls_per_iteration)`. Tool call (possibly chained) or final text.
+
+Loop control: an English+Indonesian action-intent regex (`ACTION_INTENT_RE`) is applied to phase 1 text. Match → run phase 2. No match → phase 1 IS the final answer, break. If phase 2 emits no tool call, also break.
+
+**Consequences:**
+- Works on GPT Chat Completions. Doubles LLM calls per tool step (can be disabled via `force_narration: false`).
+- Phase 1 narration is NOT appended to `messages` (otherwise GPT decides "I already announced, done" and emits empty → loop stalls).
+- Phase 2 uses `'auto'` not `'required'`: `required` forces the model to pick any tool when the task is complete, leading to infinite random tool calls (`jiku_social_list_posts` × ∞ was the observed failure).
+- All action-phase steps are appended to `messages`, not just the last — otherwise with `max_tool_calls_per_iteration > 1` the next iteration sees a truncated history.
+- Residual risk: phase 2 can drop a tool call occasionally on GPT. Loop exits early, user sees incomplete output. Acceptable — retry UX is less bad than infinite tool loops.
+
+---
+
+## ADR-053 — Harness streaming: merge UI stream BEFORE awaiting steps
+
+**Context:** The original harness pattern was `merge(result.toUIMessageStream(...))` AFTER `await result.steps`. That works for single-tool iterations but with phase 2's `stepCountIs(N > 1)` internal chaining, UI chunks stay buffered until all N steps complete, then flush at once — producing a visible "3 tools flash in together" UX.
+
+**Decision:** Call `sdkWriter.merge(result.toUIMessageStream({ sendFinish: false }))` IMMEDIATELY after `streamText(...)` returns, before `await result.steps`. AI SDK sequences merged streams, so phase 1 drains to UI before phase 2 starts emitting. Because every phase merges with `sendFinish: false`, a manual `ctx.sdkWriter.write({ type: 'finish' })` closes the UI message after the outer loop exits.
+
+**Consequences:** Real-time streaming of tool calls regardless of `max_tool_calls_per_iteration`. Lost ability to gate `sendFinish` on "is this the last iteration" — replaced with the manual emit. Future finish-chunk changes go through that single call, not per-phase.
+
+---
+
+## ADR-054 — Plugin prompt segments labeled by `<Plugin Name> (<plugin.id>)` in preview
+
+**Context:** Preview Context UI displayed plugin prompts as `Plugin Segment 1`, `Plugin Segment 2`, … which is opaque — user can't tell which plugin contributed what, or why a big block of tokens is being injected.
+
+**Decision:** Added `PluginLoader.getPromptSegmentsWithMetaAsync()` which returns `{ plugin_id, plugin_name, segment }[]` (looks up `plugin.meta.name` per segment). `AgentRunner.previewRun` uses this for the plugin `ContextSegment` labels. Existing `getPromptSegmentsAsync()` kept for backwards-compat (still used elsewhere when metadata isn't needed).
+
+**Consequences:** Preview now shows `Narration (jiku.narration)`, `Analytics (jiku.analytics)`, etc. Per-plugin token counts are instantly attributable. No DB or API schema changes.
+
+---
+
 ## ADR-049 — Plugin tools must use `permission: '*'` to be visible to agents
 
 **Context:** Tools registered via `ctx.project.tools.register()` go through `resolveScope` which filters by `caller.permissions.includes(tool.resolved_permission)`. The prefix function turns `permission: 'filesystem:read'` into `jiku.sheet:filesystem:read`. No caller ever has that compound permission, so the tools are silently invisible in agent tool lists, context preview, and at runtime.

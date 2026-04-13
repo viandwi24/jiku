@@ -1,5 +1,11 @@
 ## Backlog
 
+### Plan 21 follow-ups (post-ship)
+- [ ] Plugin adapter registration: expose `ctx.agent.registerAdapter()` via `StudioContributes` + `context-extender.ts` when the first plugin-authored adapter lands.
+- [ ] Optional "retry phase 2 once on dropped tool" mode for HarnessAgentAdapter (residual risk: GPT sometimes drops a tool call with `tool_choice=auto` → loop exits early). Make opt-in because retry wastes a call when model genuinely decided to stop.
+- [ ] Fix `plugin-permissions` loader UUID error: `caller.user_id === 'system'` (heartbeat/cron path) hits `project_memberships.user_id` (uuid column) and throws `invalid input syntax for type uuid: "system"`. Pre-existing; spammy log, non-blocking. Early-return before the query if `user_id` isn't a UUID.
+- [ ] Harness iteration pill in UI (we emit `jiku-harness-iteration` events from iter ≥ 2; nothing consumes them yet).
+
 ### Plan 20 follow-ups (post-ship)
 - [ ] Stale CamoFox tab recovery: if CamoFox evicts a cached tabId (idle timeout or `MAX_TABS_PER_SESSION` eviction), adapter should detect 404 on next call + refresh. Currently adapter caches `tabId` forever.
 - [ ] Extend action registry to `JikuBrowserVercelAdapter` if any CDP-specific custom actions emerge (none today).

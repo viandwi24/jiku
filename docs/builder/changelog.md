@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-04-13 — Plan 22: Channel System v2 — scope_key isolation, channel targets, media pipeline, Telegram group mgmt
+
+**Added:**
+- **`scope_key` conversation isolation (ADR-056).** `ConnectorEvent.scope_key` carries the platform-specific conversation space (DM = undefined, `group:<chat_id>`, `group:<chat_id>:topic:<thread_id>`). New table `connector_scope_conversations` maps `(connector_id, scope_key, agent_id) → conversation_id`; DMs continue using `identity.conversation_id` (backward compat preserved).
+- **Named Channel Targets (ADR-057).** New table `connector_targets` + CRUD API routes (`GET/POST/PATCH/DELETE /connectors/:id/targets`, `GET /connectors/:id/scopes`). Three new agent tools: `connector_list_targets`, `connector_send_to_target`, `connector_list_scopes`. Agents can now publish via names like `"morning-briefing"` without hardcoding chat IDs — unlocks cron-driven proactive messaging.
+- **Media pipeline via event log (ADR-058).** `extractTelegramMedia()` stores `file_id` + metadata in `connector_events.metadata` at log time (no in-memory cache). AI receives only metadata (type, size, name) + an event_id hint. New `fetch_media` action performs lazy `bot.api.getFile()` → download → filesystem write via `__b64__:` binary convention. Persistent, auditable, restart-safe.
+- **Scope filter on bindings (ADR-059).** `ConnectorBinding.scope_key_pattern` — null = all, `group:*`, `dm:*`, exact, or `group:-100...:topic:N`. Matched in `matchesTrigger()` via prefix wildcard.
+- **TelegramAdapter overhauled.** `computeScopeKey()` + `targetFromScopeKey()` implemented. Inbound events populate `thread_id` + `metadata.chat_type/chat_title`. `sendMessage()` handles single media, `media_group` albums (max 10; auto-split photo/video vs document batches), and `target.scope_key`/`content.target_scope_key` routing. New actions: `fetch_media`, `send_media_group`, `send_url_media`, `send_to_scope`, `get_chat_members`, `create_invite_link`, `forward_message`, `set_chat_description`, `ban_member`. `caption_markdown` supported on `send_file`/`send_photo`.
+- **Context injection enriched.** `buildConnectorContextString()` now emits `Chat scope:`, `Chat: <title> (<type>)`, and a `Media available: ... event_id: "..."` line that instructs the AI to use `fetch_media`.
+- **Web UI — Channel Targets card + Scope Filter field.** Connector detail page has a new Targets section (add/list/delete). Binding editor gained a `scope_key_pattern` field with inline examples.
+
+**DB migration:** `0018_plan22_channel_system_v2.sql` — `connector_scope_conversations`, `connector_targets`, `ALTER connector_bindings ADD COLUMN scope_key_pattern text`.
+
+**Files touched:**
+- DB: `apps/studio/db/src/schema/connectors.ts`, `apps/studio/db/src/queries/connector.ts`, `apps/studio/db/src/migrations/0018_plan22_channel_system_v2.sql`
+- Types: `packages/types/src/index.ts` — `ConnectorEvent.scope_key`, `ConnectorEventMedia`, `ConnectorMediaItem`, `ConnectorContent.media_group/target_scope_key`, `ConnectorTarget.scope_key`, `ConnectorBinding.scope_key_pattern`, `ConnectorTargetRecord`, `ConnectorScopeConversationRecord`
+- Kit: `packages/kit/src/index.ts` — `ConnectorAdapter.computeScopeKey` + `targetFromScopeKey`
+- Server: `apps/studio/server/src/connectors/event-router.ts` (scope injection, scope-aware conversation resolution, scope filter, media context), `apps/studio/server/src/connectors/tools.ts` (3 new tools), `apps/studio/server/src/routes/connectors.ts` (targets + scopes routes)
+- Telegram plugin: `plugins/jiku.telegram/src/index.ts` — full rewrite of adapter (scope helpers, media extraction, media_group/URL/scope sends, 9 new actions)
+- Web: `apps/studio/web/lib/api.ts` (`targets` + `scopes` clients, `ConnectorTargetItem`, `ConnectorScopeItem`, `ConnectorBinding.scope_key_pattern`), connector detail page (Targets card), binding editor (Scope Filter field)
+
+## 2026-04-13 — Plan 21 follow-up: Harness adapter polish + UI indicators + per-mode adapter UX
+
+**Changed:**
+- **HarnessAdapter rewritten as a two-phase iteration.** OpenAI Chat Completions API fundamentally cannot emit text + tool_call in one response; without this, GPT batches tool calls without narration. The adapter now runs, per iteration: (1) `tool_choice: 'none'` + `stepCountIs(1)` → forced narration, (2) `tool_choice: 'auto'` + `stepCountIs(N)` → tool or final text. Phase 1 also acts as a "direct answer" path for simple questions (skips phase 2 when the narration contains no action-intent phrasing).
+- **Real-time streaming fix.** Both phases now call `sdkWriter.merge(result.toUIMessageStream({ sendFinish: false }))` IMMEDIATELY (before awaiting `result.steps`). Previously phase 2 merged after await, so AI SDK buffered all chunks and flushed them as one "flash" — user saw 3 tool invocations appear simultaneously. Finish chunk is now emitted manually via `ctx.sdkWriter.write({ type: 'finish' })` after the outer loop.
+- **Multi-step-per-iteration append bug fixed.** When `max_tool_calls_per_iteration > 1`, phase 2 internally chains steps via AI SDK. Previous code appended only the LAST step to `messages`, losing intermediate tool context for the next iteration. Now iterates all action steps and appends each `(assistant + tool-result)` pair.
+- **"Say and do" problem resolved.** `tool_choice='required'` on phase 2 was briefly tried — caused infinite random tool calls (`jiku_social_list_posts` x∞) because GPT is forced to pick ANY tool when the task is actually done. Reverted to `'auto'`; rely on regex + narration prompt for control flow instead. Deliberately do NOT append phase 1 narration to `messages` (phase 2 must see clean context, otherwise GPT frequently decides "I already answered" and emits empty → loop stalls).
+- **`ACTION_INTENT_RE` heuristic.** After phase 1, English + Indonesian action-phrase regex decides: match → run phase 2, no match → narration IS the final answer, break loop. Prompt-only stay-silent rules were unreliable on GPT.
+- **Phase 1 system prompt (`NARRATION_PHASE_INSTRUCTION`).** Tells the model the `tool_choice=none` constraint is mechanical, tools WILL be available in the next response, and to avoid re-announcing already-completed actions. Prevents "I can't access files" hallucination that contradicts the next turn's tool call.
+- **Non-JSON tool output normalization.** `toJsonValue()` round-trips tool outputs through `JSON.stringify`/`parse` before appending to messages — needed because DB queries return `Date` objects which fail AI SDK v6's strict JSONValue schema on re-validation.
+- **Config shape.** `max_iterations` (default 40), `max_tool_calls_per_iteration` (default 1 → narasi-per-tool UX; raise for batched chaining with fewer narrations), `force_narration` (default true; set false for Claude).
+- **UI — chat / preview / bar surface mode + adapter.**
+  - Chat message list: pulsing `w-2 h-2 bg-primary animate-pulse` dot on the last streaming assistant message, plus a standalone "thinking…" bubble when the stream starts with no assistant content yet. Copy button hides while that message is still streaming.
+  - ContextBar (below prompt): shows `<model> · <provider> · [MODE] <adapter name>` on the left. Hover popover (with "Details" button) now also lists Mode, Adapter, and the resolved adapter config key/values.
+  - ContextPreviewSheet: extended model info block with Mode, Adapter (display name + description), and expanded per-key adapter config list.
+  - Preview API (`PreviewRunResult`): added `mode` and `adapter_info: { id, display_name, description?, config? }` resolved server-side from `agent.mode_configs[mode]` via `agentAdapterRegistry`.
+- **Plugin prompt labels.** `previewRun` now uses `PluginLoader.getPromptSegmentsWithMetaAsync()` (new) so each plugin prompt appears in the preview as `<Plugin Name> (<plugin.id>)` instead of the generic `Plugin Segment 1/2/3`.
+- **NarrationPlugin strengthened.** Added hard rules #9 "Say AND do — in the SAME response" and #10 "only end without tool when delivering final answer", plus explicit CORRECT vs INCORRECT pattern examples. Applies globally (every project, every adapter).
+- **Agent settings UI.** `AgentConfigForm` (component, dead code, nobody imported it) deleted. Per-mode Adapter dropdown + dynamic config form rendered from `configSchema` now lives directly on the agent overview page (`.../agents/[agent]/page.tsx`). Max-tool-calls top-level field removed (that's adapter config now). Auto-focus on chat input restored (`autoFocus` + a `useEffect([convId, mode])` that focuses the textarea after route change to loaded-conversation mode).
+- **Chats page.** Removed avatar fallback from the agent selector dropdown in new-chat mode — names only, per request.
+- **DB default change.** `HarnessAgentAdapter.configSchema.max_iterations` default 40 (was 20).
+
+**Files touched:**
+- `packages/core/src/adapters/harness.ts`, `packages/core/src/adapters/default.ts`, `packages/core/src/adapter.ts`
+- `packages/core/src/runner.ts`, `packages/core/src/runtime.ts`, `packages/core/src/index.ts`
+- `packages/core/src/plugins/loader.ts` — added `getPromptSegmentsWithMetaAsync()`
+- `packages/types/src/index.ts` — `PreviewRunResult.mode`, `PreviewRunResult.adapter_info`, `AgentModeConfig.config`, `jiku-harness-iteration` data event
+- `apps/studio/server/src/plugins/narration.ts` — hard rules, correct/incorrect examples
+- `apps/studio/server/src/routes/preview.ts` — populate `mode` + `adapter_info` via `agentAdapterRegistry`
+- `apps/studio/web/lib/api.ts` — `AgentAdapterInfo`, preview result shape, `api.agents.listAdapters`
+- `apps/studio/web/components/chat/context-bar.tsx` — adapter badge on left, popover mode/adapter/config rows
+- `apps/studio/web/components/chat/context-preview-sheet.tsx` — mode + adapter + config list
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — pulsing indicator, copy-hide while streaming, thinking bubble, autofocus textarea on convId change
+- `apps/studio/web/components/agent/chat/chat-interface.tsx` — mode badge on usage tooltip
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/agents/[agent]/page.tsx` — per-mode adapter dropdown + dynamic config form; removed top-level max-tool-calls field
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/chats/page.tsx` — removed Avatar fallback
+- `apps/studio/web/components/agent/agent-config-form.tsx` — DELETED (dead code)
+
 ## 2026-04-13 — Plan 21: Agent Adapter System
 
 - **Agent execution is now pluggable per-mode.** New `AgentAdapter` abstraction in `@jiku/core` (`packages/core/src/adapter.ts`) — `DefaultAgentAdapter` preserves the legacy `streamText` path, `HarnessAgentAdapter` runs an explicit iterative LLM → tools loop (one `streamText` per iteration, merged into the same UI stream).

@@ -1,5 +1,33 @@
 # Memory
 
+## OpenAI Chat Completions cannot emit text + tool_call in one response
+
+Every response from a Chat Completions model is either text OR tool_calls — never both. No prompt will reliably change this. Claude can emit both natively. The only robust workaround for GPT is to run TWO separate `streamText` calls per logical "turn": one with `tool_choice: 'none'` (forces text) and one with `tool_choice: 'auto'` (permits tools). This is the core reason `HarnessAgentAdapter` exists. Reference threads: community.openai.com/t/1128779, /436653, /844498.
+
+## Never use `tool_choice: 'required'` in an iterative loop
+
+`required` forces the model to emit a tool call in every response. Once the actual task is complete, the model has nothing left to do — but still must call something, so it picks a random unrelated tool. Observed failure: a file-read task cascaded into infinite `jiku_social_list_posts` / `jiku_social_create_post` calls because the task was done and `required` kept forcing tool emission. Use `'auto'` and accept that the model may occasionally drop a tool call; early exit is better than infinite wrong tools.
+
+## Do NOT append phase-1 narration to the `messages` array in harness
+
+When harness phase 1 narrates "Now I'll read X", appending that text as `{ role: 'assistant', content: narration }` to `messages` before phase 2 makes GPT decide the work is already announced/done and emit an empty response → `hasToolCalls=false` → loop exits prematurely. Keep `messages` identical between phase 1 and phase 2; only `toolChoice` differs. Narration still gets to the user (via `sdkWriter.merge`) and the DB (via `allSteps` → `persistAssistantMessage`), just not into the LLM's prompt.
+
+## AI SDK v6 UIMessageStreamWriter: merge BEFORE awaiting `result.steps`
+
+The pattern `await result.steps; sdkWriter.merge(result.toUIMessageStream(...))` buffers everything until steps complete, then flushes at once — user-visible as a "flash" when multiple tool calls arrive together. Pattern `sdkWriter.merge(result.toUIMessageStream(...)); await result.steps` streams in real time. Use `sendFinish: false` on every merge except the last; or always false + emit `ctx.sdkWriter.write({ type: 'finish' })` manually after the last stream drains.
+
+## AI SDK v6 rejects `Date` / `undefined` inside `tool-result` payloads
+
+`streamText` validates the `messages` array against a strict JSONValue schema on each call. Tool results returned directly from DB queries often contain `Date` objects (`created_at`, `updated_at`) — appending them raw produces `AI_TypeValidationError: expected null|string|number|boolean|record, received Date`. Normalize with `JSON.parse(JSON.stringify(value))` before attaching as `{ type: 'tool-result', output: { type: 'json', value } }`. Default adapter doesn't hit this because AI SDK handles tool-result encoding internally; harness DOES because we manually reconstruct `messages` between iterations.
+
+## When harness `stepCountIs(N > 1)`, append EVERY action step, not just the last
+
+With `max_tool_calls_per_iteration > 1`, AI SDK internally chains steps within one phase 2 `streamText`. If only the last step is appended to `messages` for the next outer iteration, intermediate tool calls + results are lost — next iteration's LLM has partial history and may duplicate work or fail. Iterate every `StepResult` and append `(assistant{text+tool_calls}, tool{results})` per step.
+
+## Deferred tool fetch via ToolSearch + `UIMessageChunk { type: 'finish' }`
+
+`UIMessageStreamWriter.write({ type: 'finish' })` synthesizes the UI message's terminal chunk without any LLM call. Useful when a multi-phase operation wants to keep the UI message open across several `streamText` runs (each merged with `sendFinish: false`) and close it once at the end.
+
 ## Zod schema reflection: always unwrap wrappers before reading `typeName`
 
 `_def.typeName` on a wrapped Zod node returns the wrapper name, not the inner type. `z.string().optional()._def.typeName === 'ZodOptional'` — `typeName.toLowerCase()` gives `"optional"`, NOT `"string"`. Always walk `ZodOptional` / `ZodDefault` / `ZodNullable` / `ZodEffects` via `_def.innerType` (or `_def.schema` for Effects) until you hit a leaf. Cap the walk at 5-10 iterations to avoid cycles. Pattern: `unwrapZod(node)` helper lives in `apps/studio/server/src/routes/browser-profiles.ts` and `apps/studio/server/src/browser/tool.ts`. Reuse it.

@@ -177,6 +177,21 @@ export default function BindingDetailPage({ params }: PageProps) {
                 onChange={e => updateBindingMutation.mutate({ trigger_regex: e.target.value || null })}
               />
             </div>
+            <div className="space-y-1.5 col-span-2">
+              <p className="text-xs font-medium text-muted-foreground">Scope Filter (Plan 22)</p>
+              <p className="text-[10px] text-muted-foreground">
+                Restrict to a conversation scope: <code className="bg-muted px-1 rounded">group:*</code> (all groups),{' '}
+                <code className="bg-muted px-1 rounded">dm:*</code> (DMs only),{' '}
+                <code className="bg-muted px-1 rounded">group:-1001234</code> (specific group),{' '}
+                <code className="bg-muted px-1 rounded">group:-1001234:topic:42</code> (forum topic). Empty = match all.
+              </p>
+              <Input
+                className="h-8 text-xs"
+                value={binding.scope_key_pattern ?? ''}
+                placeholder="e.g. group:*"
+                onChange={e => updateBindingMutation.mutate({ scope_key_pattern: e.target.value || null })}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>

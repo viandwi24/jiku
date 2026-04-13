@@ -21,6 +21,12 @@ import {
   createInviteCode,
   revokeInviteCode,
   deleteInviteCode,
+  getConnectorTargetsForConnector,
+  getConnectorTargetById,
+  createConnectorTarget,
+  updateConnectorTarget,
+  deleteConnectorTarget,
+  getConnectorScopes,
 } from '@jiku-studio/db'
 import { connectorRegistry } from '../connectors/registry.ts'
 import { routeConnectorEvent } from '../connectors/event-router.ts'
@@ -376,6 +382,74 @@ router.get('/connectors/:id/events/stream', authMiddleware, requireConnectorPerm
     listeners.delete(res)
     clearInterval(ping)
   })
+})
+
+// ─── Plan 22 — Channel Targets ───────────────────────────────────────────────
+
+/** GET /connectors/:id/targets */
+router.get('/connectors/:id/targets', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  try {
+    const targets = await getConnectorTargetsForConnector(req.params['id']!)
+    res.json({ targets })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/targets */
+router.post('/connectors/:id/targets', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  const { name, display_name, description, ref_keys, scope_key, metadata } = req.body as {
+    name: string; display_name?: string; description?: string
+    ref_keys: Record<string, string>; scope_key?: string; metadata?: Record<string, unknown>
+  }
+  if (!name || !ref_keys) { res.status(400).json({ error: 'name and ref_keys required' }); return }
+  try {
+    const target = await createConnectorTarget({
+      connector_id: req.params['id']!,
+      name,
+      display_name: display_name ?? null,
+      description: description ?? null,
+      ref_keys,
+      scope_key: scope_key ?? null,
+      metadata: metadata ?? {},
+    })
+    res.status(201).json({ target })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** PATCH /connectors/:id/targets/:tid */
+router.patch('/connectors/:id/targets/:tid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const existing = await getConnectorTargetById(req.params['tid']!)
+    if (!existing || existing.connector_id !== req.params['id']) { res.status(404).json({ error: 'Not found' }); return }
+    const target = await updateConnectorTarget(req.params['tid']!, req.body)
+    res.json({ target })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** DELETE /connectors/:id/targets/:tid */
+router.delete('/connectors/:id/targets/:tid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    await deleteConnectorTarget(req.params['tid']!)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** GET /connectors/:id/scopes — list active conversation scopes */
+router.get('/connectors/:id/scopes', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query['limit'] ?? '50'))
+    const scopes = await getConnectorScopes(req.params['id']!, limit)
+    res.json({ scopes })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
 })
 
 // ─── Webhook inbound ──────────────────────────────────────────────────────────

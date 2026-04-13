@@ -10,6 +10,10 @@ import {
   redeemInviteCode,
   getConnectorById,
   getAgentById,
+  getScopeConversation,
+  createScopeConversation,
+  touchScopeConversation,
+  setScopeConversationId,
 } from '@jiku-studio/db'
 import { connectorRegistry } from './registry.ts'
 import { streamRegistry } from '../runtime/stream-registry.ts'
@@ -77,6 +81,18 @@ function checkRateLimit(identityId: string, rpm: number): boolean {
   return true
 }
 
+/** Plan 22 — match scope_key against pattern. Supports exact, "*" prefix wildcard, null = match all. */
+function matchesScopePattern(scopeKey: string | undefined, pattern: string | null | undefined): boolean {
+  if (!pattern) return true
+  const sk = scopeKey ?? ''
+  if (pattern === 'dm:*') return !scopeKey   // dm = undefined scope
+  if (pattern.endsWith(':*')) {
+    const prefix = pattern.slice(0, -1) // strip trailing '*'
+    return sk.startsWith(prefix)
+  }
+  return sk === pattern
+}
+
 function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boolean {
   // Source check
   if (binding.source_ref_keys && typeof binding.source_ref_keys === 'object') {
@@ -84,6 +100,11 @@ function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boole
     for (const [k, v] of Object.entries(required)) {
       if (event.ref_keys[k] !== v) return false
     }
+  }
+
+  // Plan 22 — scope_key_pattern filter
+  if (binding.scope_key_pattern) {
+    if (!matchesScopePattern(event.scope_key, binding.scope_key_pattern)) return false
   }
 
   // Trigger source check
@@ -171,14 +192,35 @@ function buildConnectorContextString(
   event: ConnectorEvent,
   binding: ConnectorBinding,
   identity: ConnectorIdentity,
+  eventId?: string,
 ): string {
   const parts: string[] = []
   parts.push('[Connector Context]')
   parts.push(`Platform: ${event.connector_id.replace('jiku.connector.', '')}`)
 
+  // Plan 22 — scope_key + chat info
+  if (event.scope_key) {
+    parts.push(`Chat scope: ${event.scope_key}`)
+  }
+  const chatTitle = event.metadata?.['chat_title']
+  const chatType = event.metadata?.['chat_type']
+  if (chatTitle) parts.push(`Chat: ${chatTitle}${chatType ? ` (${chatType})` : ''}`)
+
   if (binding.include_sender_info) {
     parts.push(`Sender: ${identity.display_name ?? event.sender.display_name ?? event.sender.external_id}`)
     parts.push(`Identity: ${JSON.stringify(identity.external_ref_keys)}`)
+  }
+
+  // Plan 22 — media availability hint (lazy fetch via event_id)
+  if (event.content?.media) {
+    const m = event.content.media
+    const sizeHint = m.file_size ? ` ${Math.round(m.file_size / 1024)}KB` : ''
+    const nameHint = m.file_name ? ` "${m.file_name}"` : ''
+    const evIdHint = eventId ? `event_id: "${eventId}"` : `message_id=${event.ref_keys['message_id']}, chat_id=${event.ref_keys['chat_id']}`
+    parts.push(
+      `Media available: ${m.type}${nameHint}${sizeHint} (${evIdHint}) — ` +
+      `use connector_run_action("fetch_media", { event_id, save_path: "/your/path" }) to download`,
+    )
   }
 
   // Inject message timestamp and user locale/timezone hint
@@ -250,6 +292,15 @@ export async function routeConnectorEvent(
   // Resolve the connector UUID from the active context (event.connector_id is plugin_id)
   const activeCtx = connectorRegistry.getActiveContextForPlugin(event.connector_id, projectId)
   const connectorUuid = activeCtx?.connectorId ?? null
+
+  // Plan 22 — compute scope_key from adapter (multi-chat adapters populate this)
+  if (connectorUuid && event.scope_key === undefined) {
+    const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
+    if (adapter?.computeScopeKey) {
+      const sk = adapter.computeScopeKey({ ref_keys: event.ref_keys, metadata: event.metadata })
+      if (sk) event.scope_key = sk
+    }
+  }
 
   // 0. Invite code redemption — intercept /start <code> or /join <code>
   if (connectorUuid) {
@@ -398,7 +449,7 @@ export async function routeConnectorEvent(
     }
 
     // 5. Log event
-    await logConnectorEvent({
+    const loggedEvent = await logConnectorEvent({
       connector_id: connector.id,
       binding_id: typedBinding.id,
       identity_id: typedIdentity.id,
@@ -416,7 +467,7 @@ export async function routeConnectorEvent(
 
     // 7. Execute output adapter
     if (typedBinding.output_adapter === 'conversation') {
-      executeConversationAdapter(event, typedBinding, typedIdentity, caller, connector.id, projectId, runtimeManager).catch(err =>
+      executeConversationAdapter(event, typedBinding, typedIdentity, caller, connector.id, projectId, runtimeManager, loggedEvent.id).catch(err =>
         console.error('[connector] conversation adapter error:', err)
       )
     } else if (typedBinding.output_adapter === 'task') {
@@ -485,6 +536,7 @@ async function executeConversationAdapter(
   connectorId: string,
   projectId: string,
   runtimeManager: import('../runtime/manager.ts').JikuRuntimeManager,
+  eventId?: string,
 ): Promise<void> {
   const cfg = binding.output_config as { agent_id?: string; conversation_mode?: string }
   const agentId = cfg.agent_id
@@ -511,7 +563,34 @@ async function executeConversationAdapter(
 
   let conversationId: string
   if (conversationMode === 'persistent') {
-    if (identity.conversation_id) {
+    // Plan 22 — scope-aware conversation resolution for group/topic/thread
+    const scopeKey = event.scope_key
+    if (scopeKey) {
+      const existing = await getScopeConversation(connectorId, scopeKey, agentId)
+      if (existing && existing.conversation_id) {
+        conversationId = existing.conversation_id
+        await touchScopeConversation(existing.id)
+      } else {
+        const chatTitle = (event.metadata?.['chat_title'] as string | undefined) ?? scopeKey
+        const conv = await createConversation({
+          project_id: projectId,
+          agent_id: agentId,
+          title: `${chatTitle} (${scopeKey})`,
+        })
+        conversationId = conv.id
+        if (existing) {
+          await setScopeConversationId(existing.id, conversationId)
+        } else {
+          await createScopeConversation({
+            connector_id: connectorId,
+            scope_key: scopeKey,
+            agent_id: agentId,
+            conversation_id: conversationId,
+          })
+        }
+      }
+    } else if (identity.conversation_id) {
+      // DM path — existing identity-based mapping
       conversationId = identity.conversation_id
     } else {
       const conv = await createConversation({
@@ -550,7 +629,7 @@ async function executeConversationAdapter(
     }
 
     // Enqueue — will be processed when current run finishes
-    const contextString = buildConnectorContextString(event, binding, identity)
+    const contextString = buildConnectorContextString(event, binding, identity, eventId)
     const inputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
@@ -595,7 +674,7 @@ async function executeConversationAdapter(
     : null
 
   try {
-    const contextString = buildConnectorContextString(event, binding, identity)
+    const contextString = buildConnectorContextString(event, binding, identity, eventId)
     await logConnectorMessage({
       connector_id: connectorId,
       conversation_id: conversationId,

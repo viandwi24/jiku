@@ -1047,11 +1047,25 @@ export type ConnectorEventType =
   | 'leave'
   | 'custom'
 
+/**
+ * Media metadata only — NO url/data, NO file_id (Plan 22).
+ * file_id disimpan di connector_events.metadata (internal, tidak diekspos ke AI).
+ * AI fetch media via connector_run_action('fetch_media', { event_id, save_path }).
+ */
+export interface ConnectorEventMedia {
+  type: 'photo' | 'document' | 'voice' | 'video' | 'sticker'
+  file_name?: string
+  mime_type?: string
+  file_size?: number
+}
+
 export interface ConnectorEvent {
   type: ConnectorEventType
   connector_id: string
   /** Flexible platform-specific message/event keys, e.g. { message_id, chat_id } */
   ref_keys: Record<string, string>
+  /** Plan 22 — Computed conversation scope. Null/undefined = DM/default. Non-null = group/topic/thread. */
+  scope_key?: string
   sender: {
     external_id: string
     display_name?: string
@@ -1062,7 +1076,7 @@ export interface ConnectorEvent {
   target_ref_keys?: Record<string, string>
   content?: {
     text?: string
-    media?: { type: string; url?: string; data?: Uint8Array }
+    media?: ConnectorEventMedia
     raw?: unknown
   }
   metadata?: Record<string, unknown>
@@ -1072,13 +1086,41 @@ export interface ConnectorEvent {
 export interface ConnectorTarget {
   ref_keys: Record<string, string>
   reply_to_ref_keys?: Record<string, string>
+  /** Plan 22 — Override target scope (e.g. kirim ke topic tertentu dalam group) */
+  scope_key?: string
+}
+
+/**
+ * Single outbound media item (Plan 22) — used in ConnectorContent.media and media_group[].
+ * Telegram caption limit: 1024 chars (vs 4096 for text messages).
+ */
+export interface ConnectorMediaItem {
+  type: 'image' | 'video' | 'document' | 'voice'
+  /** Public URL — adapter downloads directly */
+  url?: string
+  /** Raw bytes — for generated or pre-downloaded files */
+  data?: Uint8Array
+  /** Filename (required for document, optional for image/video) */
+  name?: string
+  /** Caption shown under media. For media_group only the first item caption is prominent. */
+  caption?: string
+  /** Parse caption as MarkdownV2 (Telegram) */
+  caption_markdown?: boolean
 }
 
 export interface ConnectorContent {
   text?: string
   markdown?: boolean
-  media?: { type: 'image' | 'video' | 'document'; url?: string; data?: Uint8Array }
+  /** Single media — one photo, document, or voice note */
+  media?: ConnectorMediaItem
+  /**
+   * Media group (album) — max 10. Photo + video may mix; documents cannot mix with photo/video.
+   * Adapter fallback: if sendMediaGroup unsupported, send items sequentially.
+   */
+  media_group?: ConnectorMediaItem[]
   buttons?: Array<{ text: string; data: string }>
+  /** Plan 22 — Override target scope (e.g. thread/topic within a group) */
+  target_scope_key?: string
 }
 
 export interface ConnectorSendResult {
@@ -1151,7 +1193,34 @@ export interface ConnectorBinding {
   schedule_filter?: Record<string, unknown> | null
   rate_limit_rpm?: number | null
   include_sender_info: boolean
+  /** Plan 22 — Scope filter: null = all, "group:*" = groups only, "dm:*" = DMs, exact = specific scope */
+  scope_key_pattern?: string | null
   enabled: boolean
+  created_at: Date
+}
+
+/** Named channel target record (Plan 22) */
+export interface ConnectorTargetRecord {
+  id: string
+  connector_id: string
+  name: string
+  display_name?: string | null
+  description?: string | null
+  ref_keys: Record<string, string>
+  scope_key?: string | null
+  metadata: Record<string, unknown>
+  created_at: Date
+  updated_at: Date
+}
+
+/** Scope-scoped conversation record (Plan 22) */
+export interface ConnectorScopeConversationRecord {
+  id: string
+  connector_id: string
+  scope_key: string
+  agent_id?: string | null
+  conversation_id?: string | null
+  last_activity_at: Date
   created_at: Date
 }
 

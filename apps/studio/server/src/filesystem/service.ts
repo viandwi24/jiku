@@ -353,6 +353,26 @@ export class FilesystemService {
     return newKey
   }
 
+  // ─── mkdir ──────────────────────────────────────────────────────────────
+
+  async mkdir(folderPath: string): Promise<void> {
+    const normalized = normalizePath(folderPath)
+    if (normalized === '/') throw new ValidationError('Cannot create root folder')
+
+    // Collect this folder + all its ancestors
+    const segments = normalized.split('/').filter(Boolean)
+    for (let i = 0; i < segments.length; i++) {
+      const path = '/' + segments.slice(0, i + 1).join('/')
+      const parentPath = i === 0 ? null : ('/' + segments.slice(0, i).join('/'))
+      await db.insert(project_folders).values({
+        project_id: this.projectId,
+        path,
+        parent_path: parentPath,
+        depth: i + 1,
+      }).onConflictDoNothing()
+    }
+  }
+
   /**
    * Upsert all ancestor folders of a file path into project_folders.
    * Called after write() and move() to keep the folder table in sync.

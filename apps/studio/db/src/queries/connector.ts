@@ -8,6 +8,8 @@ import {
   connector_messages,
   connector_message_events,
   connector_invite_codes,
+  connector_scope_conversations,
+  connector_targets,
   user_identities,
 } from '../schema/connectors.ts'
 
@@ -107,6 +109,7 @@ export async function createBinding(data: {
   priority?: number
   trigger_regex?: string
   schedule_filter?: Record<string, unknown>
+  scope_key_pattern?: string | null
 }) {
   const rows = await db
     .insert(connector_bindings)
@@ -140,6 +143,7 @@ export async function updateBinding(id: string, data: Partial<{
   priority: number
   trigger_regex: string
   schedule_filter: Record<string, unknown>
+  scope_key_pattern: string | null
 }>) {
   const rows = await db
     .update(connector_bindings)
@@ -244,6 +248,11 @@ export async function logConnectorEvent(data: {
     .values({ ...data, status: data.status ?? 'received' })
     .returning()
   return rows[0]!
+}
+
+export async function getConnectorEventById(id: string) {
+  const rows = await db.select().from(connector_events).where(eq(connector_events.id, id)).limit(1)
+  return rows[0] ?? null
 }
 
 export async function getConnectorEvents(connectorId: string, limit = 50) {
@@ -441,4 +450,151 @@ export async function redeemInviteCode(code: string): Promise<string | null> {
     .where(eq(connector_invite_codes.id, invite.id))
 
   return invite.connector_id
+}
+
+// ─── Scope Conversations (Plan 22) ───────────────────────────────────────────
+
+export async function getScopeConversation(connectorId: string, scopeKey: string, agentId: string | null) {
+  const conditions = [
+    eq(connector_scope_conversations.connector_id, connectorId),
+    eq(connector_scope_conversations.scope_key, scopeKey),
+  ]
+  if (agentId) conditions.push(eq(connector_scope_conversations.agent_id, agentId))
+  else conditions.push(sql`${connector_scope_conversations.agent_id} is null`)
+
+  const rows = await db
+    .select()
+    .from(connector_scope_conversations)
+    .where(and(...conditions))
+    .limit(1)
+  return rows[0] ?? null
+}
+
+export async function createScopeConversation(data: {
+  connector_id: string
+  scope_key: string
+  agent_id?: string | null
+  conversation_id?: string | null
+}) {
+  const rows = await db
+    .insert(connector_scope_conversations)
+    .values({
+      connector_id: data.connector_id,
+      scope_key: data.scope_key,
+      agent_id: data.agent_id ?? null,
+      conversation_id: data.conversation_id ?? null,
+    })
+    .returning()
+  return rows[0]!
+}
+
+export async function touchScopeConversation(id: string) {
+  await db
+    .update(connector_scope_conversations)
+    .set({ last_activity_at: new Date() })
+    .where(eq(connector_scope_conversations.id, id))
+}
+
+export async function setScopeConversationId(id: string, conversationId: string) {
+  await db
+    .update(connector_scope_conversations)
+    .set({ conversation_id: conversationId, last_activity_at: new Date() })
+    .where(eq(connector_scope_conversations.id, id))
+}
+
+export async function getConnectorScopes(connectorId: string, limit = 20) {
+  return db
+    .select()
+    .from(connector_scope_conversations)
+    .where(eq(connector_scope_conversations.connector_id, connectorId))
+    .orderBy(desc(connector_scope_conversations.last_activity_at))
+    .limit(limit)
+}
+
+// ─── Channel Targets (Plan 22) ───────────────────────────────────────────────
+
+export async function getConnectorTargets(projectId: string, connectorId?: string) {
+  const conditions = [eq(connectors.project_id, projectId)]
+  if (connectorId) conditions.push(eq(connector_targets.connector_id, connectorId))
+
+  const rows = await db
+    .select({ target: connector_targets })
+    .from(connector_targets)
+    .innerJoin(connectors, eq(connector_targets.connector_id, connectors.id))
+    .where(and(...conditions))
+    .orderBy(desc(connector_targets.created_at))
+  return rows.map(r => r.target)
+}
+
+export async function getConnectorTargetById(id: string) {
+  const rows = await db.select().from(connector_targets).where(eq(connector_targets.id, id)).limit(1)
+  return rows[0] ?? null
+}
+
+export async function getConnectorTargetByName(projectId: string, name: string, connectorId?: string) {
+  const conditions = [
+    eq(connectors.project_id, projectId),
+    eq(connector_targets.name, name),
+  ]
+  if (connectorId) conditions.push(eq(connector_targets.connector_id, connectorId))
+
+  const rows = await db
+    .select({ target: connector_targets })
+    .from(connector_targets)
+    .innerJoin(connectors, eq(connector_targets.connector_id, connectors.id))
+    .where(and(...conditions))
+    .limit(1)
+  return rows[0]?.target ?? null
+}
+
+export async function getConnectorTargetsForConnector(connectorId: string) {
+  return db
+    .select()
+    .from(connector_targets)
+    .where(eq(connector_targets.connector_id, connectorId))
+    .orderBy(desc(connector_targets.created_at))
+}
+
+export async function createConnectorTarget(data: {
+  connector_id: string
+  name: string
+  display_name?: string | null
+  description?: string | null
+  ref_keys: Record<string, string>
+  scope_key?: string | null
+  metadata?: Record<string, unknown>
+}) {
+  const rows = await db
+    .insert(connector_targets)
+    .values({
+      connector_id: data.connector_id,
+      name: data.name,
+      display_name: data.display_name ?? null,
+      description: data.description ?? null,
+      ref_keys: data.ref_keys,
+      scope_key: data.scope_key ?? null,
+      metadata: data.metadata ?? {},
+    })
+    .returning()
+  return rows[0]!
+}
+
+export async function updateConnectorTarget(id: string, data: Partial<{
+  name: string
+  display_name: string | null
+  description: string | null
+  ref_keys: Record<string, string>
+  scope_key: string | null
+  metadata: Record<string, unknown>
+}>) {
+  const rows = await db
+    .update(connector_targets)
+    .set({ ...data, updated_at: new Date() })
+    .where(eq(connector_targets.id, id))
+    .returning()
+  return rows[0] ?? null
+}
+
+export async function deleteConnectorTarget(id: string) {
+  await db.delete(connector_targets).where(eq(connector_targets.id, id))
 }

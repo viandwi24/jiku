@@ -1,10 +1,13 @@
 import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
-import type { ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent, ConnectorSendResult } from '@jiku/types'
+import type {
+  ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent,
+  ConnectorSendResult, ConnectorMediaItem, ConnectorEventMedia,
+} from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
 import { StudioPlugin } from '@jiku-plugin/studio'
 import type { Bot } from 'grammy'
-import { getFileByPath } from '@jiku-studio/db'
+import { getFileByPath, getConnectorEventById } from '@jiku-studio/db'
 
 const TELEGRAM_MAX_LENGTH = 4000
 
@@ -25,12 +28,92 @@ function splitMessage(text: string, maxLength = TELEGRAM_MAX_LENGTH): string[] {
   return chunks
 }
 
+/**
+ * Extract media from a Telegram message.
+ * Returns:
+ *  - media: public metadata (no file_id) for ConnectorEvent.content.media
+ *  - mediaMetadata: internal data (file_id etc.) for connector_events.metadata
+ * file_id NEVER leaves this adapter/DB — AI only gets event_id + summary hint.
+ */
+function extractTelegramMedia(msg: any): {
+  media: ConnectorEventMedia | undefined
+  mediaMetadata: Record<string, unknown>
+} {
+  if (msg.photo?.length) {
+    const largest = msg.photo[msg.photo.length - 1]
+    return {
+      media: { type: 'photo', file_size: largest.file_size },
+      mediaMetadata: {
+        media_file_id: largest.file_id,
+        media_type: 'photo',
+        media_file_size: largest.file_size,
+      },
+    }
+  }
+  if (msg.document) {
+    return {
+      media: {
+        type: 'document',
+        file_name: msg.document.file_name,
+        mime_type: msg.document.mime_type,
+        file_size: msg.document.file_size,
+      },
+      mediaMetadata: {
+        media_file_id: msg.document.file_id,
+        media_type: 'document',
+        media_file_name: msg.document.file_name,
+        media_mime_type: msg.document.mime_type,
+        media_file_size: msg.document.file_size,
+      },
+    }
+  }
+  if (msg.voice) {
+    return {
+      media: { type: 'voice', mime_type: msg.voice.mime_type, file_size: msg.voice.file_size },
+      mediaMetadata: {
+        media_file_id: msg.voice.file_id,
+        media_type: 'voice',
+        media_mime_type: msg.voice.mime_type,
+        media_file_size: msg.voice.file_size,
+      },
+    }
+  }
+  if (msg.video) {
+    return {
+      media: {
+        type: 'video',
+        file_name: msg.video.file_name,
+        mime_type: msg.video.mime_type,
+        file_size: msg.video.file_size,
+      },
+      mediaMetadata: {
+        media_file_id: msg.video.file_id,
+        media_type: 'video',
+        media_file_name: msg.video.file_name,
+        media_mime_type: msg.video.mime_type,
+        media_file_size: msg.video.file_size,
+      },
+    }
+  }
+  if (msg.sticker) {
+    return {
+      media: { type: 'sticker', file_size: msg.sticker.file_size },
+      mediaMetadata: {
+        media_file_id: msg.sticker.file_id,
+        media_type: 'sticker',
+        media_file_size: msg.sticker.file_size,
+      },
+    }
+  }
+  return { media: undefined, mediaMetadata: {} }
+}
+
 class TelegramAdapter extends ConnectorAdapter {
   readonly id = 'jiku.telegram'
   readonly displayName = 'Telegram'
   readonly credentialAdapterId = 'telegram'
   override readonly credentialDisplayName = 'Telegram Bot'
-  readonly refKeys = ['message_id', 'chat_id']
+  readonly refKeys = ['message_id', 'chat_id', 'thread_id']
   readonly supportedEvents = ['message', 'reaction', 'unreaction', 'edit', 'delete'] as const
 
   override readonly credentialSchema = z.object({
@@ -38,8 +121,34 @@ class TelegramAdapter extends ConnectorAdapter {
   })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private bot: Bot|null = null
+  private bot: Bot | null = null
   private projectId: string | null = null
+
+  // ─── Plan 22: scope_key helpers ─────────────────────────────────────
+
+  override computeScopeKey(event: { ref_keys: Record<string, string>; metadata?: Record<string, unknown> }): string | undefined {
+    const chatId = event.ref_keys['chat_id']
+    const chatType = event.metadata?.['chat_type'] as string | undefined
+    const threadId = event.ref_keys['thread_id']
+    if (!chatId) return undefined
+    if (chatType === 'private') return undefined  // DM
+    const base = `group:${chatId}`
+    if (threadId) return `${base}:topic:${threadId}`
+    return base
+  }
+
+  override targetFromScopeKey(scopeKey: string): ConnectorTarget | null {
+    const parts = scopeKey.split(':')
+    if (parts[0] !== 'group') return null
+    const chatId = parts[1]
+    if (!chatId) return null
+    const ref_keys: Record<string, string> = { chat_id: chatId }
+    const topicIdx = parts.indexOf('topic')
+    if (topicIdx !== -1 && parts[topicIdx + 1]) {
+      ref_keys['thread_id'] = parts[topicIdx + 1]!
+    }
+    return { ref_keys }
+  }
 
   // ─── Actions registry ───────────────────────────────────────────────
 
@@ -101,7 +210,9 @@ class TelegramAdapter extends ConnectorAdapter {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
         file_path: { type: 'string', description: 'File path in the project filesystem, e.g. "/reports/output.pdf"', required: true },
         caption: { type: 'string', description: 'Optional caption for the file', required: false },
+        caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
         reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
+        thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
       },
     },
     {
@@ -112,7 +223,9 @@ class TelegramAdapter extends ConnectorAdapter {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
         file_path: { type: 'string', description: 'Image file path in the project filesystem, e.g. "/images/chart.png"', required: true },
         caption: { type: 'string', description: 'Optional caption', required: false },
+        caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
         reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
+        thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
       },
     },
     {
@@ -121,6 +234,99 @@ class TelegramAdapter extends ConnectorAdapter {
       description: 'Get information about a Telegram chat (title, type, member count, etc.)',
       params: {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+      },
+    },
+
+    // ── Plan 22 — new actions ─────────────────────────────────────────
+    {
+      id: 'fetch_media',
+      name: 'Fetch Media from Message',
+      description: 'Download media from a previously received message and save it to the project filesystem. Use the event_id from the "Media available" hint in the conversation context. Returns the saved file path + size.',
+      params: {
+        event_id: { type: 'string', description: 'event_id from the inbound message that contained media (from context hint)', required: true },
+        save_path: { type: 'string', description: 'Filesystem path to save the file. If omitted, auto-generates under /connector_media/.', required: false },
+      },
+    },
+    {
+      id: 'send_media_group',
+      name: 'Send Media Group (Album)',
+      description: 'Send multiple photos, videos, or documents as a single album message. Photos and videos can be mixed (max 10). Documents cannot mix with photo/video — if mixed, photos/videos go first as album then documents are sent individually. Only the first item caption is shown prominently.',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, file_path?: string, caption?: string, caption_markdown?: boolean }. Max 10 items.', required: true },
+        thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
+      },
+    },
+    {
+      id: 'send_url_media',
+      name: 'Send Media from URL',
+      description: 'Send a single image or document from a public URL directly to a chat — no filesystem needed',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        url: { type: 'string', description: 'Public direct URL to the media file', required: true },
+        type: { type: 'string', description: '"photo" or "document"', required: true },
+        caption: { type: 'string', description: 'Optional caption', required: false },
+        caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
+        thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
+      },
+    },
+    {
+      id: 'send_to_scope',
+      name: 'Send to Scope',
+      description: 'Send a message to a specific scope (group, topic, or thread) using a scope_key, e.g. "group:-1001234:topic:42".',
+      params: {
+        scope_key: { type: 'string', description: 'Scope key, e.g. "group:-1001234" or "group:-1001234:topic:42"', required: true },
+        text: { type: 'string', description: 'Message text', required: true },
+        markdown: { type: 'boolean', description: 'Parse text as Markdown (default true)', required: false },
+      },
+    },
+    {
+      id: 'get_chat_members',
+      name: 'Get Chat Administrators',
+      description: 'Get the list of administrators in a Telegram group or channel',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+      },
+    },
+    {
+      id: 'create_invite_link',
+      name: 'Create Invite Link',
+      description: 'Create an invite link for a Telegram group or channel',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        name: { type: 'string', description: 'Link name/label', required: false },
+        expire_date: { type: 'string', description: 'ISO date when link expires', required: false },
+        member_limit: { type: 'number', description: 'Max uses (1–99999)', required: false },
+      },
+    },
+    {
+      id: 'forward_message',
+      name: 'Forward Message',
+      description: 'Forward a message from one chat to another',
+      params: {
+        from_chat_id: { type: 'string', description: 'Source chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to forward', required: true },
+        to_chat_id: { type: 'string', description: 'Destination chat ID', required: true },
+        thread_id: { type: 'string', description: 'Destination topic thread ID', required: false },
+      },
+    },
+    {
+      id: 'set_chat_description',
+      name: 'Set Chat Description',
+      description: 'Update the description of a group or channel',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        description: { type: 'string', description: 'New description (max 255 chars)', required: true },
+      },
+    },
+    {
+      id: 'ban_member',
+      name: 'Ban Member',
+      description: 'Ban a user from the group. Use with caution.',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        user_id: { type: 'string', description: 'User ID to ban', required: true },
+        until_date: { type: 'string', description: 'ISO date when ban expires (omit = permanent)', required: false },
       },
     },
   ]
@@ -162,50 +368,32 @@ class TelegramAdapter extends ConnectorAdapter {
 
       case 'unpin_message': {
         const { chat_id, message_id } = params as { chat_id: string; message_id?: string }
-        if (message_id) {
-          await this.bot.api.unpinChatMessage(chat_id, Number(message_id))
-        } else {
-          await this.bot.api.unpinAllChatMessages(chat_id)
-        }
+        if (message_id) await this.bot.api.unpinChatMessage(chat_id, Number(message_id))
+        else await this.bot.api.unpinAllChatMessages(chat_id)
         return { success: true }
       }
 
       case 'send_file':
       case 'send_photo': {
-        const { chat_id, file_path, caption, reply_to_message_id } = params as {
-          chat_id: string
-          file_path: string
-          caption?: string
-          reply_to_message_id?: string
+        const { chat_id, file_path, caption, caption_markdown, reply_to_message_id, thread_id } = params as {
+          chat_id: string; file_path: string; caption?: string; caption_markdown?: boolean
+          reply_to_message_id?: string; thread_id?: string
         }
-        if (!this.projectId) throw new Error('Project context not available')
-
-        // Dynamically import filesystem service from the server
-        // (telegram plugin runs inside the server process, so this is safe)
-        const { getFilesystemService } = await import('../../../apps/studio/server/src/filesystem/service.ts')
-        const fs = await getFilesystemService(this.projectId)
-        if (!fs) throw new Error('Filesystem is not configured for this project')
-
-        // Download file content from S3 adapter as buffer
-        const adapter = fs.getAdapter()
-        const fileRecord = await getFileByPath(this.projectId, file_path)
-        if (!fileRecord) throw new Error(`File not found in filesystem: ${file_path}`)
-
-        const buffer = await adapter.download(fileRecord.storage_key)
-        const { InputFile } = await import('grammy')
-        const inputFile = new InputFile(buffer, fileRecord.name)
-
-        const replyParams = reply_to_message_id
-          ? { reply_parameters: { message_id: Number(reply_to_message_id) } }
-          : {}
+        const inputFile = await this.resolveFilesystemFile(file_path)
+        const extra: Record<string, unknown> = {}
+        if (caption) {
+          extra.caption = caption_markdown ? telegramifyMarkdown(caption, 'escape') : caption
+          if (caption_markdown) extra.parse_mode = 'MarkdownV2'
+        }
+        if (reply_to_message_id) extra.reply_parameters = { message_id: Number(reply_to_message_id) }
+        if (thread_id) extra.message_thread_id = Number(thread_id)
 
         if (actionId === 'send_photo') {
-          const sent = await this.bot.api.sendPhoto(chat_id, inputFile, { caption, ...replyParams })
-          return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
-        } else {
-          const sent = await this.bot.api.sendDocument(chat_id, inputFile, { caption, ...replyParams })
+          const sent = await this.bot.api.sendPhoto(chat_id, inputFile, extra as any)
           return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
         }
+        const sent = await this.bot.api.sendDocument(chat_id, inputFile, extra as any)
+        return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
       }
 
       case 'get_chat_info': {
@@ -214,9 +402,165 @@ class TelegramAdapter extends ConnectorAdapter {
         return { success: true, chat }
       }
 
+      // ── Plan 22 handlers ───────────────────────────────────────────
+      case 'fetch_media': {
+        const { event_id, save_path } = params as { event_id: string; save_path?: string }
+        const row = await getConnectorEventById(event_id)
+        if (!row) throw new Error(`connector_event not found: ${event_id}`)
+        const md = (row.metadata ?? {}) as Record<string, unknown>
+        const fileId = md['media_file_id'] as string | undefined
+        if (!fileId) throw new Error(`No media file_id on event ${event_id}`)
+
+        const file = await this.bot.api.getFile(fileId)
+        if (!file.file_path) throw new Error('Telegram getFile returned no file_path')
+        const token = (this.bot as any).token as string
+        const downloadUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`
+        const resp = await fetch(downloadUrl)
+        if (!resp.ok) throw new Error(`Failed to download media: ${resp.status}`)
+        const buffer = Buffer.from(await resp.arrayBuffer())
+
+        const defaultName = (md['media_file_name'] as string | undefined)
+          ?? `media_${event_id.slice(0, 8)}_${Date.now()}${this.guessExt(md['media_mime_type'] as string | undefined, md['media_type'] as string | undefined)}`
+        const targetPath = save_path ?? `/connector_media/${defaultName}`
+
+        if (!this.projectId) throw new Error('Project context not available')
+        const { getFilesystemService } = await import('../../../apps/studio/server/src/filesystem/service.ts')
+        const fs = await getFilesystemService(this.projectId)
+        if (!fs) throw new Error('Filesystem is not configured for this project')
+        // Binary write via __b64__: prefix convention (matches fs read path)
+        const b64 = `__b64__:${buffer.toString('base64')}`
+        await fs.write(targetPath, b64)
+        return { success: true, path: targetPath, size: buffer.length }
+      }
+
+      case 'send_media_group': {
+        const { chat_id, media, thread_id } = params as {
+          chat_id: string
+          media: Array<{ type: 'photo' | 'video' | 'document'; url?: string; file_path?: string; caption?: string; caption_markdown?: boolean; name?: string }>
+          thread_id?: string
+        }
+        const items: ConnectorMediaItem[] = await Promise.all(media.map(async (m) => {
+          const item: ConnectorMediaItem = {
+            type: m.type === 'photo' ? 'image' : m.type,
+            caption: m.caption,
+            caption_markdown: m.caption_markdown,
+            name: m.name,
+          }
+          if (m.url) item.url = m.url
+          else if (m.file_path) {
+            const buf = await this.loadFilesystemBuffer(m.file_path)
+            item.data = buf.buffer
+            item.name = m.name ?? buf.name
+          }
+          return item
+        }))
+        const commonOpts: Record<string, unknown> = {}
+        if (thread_id) commonOpts.message_thread_id = Number(thread_id)
+        return this.sendMediaGroup(chat_id, items, commonOpts)
+      }
+
+      case 'send_url_media': {
+        const { chat_id, url, type, caption, caption_markdown, thread_id } = params as {
+          chat_id: string; url: string; type: 'photo' | 'document'; caption?: string; caption_markdown?: boolean; thread_id?: string
+        }
+        const item: ConnectorMediaItem = {
+          type: type === 'photo' ? 'image' : 'document',
+          url,
+          caption,
+          caption_markdown,
+        }
+        const commonOpts: Record<string, unknown> = {}
+        if (thread_id) commonOpts.message_thread_id = Number(thread_id)
+        return this.sendSingleMedia(chat_id, item, undefined, commonOpts)
+      }
+
+      case 'send_to_scope': {
+        const { scope_key, text, markdown } = params as { scope_key: string; text: string; markdown?: boolean }
+        const target = this.targetFromScopeKey(scope_key)
+        if (!target) throw new Error(`Invalid scope_key: ${scope_key}`)
+        return this.sendMessage(target, { text, markdown: markdown ?? true })
+      }
+
+      case 'get_chat_members': {
+        const { chat_id } = params as { chat_id: string }
+        const admins = await this.bot.api.getChatAdministrators(chat_id)
+        return { success: true, administrators: admins }
+      }
+
+      case 'create_invite_link': {
+        const { chat_id, name, expire_date, member_limit } = params as {
+          chat_id: string; name?: string; expire_date?: string; member_limit?: number
+        }
+        const opts: Record<string, unknown> = {}
+        if (name) opts.name = name
+        if (expire_date) opts.expire_date = Math.floor(new Date(expire_date).getTime() / 1000)
+        if (member_limit) opts.member_limit = member_limit
+        const link = await this.bot.api.createChatInviteLink(chat_id, opts as any)
+        return { success: true, invite_link: link }
+      }
+
+      case 'forward_message': {
+        const { from_chat_id, message_id, to_chat_id, thread_id } = params as {
+          from_chat_id: string; message_id: string; to_chat_id: string; thread_id?: string
+        }
+        const opts: Record<string, unknown> = {}
+        if (thread_id) opts.message_thread_id = Number(thread_id)
+        const sent = await this.bot.api.forwardMessage(to_chat_id, from_chat_id, Number(message_id), opts as any)
+        return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
+      }
+
+      case 'set_chat_description': {
+        const { chat_id, description } = params as { chat_id: string; description: string }
+        await this.bot.api.setChatDescription(chat_id, description)
+        return { success: true }
+      }
+
+      case 'ban_member': {
+        const { chat_id, user_id, until_date } = params as { chat_id: string; user_id: string; until_date?: string }
+        const opts: Record<string, unknown> = {}
+        if (until_date) opts.until_date = Math.floor(new Date(until_date).getTime() / 1000)
+        await this.bot.api.banChatMember(chat_id, Number(user_id), opts as any)
+        return { success: true }
+      }
+
       default:
         throw new Error(`Unknown action: ${actionId}`)
     }
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────
+
+  private guessExt(mime: string | undefined, type: string | undefined): string {
+    if (mime) {
+      if (mime.includes('jpeg')) return '.jpg'
+      if (mime.includes('png')) return '.png'
+      if (mime.includes('webp')) return '.webp'
+      if (mime.includes('mp4')) return '.mp4'
+      if (mime.includes('ogg')) return '.ogg'
+      if (mime.includes('pdf')) return '.pdf'
+    }
+    if (type === 'photo') return '.jpg'
+    if (type === 'voice') return '.ogg'
+    if (type === 'video') return '.mp4'
+    return ''
+  }
+
+  private async loadFilesystemBuffer(filePath: string): Promise<{ buffer: Buffer; name: string; mime_type: string }> {
+    if (!this.projectId) throw new Error('Project context not available')
+    const { getFilesystemService } = await import('../../../apps/studio/server/src/filesystem/service.ts')
+    const fs = await getFilesystemService(this.projectId)
+    if (!fs) throw new Error('Filesystem is not configured for this project')
+    const adapter = fs.getAdapter()
+    const fileRecord = await getFileByPath(this.projectId, filePath)
+    if (!fileRecord) throw new Error(`File not found in filesystem: ${filePath}`)
+    const buffer = await adapter.download(fileRecord.storage_key)
+    return { buffer: Buffer.from(buffer), name: fileRecord.name, mime_type: fileRecord.mime_type }
+  }
+
+  private async resolveFilesystemFile(filePath: string) {
+    const { buffer, name } = await this.loadFilesystemBuffer(filePath)
+    const { InputFile } = await import('grammy')
+    return new InputFile(buffer, name)
   }
 
   // ─── Standard ConnectorAdapter methods ─────────────────────────────
@@ -231,22 +575,28 @@ class TelegramAdapter extends ConnectorAdapter {
 
     this.bot.on('message', async (gramCtx: any) => {
       const msg = gramCtx.message
+      const { media, mediaMetadata } = extractTelegramMedia(msg)
       const event: ConnectorEvent = {
         type: 'message',
         connector_id: this.id,
         ref_keys: {
           message_id: String(msg.message_id),
           chat_id: String(msg.chat.id),
+          ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
         },
         sender: {
           external_id: String(msg.from?.id ?? msg.chat.id),
           display_name: [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || undefined,
           username: msg.from?.username,
+          is_bot: msg.from?.is_bot,
         },
-        content: { text: msg.text ?? msg.caption },
+        content: { text: msg.text ?? msg.caption, media },
         metadata: {
           language_code: msg.from?.language_code ?? null,
           client_timestamp: new Date(msg.date * 1000).toISOString(),
+          chat_type: msg.chat.type,
+          chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+          ...mediaMetadata,
         },
         timestamp: new Date(msg.date * 1000),
       }
@@ -266,10 +616,9 @@ class TelegramAdapter extends ConnectorAdapter {
           message_id: String(update.message_id),
           chat_id: String(update.chat.id),
         },
-        sender: {
-          external_id: String(update.user?.id ?? update.chat?.id ?? 'unknown'),
-        },
+        sender: { external_id: String(update.user?.id ?? update.chat?.id ?? 'unknown') },
         content: { text: emoji, raw: { emoji } },
+        metadata: { chat_type: update.chat?.type },
         timestamp: new Date(update.date * 1000),
       }
       await ctx.onEvent(event)
@@ -283,6 +632,7 @@ class TelegramAdapter extends ConnectorAdapter {
         ref_keys: {
           message_id: String(msg.message_id),
           chat_id: String(msg.chat.id),
+          ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
         },
         sender: {
           external_id: String(msg.from?.id ?? msg.chat.id),
@@ -290,6 +640,7 @@ class TelegramAdapter extends ConnectorAdapter {
           username: msg.from?.username,
         },
         content: { text: msg.text ?? msg.caption, raw: { new_text: msg.text } },
+        metadata: { chat_type: msg.chat.type, chat_title: 'title' in msg.chat ? msg.chat.title : undefined },
         timestamp: new Date((msg.edit_date ?? msg.date) * 1000),
       }
       await ctx.onEvent(event)
@@ -321,6 +672,7 @@ class TelegramAdapter extends ConnectorAdapter {
         ref_keys: {
           message_id: String(msg.message_id),
           chat_id: String(msg.chat.id),
+          ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
         },
         sender: {
           external_id: String(msg.from?.id ?? msg.chat.id),
@@ -328,6 +680,7 @@ class TelegramAdapter extends ConnectorAdapter {
           username: msg.from?.username,
         },
         content: { text: msg.text ?? msg.caption },
+        metadata: { chat_type: msg.chat.type, chat_title: 'title' in msg.chat ? msg.chat.title : undefined },
         timestamp: new Date(msg.date * 1000),
       }
     }
@@ -336,37 +689,146 @@ class TelegramAdapter extends ConnectorAdapter {
 
   async sendMessage(target: ConnectorTarget, content: ConnectorContent): Promise<ConnectorSendResult> {
     if (!this.bot) return { success: false, error: 'Bot not initialized' }
-    const chatId = target.ref_keys['chat_id']
+
+    // Plan 22 — resolve thread_id: explicit ref_keys > scope_key > content.target_scope_key
+    let chatId = target.ref_keys['chat_id']
+    let threadId = target.ref_keys['thread_id']
+    const scope = content.target_scope_key ?? target.scope_key
+    if (scope) {
+      const resolved = this.targetFromScopeKey(scope)
+      if (resolved) {
+        chatId = chatId ?? resolved.ref_keys['chat_id']
+        threadId = threadId ?? resolved.ref_keys['thread_id']
+      }
+    }
     const replyToId = target.reply_to_ref_keys?.['message_id']
     if (!chatId) return { success: false, error: 'Missing chat_id' }
 
+    const commonOpts: Record<string, unknown> = {}
+    if (threadId) commonOpts.message_thread_id = Number(threadId)
+    if (replyToId) commonOpts.reply_parameters = { message_id: Number(replyToId) }
+
     try {
+      // Media group (album)
+      if (content.media_group?.length) {
+        return await this.sendMediaGroup(chatId, content.media_group, commonOpts)
+      }
+      // Single media
+      if (content.media) {
+        return await this.sendSingleMedia(chatId, content.media, content.text, commonOpts)
+      }
+
+      // Text
       const rawText = content.text ?? ''
       const text = content.markdown ? telegramifyMarkdown(rawText, 'escape') : rawText
       const chunks = splitMessage(text)
       let lastSent: { message_id: number; chat: { id: number } } | null = null
 
       for (let i = 0; i < chunks.length; i++) {
-        lastSent = await this.bot.api.sendMessage(
-          chatId,
-          chunks[i] || '-',
-          {
-            parse_mode: content.markdown ? 'MarkdownV2' : undefined,
-            reply_parameters: i === 0 && replyToId ? { message_id: Number(replyToId) } : undefined,
-          }
-        )
+        const opts: Record<string, unknown> = { ...commonOpts }
+        if (content.markdown) opts.parse_mode = 'MarkdownV2'
+        if (i > 0) delete (opts as any).reply_parameters
+        lastSent = await this.bot.api.sendMessage(chatId, chunks[i] || '-', opts as any)
       }
 
       return {
         success: true,
-        ref_keys: {
-          message_id: String(lastSent!.message_id),
-          chat_id: String(lastSent!.chat.id),
-        },
+        ref_keys: { message_id: String(lastSent!.message_id), chat_id: String(lastSent!.chat.id) },
       }
     } catch (err) {
       return { success: false, error: String(err) }
     }
+  }
+
+  /** Send multiple media items as a Telegram album. Max 10. Documents split from photo/video. */
+  private async sendMediaGroup(
+    chatId: string,
+    items: ConnectorMediaItem[],
+    commonOpts: Record<string, unknown>,
+  ): Promise<ConnectorSendResult> {
+    const { InputFile } = await import('grammy')
+    const capped = items.slice(0, 10)
+
+    const resolveMedia = (item: ConnectorMediaItem, idx: number) => {
+      return item.url ? item.url : new InputFile(item.data!, item.name ?? `file_${idx}`)
+    }
+
+    const buildInputMedia = (item: ConnectorMediaItem, idx: number) => {
+      const media = resolveMedia(item, idx)
+      const rawCaption = idx === 0 ? item.caption : undefined
+      const caption = rawCaption && item.caption_markdown
+        ? telegramifyMarkdown(rawCaption, 'escape')
+        : rawCaption
+      const parse_mode = rawCaption && item.caption_markdown ? ('MarkdownV2' as const) : undefined
+
+      if (item.type === 'image') return { type: 'photo' as const, media, caption, parse_mode }
+      if (item.type === 'video') return { type: 'video' as const, media, caption, parse_mode }
+      return { type: 'document' as const, media, caption, parse_mode }
+    }
+
+    const inputMedia = capped.map((item, idx) => buildInputMedia(item, idx))
+    const hasPhotoOrVideo = inputMedia.some(m => m.type === 'photo' || m.type === 'video')
+    const hasDocument = inputMedia.some(m => m.type === 'document')
+
+    if (hasPhotoOrVideo && hasDocument) {
+      const pvItems = inputMedia.filter(m => m.type !== 'document')
+      const docOriginals = capped.filter(item => item.type === 'document')
+
+      let firstRef: ConnectorSendResult | null = null
+      if (pvItems.length > 0) {
+        const sent = await this.bot!.api.sendMediaGroup(chatId, pvItems as any, commonOpts as any)
+        firstRef = {
+          success: true,
+          ref_keys: { message_id: String(sent[0]!.message_id), chat_id: chatId },
+        }
+      }
+      for (const docItem of docOriginals) {
+        const res = await this.sendSingleMedia(chatId, docItem, undefined, commonOpts)
+        if (!firstRef) firstRef = res
+      }
+      return firstRef ?? { success: false, error: 'No items sent' }
+    }
+
+    const sent = await this.bot!.api.sendMediaGroup(chatId, inputMedia as any, commonOpts as any)
+    return {
+      success: true,
+      ref_keys: { message_id: String(sent[0]!.message_id), chat_id: chatId },
+    }
+  }
+
+  /** Send a single media item (photo, document, voice, video). */
+  private async sendSingleMedia(
+    chatId: string,
+    item: ConnectorMediaItem,
+    fallbackCaption: string | undefined,
+    commonOpts: Record<string, unknown>,
+  ): Promise<ConnectorSendResult> {
+    const { InputFile } = await import('grammy')
+    const rawCaption = item.caption ?? fallbackCaption
+    const caption = rawCaption && item.caption_markdown
+      ? telegramifyMarkdown(rawCaption, 'escape')
+      : rawCaption
+    const parse_mode = rawCaption && item.caption_markdown ? ('MarkdownV2' as const) : undefined
+
+    const media = item.url ? item.url : new InputFile(item.data!, item.name ?? 'file')
+    const opts: Record<string, unknown> = { ...commonOpts }
+    if (caption) opts.caption = caption
+    if (parse_mode) opts.parse_mode = parse_mode
+
+    if (item.type === 'image') {
+      const sent = await this.bot!.api.sendPhoto(chatId, media as any, opts as any)
+      return { success: true, ref_keys: { message_id: String(sent.message_id), chat_id: String(sent.chat.id) } }
+    }
+    if (item.type === 'voice') {
+      const sent = await this.bot!.api.sendVoice(chatId, media as any, opts as any)
+      return { success: true, ref_keys: { message_id: String(sent.message_id), chat_id: String(sent.chat.id) } }
+    }
+    if (item.type === 'video') {
+      const sent = await this.bot!.api.sendVideo(chatId, media as any, opts as any)
+      return { success: true, ref_keys: { message_id: String(sent.message_id), chat_id: String(sent.chat.id) } }
+    }
+    const sent = await this.bot!.api.sendDocument(chatId, media as any, opts as any)
+    return { success: true, ref_keys: { message_id: String(sent.message_id), chat_id: String(sent.chat.id) } }
   }
 
   override async sendReaction(target: ConnectorTarget, emoji: string): Promise<void> {

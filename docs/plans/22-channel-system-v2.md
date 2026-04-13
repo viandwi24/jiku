@@ -47,13 +47,28 @@ Untuk menyimpan mapping `scope_key → conversation_id`, tambah tabel `connector
 
 ---
 
-### ADR-058 — Media Pipeline: Event Carries URL, Router Downloads
+### ADR-058 — Media Pipeline: Lazy Fetch via Event Log Metadata
 
-**Context:** `ConnectorEvent.content.media` dan `ConnectorContent.media` sudah ada di type system tapi tidak dipakai. Adapter tidak populate, event-router tidak handle.
+**Context:** Tiga opsi dipertimbangkan:
+- **Eager download**: Event-router langsung download media setiap inbound message berisi foto/file → simpan ke filesystem.
+- **In-memory adapter cache**: TelegramAdapter menyimpan `Map<messageKey, file_id>` di memory — tidak persistent, hilang saat server restart.
+- **Event log metadata**: Simpan `file_id` + metadata ke `connector_events.metadata` (kolom `jsonb` yang sudah ada) — persistent, auditable, consistent.
 
-**Decision:** TelegramAdapter populate `content.media.url` (file URL dari Telegram CDN) saat message berisi photo/document/voice. Event-router mendeteksi media di event, download ke filesystem project, inject ke conversation sebagai attachment text context (karena AI SDK menerima image sebagai message content). TelegramAdapter `sendMessage()` handle `content.media` dengan `sendPhoto`/`sendDocument`.
+**Decision:** Lazy fetch via event log metadata. Saat TelegramAdapter menerima message berisi media, ia:
+1. Simpan `file_id` + metadata ke `connector_events.metadata` field saat event di-log
+2. Emit `ConnectorEvent.content.media` hanya dengan metadata (type, size, name) — tanpa url/data
+3. AI terima event dengan hint: `[Media available: photo 234KB — use fetch_media(event_id="...")]`
+4. Ketika AI call `connector_run_action("fetch_media", { event_id, save_path })`, adapter lookup `connector_events.metadata` → dapat `file_id` → call Telegram `getFile()` → download → return bytes
 
-**Consequences:** Media tetap lewat event contract yang sudah ada, tidak perlu API baru. Download terjadi di server side, aman. Filesystem harus configured (tidak block jika tidak).
+**Kenapa event log metadata lebih baik dari in-memory cache:**
+1. **Persistent** — server restart tidak hilang; AI bisa fetch media dari event lama sekalipun
+2. **Auditable** — bisa lihat history `file_id` per inbound message dari DB
+3. **Consistent** — satu source of truth; tidak perlu sync memory + DB
+4. **Referenceable** — AI cukup pegang `event_id` yang sudah ada di conversation context, tidak perlu `chat_id:message_id` composite key
+5. **Gratis** — `connector_events.metadata` sudah ada, tidak perlu migrasi kolom baru
+6. **Telegram-idiomatic** — `file_id` valid selamanya untuk bot yang sama; URL dari `getFile()` expire 1 jam, jadi lebih baik call `getFile()` lazily di fetch time
+
+**Consequences:** `ConnectorEvent.content.media` hanya membawa metadata (type, file_name, mime_type, file_size) — tidak ada url/data. `connector_events.metadata` menyimpan `{ media_file_id, media_type, media_file_name, media_mime_type, media_file_size }` saat ada media. Context injection berubah dari "file saved to path" menjadi "media available, fetch when needed via event_id".
 
 ---
 
@@ -121,11 +136,25 @@ ALTER TABLE connector_bindings
   ADD COLUMN scope_key_pattern TEXT;   -- null = all, "group:*" = groups only, exact = specific scope
 ```
 
+### Existing: `connector_events` — kolom `metadata` dan `payload` digunakan lebih penuh
+
+Tidak perlu migrasi — kolom `metadata jsonb` dan `payload jsonb` sudah ada. Konvensi penggunaan:
+
+| Field | Isi | Diakses oleh |
+|-------|-----|--------------|
+| `payload` | Data publik: `{ text, media_type, media_file_size, ... }` | AI (via event log query), monitoring |
+| `metadata.media_file_id` | `file_id` internal Telegram — prefix `media_*` | Adapter saat `fetch_media` action |
+| `metadata.chat_type` | `"private"` / `"group"` / `"supergroup"` | Event-router scope resolution |
+| `metadata.chat_title` | Nama group/channel | Context injection ke AI |
+| `metadata.raw_message` | Full raw Telegram message object | Fallback — hanya jika benar-benar dibutuhkan |
+
+`metadata.raw_message` disimpan terpisah agar tidak polute metadata terstruktur, tapi tersedia kalau adapter atau tool butuh data yang tidak ter-extract secara default. **Tidak diekspos ke AI secara default** — AI hanya lihat `payload` dan injected context string.
+
 ---
 
 ## Type System Changes (`@jiku/types`)
 
-### `ConnectorEvent` — tambah `scope_key`
+### `ConnectorEvent` — tambah `scope_key` + media metadata only
 
 ```typescript
 export interface ConnectorEvent {
@@ -138,19 +167,27 @@ export interface ConnectorEvent {
   target_ref_keys?: Record<string, string>
   content?: {
     text?: string
+    /**
+     * Media metadata only — NO url/data, NO file_id.
+     * file_id disimpan di connector_events.metadata (internal, tidak diekspos ke AI).
+     * AI fetch media via connector_run_action("fetch_media", { event_id, save_path }).
+     * event_id tersedia di AI context; adapter lookup file_id dari event log DB.
+     */
     media?: {
       type: 'photo' | 'document' | 'voice' | 'video' | 'sticker'
-      url?: string          // download URL (e.g. Telegram CDN)
       file_name?: string
       mime_type?: string
-      file_size?: number
-      data?: Uint8Array
+      file_size?: number    // bytes
     }
     raw?: unknown
   }
   metadata?: Record<string, unknown>
   timestamp: Date
 }
+// ref_keys untuk Telegram inbound: { message_id, chat_id, thread_id? }
+// AI mendapat message_id + chat_id di context string — berguna untuk memahami
+// dari pesan mana media berasal, dan sebagai referensi untuk reply/quote.
+// event_id (UUID dari connector_events row) dipakai untuk fetch_media action.
 ```
 
 ### `ConnectorContent` — tambah `media.name`, `media_group`, `target_scope_key`
@@ -422,47 +459,126 @@ const event: ConnectorEvent = {
 }
 ```
 
-### 3. Media Extraction Helper
+### 3. Media Extraction → Event Log Metadata
+
+Tidak ada in-memory cache. Semua disimpan ke `connector_events` row:
+
+- **`metadata`** — media `file_id` + metadata terstruktur (prefix `media_*`) + info lain (chat_type, chat_title, dll)
+- **`payload`** — raw Telegram message object — disimpan di field terpisah agar tidak ganggu metadata, sebagai fallback kalau AI atau adapter butuh data raw
 
 ```typescript
-private async extractMedia(msg: any): Promise<{ media?: ConnectorEvent['content']['media'] }> {
-  if (!this.bot) return {}
-
-  try {
-    if (msg.photo?.length) {
-      const largest = msg.photo[msg.photo.length - 1]
-      const file = await this.bot.api.getFile(largest.file_id)
-      return { media: {
-        type: 'photo',
-        url: `https://api.telegram.org/file/bot${this.token}/${file.file_path}`,
-        file_size: largest.file_size,
-      }}
+/**
+ * Extract media dari Telegram message.
+ * Returns:
+ * - `media` — metadata publik untuk ConnectorEvent.content.media (tanpa file_id)
+ * - `mediaMetadata` — internal data untuk connector_events.metadata (berisi file_id)
+ *
+ * file_id TIDAK dikirim ke AI — hanya disimpan internal di event log.
+ * AI fetch media via event_id, adapter lookup file_id dari DB.
+ */
+private extractMedia(msg: any): {
+  media: ConnectorEvent['content']['media'] | undefined
+  mediaMetadata: Record<string, unknown>
+} {
+  if (msg.photo?.length) {
+    const largest = msg.photo[msg.photo.length - 1]
+    return {
+      media: { type: 'photo', file_size: largest.file_size },
+      mediaMetadata: { media_file_id: largest.file_id, media_type: 'photo', media_file_size: largest.file_size },
     }
-    if (msg.document) {
-      const file = await this.bot.api.getFile(msg.document.file_id)
-      return { media: {
-        type: 'document',
-        url: `https://api.telegram.org/file/bot${this.token}/${file.file_path}`,
-        file_name: msg.document.file_name,
-        mime_type: msg.document.mime_type,
-        file_size: msg.document.file_size,
-      }}
-    }
-    if (msg.voice) {
-      const file = await this.bot.api.getFile(msg.voice.file_id)
-      return { media: {
-        type: 'voice',
-        url: `https://api.telegram.org/file/bot${this.token}/${file.file_path}`,
-        mime_type: msg.voice.mime_type,
-        file_size: msg.voice.file_size,
-      }}
-    }
-  } catch (err) {
-    console.warn('[telegram] media extraction failed:', err)
   }
-  return {}
+  if (msg.document) {
+    return {
+      media: { type: 'document', file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size },
+      mediaMetadata: { media_file_id: msg.document.file_id, media_type: 'document', media_file_name: msg.document.file_name, media_mime_type: msg.document.mime_type, media_file_size: msg.document.file_size },
+    }
+  }
+  if (msg.voice) {
+    return {
+      media: { type: 'voice', mime_type: msg.voice.mime_type, file_size: msg.voice.file_size },
+      mediaMetadata: { media_file_id: msg.voice.file_id, media_type: 'voice', media_mime_type: msg.voice.mime_type, media_file_size: msg.voice.file_size },
+    }
+  }
+  if (msg.video) {
+    return {
+      media: { type: 'video', file_name: msg.video.file_name, mime_type: msg.video.mime_type, file_size: msg.video.file_size },
+      mediaMetadata: { media_file_id: msg.video.file_id, media_type: 'video', media_file_name: msg.video.file_name, media_mime_type: msg.video.mime_type, media_file_size: msg.video.file_size },
+    }
+  }
+  return { media: undefined, mediaMetadata: {} }
 }
 ```
+
+Di `bot.on('message')` handler:
+
+```typescript
+const { media, mediaMetadata } = this.extractMedia(msg)
+
+const event: ConnectorEvent = {
+  type: 'message',
+  connector_id: this.id,
+  ref_keys: {
+    message_id: String(msg.message_id),
+    chat_id: String(msg.chat.id),
+    ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
+  },
+  sender: { ... },
+  content: { text: msg.text ?? msg.caption, media },
+  metadata: {
+    chat_type: msg.chat.type,
+    chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+    language_code: msg.from?.language_code ?? null,
+    client_timestamp: new Date(msg.date * 1000).toISOString(),
+    ...mediaMetadata,  // media_file_id, media_type, etc. — ke field metadata
+  },
+  // raw Telegram message disimpan terpisah ke connector_events.payload —
+  // tidak campur dengan metadata, tapi tersedia kalau adapter atau AI butuh raw data
+  content: { text: msg.text ?? msg.caption, media, raw: msg },
+  timestamp: new Date(msg.date * 1000),
+}
+```
+
+> **Catatan implementasi:** `connector_events.payload` menyimpan `{ text, media_metadata }` untuk kebutuhan normal. Raw Telegram message (`msg`) disimpan ke `connector_events.metadata.raw_message` — field terpisah, hanya diakses jika benar-benar dibutuhkan. Tidak diekspos ke AI secara default.
+
+**`connector_events` row structure** untuk inbound message berisi media:
+```json
+{
+  "event_type": "message",
+  "ref_keys": { "message_id": "42", "chat_id": "-1001234", "thread_id": "7" },
+  "payload": { "text": "lihat ini", "media_type": "photo", "media_file_size": 234567 },
+  "metadata": {
+    "chat_type": "supergroup",
+    "chat_title": "Marketing Team",
+    "media_file_id": "AgACAgIAAxkBAAI...",
+    "media_type": "photo",
+    "media_file_size": 234567,
+    "raw_message": { ... }
+  }
+}
+```
+
+**Context injection di event-router** — AI mendapat `event_id` + info `message_id`/`chat_id` agar bisa membuat keputusan:
+```typescript
+// Di buildConnectorContextString() — tambah:
+if (event.content?.media) {
+  const m = event.content.media
+  const sizeHint = m.file_size ? ` ${Math.round(m.file_size / 1024)}KB` : ''
+  const nameHint = m.file_name ? ` "${m.file_name}"` : ''
+  // event_id sudah tersedia karena event di-log sebelum context dibangun
+  parts.push(
+    `Media available: ${m.type}${nameHint}${sizeHint}` +
+    ` (from message_id=${event.ref_keys['message_id']}, chat_id=${event.ref_keys['chat_id']})` +
+    ` — use connector_run_action("fetch_media", { event_id: "<event_id>", save_path: "/your/path" }) to download`
+  )
+}
+```
+
+Ketika AI call `fetch_media(event_id, save_path)`:
+1. Adapter query `connector_events` by `event_id` → ambil `metadata.media_file_id`
+2. Call Telegram `bot.api.getFile(file_id)` → dapat temporary URL (valid 1 jam)
+3. Download bytes dari URL
+4. Simpan ke `save_path` via filesystem adapter
+5. Return path ke AI
 
 ### 4. `sendMessage()` — Single Media + Media Group Support
 
@@ -608,6 +724,17 @@ override readonly actions: ConnectorAction[] = [
   // ... actions yang sudah ada (send_reaction, delete_message, edit_message, pin_message, unpin_message, send_file, send_photo, get_chat_info) ...
 
   // ── New actions ───────────────────────────────────────────────────────
+
+  {
+    id: 'fetch_media',
+    name: 'Fetch Media from Message',
+    description: 'Download media from a previously received message and save it to the project filesystem. Use the message_id from the "Media available" hint in the conversation context. Returns the saved file path.',
+    params: {
+      message_id: { type: 'string', required: true, description: 'message_id from the inbound message that contained media' },
+      chat_id: { type: 'string', required: true, description: 'chat_id from the same inbound message' },
+      save_path: { type: 'string', required: false, description: 'Filesystem path to save the file, e.g. "/templates/promo.jpg". If omitted, auto-generates under /connector_media/.' },
+    },
+  },
 
   {
     id: 'send_media_group',
@@ -868,15 +995,18 @@ Examples:
 ### Phase B — Telegram Adapter Update [~1 hari]
 - [ ] TelegramAdapter: `computeScopeKey()`, `targetFromScopeKey()`
 - [ ] TelegramAdapter: populate `ref_keys.thread_id` + `metadata.chat_type` + `metadata.chat_title`
-- [ ] TelegramAdapter: `extractMedia()` helper untuk photo/document/voice
-- [ ] TelegramAdapter: `sendMessage()` media support (photo/document via URL dan buffer)
-- [ ] TelegramAdapter: new actions (`send_media_group`, `send_url_media`, `send_to_scope`, `get_chat_members`, `create_invite_link`, `forward_message`, `set_chat_description`, `ban_member`)
-- [ ] TelegramAdapter: `runAction` handler untuk `send_media_group` — resolve each item (url vs file_path→filesystem download), call `sendMediaGroup()` private method, handle photo/video vs document batch split
+- [ ] TelegramAdapter: `TelegramMediaCacheEntry` type + `mediaCache: Map` private field + `cacheMedia()` + `getCachedMedia()` helpers
+- [ ] TelegramAdapter: `extractAndCacheMedia()` — extract metadata + cache `file_id`, NO download (replaces old `extractMedia()`)
+- [ ] TelegramAdapter: `sendMessage()` media support (photo/document via URL, buffer, `sendMediaGroup`)
+- [ ] TelegramAdapter: `sendSingleMedia()` + `sendMediaGroup()` private methods
+- [ ] TelegramAdapter: new actions (`fetch_media`, `send_media_group`, `send_url_media`, `send_to_scope`, `get_chat_members`, `create_invite_link`, `forward_message`, `set_chat_description`, `ban_member`)
+- [ ] TelegramAdapter: `runAction` handler `fetch_media` — lookup cache → `bot.api.getFile(file_id)` → download buffer → `fs.write(save_path)` → return `{ path, size }`
+- [ ] TelegramAdapter: `runAction` handler `send_media_group` — resolve items (url / file_path→filesystem) → `sendMediaGroup()` private → handle photo+video vs document split
 
-### Phase C — Media Pipeline [~0.5 hari]
-- [ ] event-router: media download dari URL → upload ke filesystem
-- [ ] event-router: inject media context ke AI input string
-- [ ] Graceful degradation: jika filesystem tidak configured, log warning saja (tidak block)
+### Phase C — Media Context Injection [~0.5 hari]
+- [ ] event-router `buildConnectorContextString()`: detect `event.content.media` → inject hint string dengan `message_id`, `chat_id`, dan contoh `fetch_media` call
+- [ ] Pastikan `message_id` + `chat_id` selalu ada di `event.ref_keys` (Telegram adapter sudah, tapi perlu verified)
+- [ ] Graceful: jika tidak ada media di event, context string tidak berubah
 
 ### Phase D — Channel Targets [~1 hari]
 - [ ] Tool: `connector_list_targets`, `connector_send_to_target`, `connector_list_scopes` di `buildConnectorTools()`
@@ -960,12 +1090,96 @@ Examples:
 
 ---
 
-### Real Case 6: AI manage group — kirim ke multiple topics
+### Real Case 6: Template-based scheduled marketing publish
+
+Use case: User kirim template (teks + foto) ke bot sekali, AI simpan, lalu kirim otomatis via cron ke channel tujuan.
+
+**Sesi 1 — User kirim template ke bot via Telegram DM:**
+
+1. User kirim pesan ke bot:
+   ```
+   Simpan ini sebagai template "promo_sale":
+
+   *🎉 Flash Sale Akhir Tahun!*
+   Diskon hingga 50% untuk semua produk pilihan.
+   Berlaku 25–31 Desember.
+   👉 https://mystore.com/sale
+   #promo #sale #diskon
+   ```
+   Plus attach foto produk (misal banner promo).
+
+2. Plan 22 Phase C: event-router download foto → simpan ke `/connector_media/<id>/photo_1234.jpg`, inject context ke AI.
+
+3. AI terima:
+   - Text: isi template dari user
+   - Context: `[Media attached: photo — saved to /connector_media/.../photo_1234.jpg]`
+
+4. AI call:
+   ```
+   fs_write("/templates/promo_sale.md", "*🎉 Flash Sale Akhir Tahun!*\n...")
+   fs_move("/connector_media/.../photo_1234.jpg", "/templates/promo_sale.jpg")
+   ```
+
+5. AI reply ke user: "Template 'promo_sale' sudah disimpan beserta foto. Kapan mau dijadwalkan?"
+
+**Sesi 2 — User set jadwal:**
+
+6. User: "Kirim setiap Senin jam 09:00 ke channel @mystore"
+
+7. AI (atau user via UI) buat cron task dengan prompt:
+   ```
+   Load template dari /templates/promo_sale.md dan kirim ke channel @mystore
+   beserta foto /templates/promo_sale.jpg dengan caption markdown.
+   ```
+
+**Setiap Senin jam 09:00 — Cron fires:**
+
+8. AI call `fs_read("/templates/promo_sale.md")` → dapat caption text
+9. AI call:
+   ```
+   connector_run_action("send_photo", {
+     chat_id: "@mystore",
+     file_path: "/templates/promo_sale.jpg",
+     caption: "<isi template>",
+     caption_markdown: true
+   })
+   ```
+10. Channel `@mystore` terima foto + caption dengan formatting sempurna.
+
+**Mengapa ini works tanpa infrastruktur baru:**
+
+| Capability | Dari mana |
+|---|---|
+| Terima foto dari user via Telegram | Plan 22 Phase B+C (inbound media capture) |
+| `fs_write`, `fs_read`, `fs_move` | Plan 14 — Filesystem (sudah ada) |
+| `send_photo` action dengan `file_path` | Sudah ada di TelegramAdapter |
+| `caption_markdown` support | Plan 22 (tambahan di ConnectorMediaItem) |
+| Cron scheduling | Plan 16 — Cron Task System (sudah ada) |
+
+**Variasi — Multiple templates:**
+AI bisa kelola banyak template: `/templates/promo_sale.md + .jpg`, `/templates/product_launch.md + .jpg`, dll. Cron task masing-masing independent. AI bisa list templates via `fs_list("/templates/")`.
+
+**Variasi — Template dengan media group (carousel):**
+User kirim beberapa foto sekaligus sebagai album → AI simpan semua → cron kirim sebagai media group:
+```
+connector_run_action("send_media_group", {
+  chat_id: "@mystore",
+  media: [
+    { type: "photo", file_path: "/templates/promo_1.jpg", caption: "...", caption_markdown: true },
+    { type: "photo", file_path: "/templates/promo_2.jpg" },
+    { type: "photo", file_path: "/templates/promo_3.jpg" }
+  ]
+})
+```
+
+---
+
+### Real Case 7: AI manage group — kirim ke multiple topics
 
 1. AI task: "Kirim announcement ke semua topic di group -1001234"
-2. AI call `connector_run_action("send_to_scope", { scope_key: "group:-1001234:topic:1", text: "..." })`
-3. AI call `connector_run_action("send_to_scope", { scope_key: "group:-1001234:topic:2", text: "..." })`
-4. Atau gunakan `connector_list_scopes()` untuk discovery topics yang aktif
+2. AI call `connector_list_scopes({ connector_id: "..." })` → dapat list scope aktif
+3. AI call `connector_run_action("send_to_scope", { scope_key: "group:-1001234:topic:1", text: "..." })`
+4. AI call `connector_run_action("send_to_scope", { scope_key: "group:-1001234:topic:2", text: "..." })`
 
 ---
 

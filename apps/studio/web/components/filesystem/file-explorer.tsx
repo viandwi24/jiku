@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import {
   Folder, FileText, ChevronRight, Upload, Plus,
   RefreshCw, Loader2, Search, Copy, X, Save, Eye,
-  MoreHorizontal, Pencil, FolderOpen, Trash2,
+  MoreHorizontal, Pencil, FolderOpen, Trash2, FolderPlus,
 } from 'lucide-react'
 import { FileDetailPanel } from './file-detail-panel'
 
@@ -93,6 +93,8 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
   const [searchQuery, setSearchQuery] = useState('')
   const [newFileName, setNewFileName] = useState('')
   const [showNewFileInput, setShowNewFileInput] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false)
   const [renamingEntry, setRenamingEntry] = useState<FilesystemEntry | null>(null)
   const [renameValue, setRenameValue] = useState('')
 
@@ -150,6 +152,15 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Rename failed'),
   })
 
+  const createFolderMutation = useMutation({
+    mutationFn: (folderPath: string) => api.filesystem.createFolder(projectId, folderPath),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['files', projectId] })
+      toast.success('Folder created')
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Create folder failed'),
+  })
+
   const loadFile = useCallback(async (file: FilesystemFileEntry) => {
     if (isDirty) {
       const ok = confirm('You have unsaved changes. Discard them?')
@@ -192,6 +203,14 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
     setShowNewFileInput(false)
   }
 
+  const handleCreateFolder = () => {
+    if (!newFolderName.trim()) return
+    const path = currentPath === '/' ? `/${newFolderName.trim()}` : `${currentPath}/${newFolderName.trim()}`
+    createFolderMutation.mutate(path)
+    setNewFolderName('')
+    setShowNewFolderInput(false)
+  }
+
   const handleSave = () => {
     if (!selectedFile) return
     writeMutation.mutate({ path: selectedFile.path, content: editorContent })
@@ -217,8 +236,11 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
       <div className="w-64 shrink-0 border-r flex flex-col overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center gap-1 px-2 py-2 border-b">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setShowNewFileInput(v => !v)} title="New file">
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFileInput(v => !v); setShowNewFolderInput(false) }} title="New file">
             <Plus className="w-3.5 h-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFolderInput(v => !v); setShowNewFileInput(false) }} title="New folder">
+            <FolderPlus className="w-3.5 h-3.5" />
           </Button>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => refetch()} title="Refresh">
             <RefreshCw className="w-3.5 h-3.5" />
@@ -285,6 +307,30 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
               <Save className="w-3 h-3" />
             </Button>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowNewFileInput(false)}>
+              <X className="w-3 h-3" />
+            </Button>
+          </div>
+        )}
+
+        {/* New folder input */}
+        {showNewFolderInput && (
+          <div className="flex items-center gap-1 px-2 py-1.5 border-b">
+            <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <input
+              autoFocus
+              className="flex-1 text-xs bg-muted px-2 py-1 rounded outline-none"
+              placeholder="folder-name"
+              value={newFolderName}
+              onChange={e => setNewFolderName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') handleCreateFolder()
+                if (e.key === 'Escape') setShowNewFolderInput(false)
+              }}
+            />
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateFolder}>
+              <Save className="w-3 h-3" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowNewFolderInput(false)}>
               <X className="w-3 h-3" />
             </Button>
           </div>

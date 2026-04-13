@@ -3,7 +3,7 @@
 import { use, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { ConnectorBinding, ConnectorIdentity, ConnectorInviteCode, ConnectorItem } from '@/lib/api'
+import type { ConnectorBinding, ConnectorIdentity, ConnectorInviteCode, ConnectorItem, ConnectorTargetItem } from '@/lib/api'
 import {
   Badge,
   Button,
@@ -18,7 +18,7 @@ import {
   SelectValue,
   Separator,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Check, Copy, Link2, Plus, Settings2, Trash2, UserCheck, Webhook, Users, Play, Square, X } from 'lucide-react'
+import { ArrowLeft, Ban, Check, Copy, Link2, Plus, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -62,6 +62,80 @@ function BindingCard({
           <Trash2 className="h-3 w-3" />
         </Button>
       </div>
+    </div>
+  )
+}
+
+function TargetRow({ target, onDelete }: { target: ConnectorTargetItem; onDelete: () => void }) {
+  const chatId = (target.ref_keys as Record<string, string>)?.['chat_id'] ?? ''
+  return (
+    <div className="flex items-center justify-between py-2 px-3 rounded-lg border bg-card group">
+      <div className="space-y-0.5 min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <code className="text-sm font-mono font-semibold">{target.name}</code>
+          {target.display_name && <span className="text-xs text-muted-foreground truncate">· {target.display_name}</span>}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>chat_id: <code className="bg-muted px-1 rounded">{chatId}</code></span>
+          {target.scope_key && <span>scope: <code className="bg-muted px-1 rounded">{target.scope_key}</code></span>}
+          {target.description && <span className="truncate">· {target.description}</span>}
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 w-7 p-0 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+        onClick={onDelete}
+      >
+        <Trash2 className="h-3 w-3" />
+      </Button>
+    </div>
+  )
+}
+
+function AddTargetForm({ onCreate }: { onCreate: (body: {
+  name: string; display_name?: string; description?: string
+  ref_keys: Record<string, string>; scope_key?: string
+}) => void }) {
+  const [name, setName] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [chatId, setChatId] = useState('')
+  const [threadId, setThreadId] = useState('')
+  const [scopeKey, setScopeKey] = useState('')
+  const [description, setDescription] = useState('')
+
+  const canSubmit = name.trim() && chatId.trim()
+
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <Input placeholder="name (slug, e.g. morning-briefing)" value={name} onChange={e => setName(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder="display name (optional)" value={displayName} onChange={e => setDisplayName(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder="chat_id (required)" value={chatId} onChange={e => setChatId(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder="thread_id (optional, for topics)" value={threadId} onChange={e => setThreadId(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder="scope_key (optional)" value={scopeKey} onChange={e => setScopeKey(e.target.value)} className="h-8 text-xs col-span-2" />
+        <Input placeholder="description (optional)" value={description} onChange={e => setDescription(e.target.value)} className="h-8 text-xs col-span-2" />
+      </div>
+      <Button
+        size="sm"
+        disabled={!canSubmit}
+        onClick={() => {
+          const ref_keys: Record<string, string> = { chat_id: chatId.trim() }
+          if (threadId.trim()) ref_keys['thread_id'] = threadId.trim()
+          onCreate({
+            name: name.trim(),
+            display_name: displayName.trim() || undefined,
+            description: description.trim() || undefined,
+            ref_keys,
+            scope_key: scopeKey.trim() || undefined,
+          })
+          setName(''); setDisplayName(''); setChatId(''); setThreadId(''); setScopeKey(''); setDescription('')
+        }}
+        className="h-7 text-xs"
+      >
+        <Plus className="h-3 w-3 mr-1" />
+        Add target
+      </Button>
     </div>
   )
 }
@@ -308,6 +382,29 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-invite-codes', connectorId] }),
   })
 
+  // Plan 22 — Channel Targets
+  const { data: targetsData } = useQuery({
+    queryKey: ['connector-targets', connectorId],
+    queryFn: () => api.connectors.targets.list(connectorId),
+  })
+
+  const createTargetMutation = useMutation({
+    mutationFn: (body: {
+      name: string; display_name?: string; description?: string
+      ref_keys: Record<string, string>; scope_key?: string
+    }) => api.connectors.targets.create(connectorId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-targets', connectorId] })
+      toast.success('Target created')
+    },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
+  const deleteTargetMutation = useMutation({
+    mutationFn: (targetId: string) => api.connectors.targets.delete(connectorId, targetId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-targets', connectorId] }),
+  })
+
   const activateMutation = useMutation({
     mutationFn: () => api.connectors.activate(connectorId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector', connectorId] }),
@@ -323,6 +420,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
   const agents = agentsData?.agents ?? []
   const pairingRequests = pairingData?.pairing_requests ?? []
   const inviteCodes = inviteCodesData?.invite_codes ?? []
+  const targets = targetsData?.targets ?? []
 
   if (isLoading) return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   if (!connector) return <div className="p-6 text-sm text-destructive">Connector not found</div>
@@ -445,6 +543,34 @@ export default function ConnectorDetailPage({ params }: PageProps) {
                 invite={invite}
                 onRevoke={() => revokeCodeMutation.mutate(invite.id)}
                 onDelete={() => deleteCodeMutation.mutate(invite.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Separator />
+
+      {/* Plan 22 — Channel Targets */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-sm font-medium flex items-center gap-1.5">
+            <Target className="h-4 w-4" />
+            Channel Targets
+            <Badge variant="secondary" className="ml-1">{targets.length}</Badge>
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Named outbound destinations. Agents can send via <code className="bg-muted px-1 rounded">connector_send_to_target(&quot;name&quot;, message)</code> in prompts.
+          </p>
+        </div>
+        <AddTargetForm onCreate={(body) => createTargetMutation.mutate(body)} />
+        {targets.length > 0 && (
+          <div className="space-y-2">
+            {targets.map(t => (
+              <TargetRow
+                key={t.id}
+                target={t}
+                onDelete={() => { if (confirm(`Delete target "${t.name}"?`)) deleteTargetMutation.mutate(t.id) }}
               />
             ))}
           </div>

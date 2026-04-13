@@ -419,6 +419,29 @@ export const api = {
         request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/reject`, { method: 'POST' }),
     },
 
+    targets: {
+      list: (connectorId: string) =>
+        request<{ targets: ConnectorTargetItem[] }>(`/api/connectors/${connectorId}/targets`),
+      create: (connectorId: string, body: {
+        name: string; display_name?: string; description?: string
+        ref_keys: Record<string, string>; scope_key?: string; metadata?: Record<string, unknown>
+      }) =>
+        request<{ target: ConnectorTargetItem }>(`/api/connectors/${connectorId}/targets`, {
+          method: 'POST', body: JSON.stringify(body),
+        }),
+      update: (connectorId: string, targetId: string, body: Record<string, unknown>) =>
+        request<{ target: ConnectorTargetItem }>(`/api/connectors/${connectorId}/targets/${targetId}`, {
+          method: 'PATCH', body: JSON.stringify(body),
+        }),
+      delete: (connectorId: string, targetId: string) =>
+        request<{ ok: boolean }>(`/api/connectors/${connectorId}/targets/${targetId}`, { method: 'DELETE' }),
+    },
+
+    scopes: {
+      list: (connectorId: string, limit?: number) =>
+        request<{ scopes: ConnectorScopeItem[] }>(`/api/connectors/${connectorId}/scopes${limit ? `?limit=${limit}` : ''}`),
+    },
+
     inviteCodes: {
       list: (connectorId: string) =>
         request<{ invite_codes: ConnectorInviteCode[] }>(`/api/connectors/${connectorId}/invite-codes`),
@@ -479,6 +502,11 @@ export const api = {
       request<{ file: FilesystemFileEntry }>(`/api/projects/${projectId}/files`, {
         method: 'POST',
         body: JSON.stringify(body),
+      }),
+    createFolder: (projectId: string, folderPath: string) =>
+      request<{ ok: boolean; path: string }>(`/api/projects/${projectId}/files/folder`, {
+        method: 'POST',
+        body: JSON.stringify({ path: folderPath }),
       }),
     move: (projectId: string, body: { from: string; to: string }) =>
       request<{ ok: boolean; from: string; to: string }>(`/api/projects/${projectId}/files/move`, {
@@ -1506,7 +1534,32 @@ export interface ConnectorBinding {
   output_config: Record<string, unknown>
   rate_limit_rpm?: number | null
   include_sender_info: boolean
+  /** Plan 22 — Scope filter: null = all, "group:*", "dm:*", exact */
+  scope_key_pattern?: string | null
   enabled: boolean
+  created_at: string
+}
+
+export interface ConnectorTargetItem {
+  id: string
+  connector_id: string
+  name: string
+  display_name?: string | null
+  description?: string | null
+  ref_keys: Record<string, string>
+  scope_key?: string | null
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface ConnectorScopeItem {
+  id: string
+  connector_id: string
+  scope_key: string
+  agent_id?: string | null
+  conversation_id?: string | null
+  last_activity_at: string
   created_at: string
 }
 

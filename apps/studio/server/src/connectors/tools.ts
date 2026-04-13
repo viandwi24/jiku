@@ -8,7 +8,11 @@ import {
   getUserIdentities,
   upsertUserIdentity,
   findUserByIdentity,
+  getConnectorTargets,
+  getConnectorTargetByName,
+  getConnectorScopes,
 } from '@jiku-studio/db'
+import type { ConnectorTarget } from '@jiku/types'
 import { connectorRegistry } from './registry.ts'
 
 /**
@@ -297,6 +301,97 @@ export function buildConnectorTools(projectId: string) {
         const { key, value } = args as { key: string; value: string }
         const results = await findUserByIdentity(projectId, key, value)
         return { results }
+      },
+    }),
+
+    // ── Plan 22 — Channel Targets ────────────────────────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_list_targets',
+        name: 'List Channel Targets',
+        description: 'List named channel targets — predefined destinations (groups, channels, DMs) you can send to by name without knowing chat IDs. Call this before connector_send_to_target.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().optional().describe('Filter by connector ID (omit for all connectors in project)'),
+      }),
+      execute: async (args) => {
+        const { connector_id } = args as { connector_id?: string }
+        const targets = await getConnectorTargets(projectId, connector_id)
+        return {
+          targets: targets.map(t => ({
+            id: t.id,
+            connector_id: t.connector_id,
+            name: t.name,
+            display_name: t.display_name,
+            description: t.description,
+            ref_keys: t.ref_keys,
+            scope_key: t.scope_key,
+          })),
+        }
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_send_to_target',
+        name: 'Send to Channel Target',
+        description: 'Send a message to a named channel target. Use connector_list_targets first to see available targets.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        target_name: z.string().describe('Target name from connector_list_targets, e.g. "morning-briefing"'),
+        text: z.string().describe('Message text'),
+        connector_id: z.string().optional().describe('Connector ID (omit if target name is unique in the project)'),
+        markdown: z.boolean().default(true),
+      }),
+      execute: async (args) => {
+        const { target_name, text, connector_id, markdown } = args as {
+          target_name: string; text: string; connector_id?: string; markdown: boolean
+        }
+        const target = await getConnectorTargetByName(projectId, target_name, connector_id)
+        if (!target) {
+          return { success: false, error: `Target "${target_name}" not found. Use connector_list_targets to see available targets.` }
+        }
+        const adapter = connectorRegistry.getAdapterForConnector(target.connector_id)
+        if (!adapter) return { success: false, error: 'Connector not active' }
+
+        const sendTarget: ConnectorTarget = {
+          ref_keys: target.ref_keys as Record<string, string>,
+          scope_key: target.scope_key ?? undefined,
+        }
+        return adapter.sendMessage(sendTarget, { text, markdown })
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_list_scopes',
+        name: 'List Active Scopes',
+        description: 'List active conversation scopes (groups, topics, threads) that the connector has seen. Useful for discovering where the bot is active.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector ID'),
+        limit: z.number().int().min(1).max(50).default(20),
+      }),
+      execute: async (args) => {
+        const { connector_id, limit } = args as { connector_id: string; limit: number }
+        const scopes = await getConnectorScopes(connector_id, limit)
+        return {
+          scopes: scopes.map(s => ({
+            scope_key: s.scope_key,
+            conversation_id: s.conversation_id,
+            last_activity_at: s.last_activity_at,
+          })),
+        }
       },
     }),
 

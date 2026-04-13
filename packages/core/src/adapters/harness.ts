@@ -226,30 +226,40 @@ export class HarnessAgentAdapter implements AgentAdapter {
 
       if (!willContinue) break
 
-      // Append phase 2 assistant turn + tool results to history.
+      // Append ALL phase 2 steps to history — not just the last one. With
+      // `max_tool_calls_per_iteration > 1`, phase 2 can internally chain
+      // multiple tool calls (AI SDK's own multi-step loop under stepCountIs).
+      // If we only persisted the last step, iter N+1 would see an incomplete
+      // history: the model would not remember what the first 4 of 5 tools
+      // did, and may duplicate work or get confused. Iterating every step
+      // rebuilds the exact conversation AI SDK constructed internally.
       type AssistantPart =
         | { type: 'text'; text: string }
         | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
-      const assistantContent: AssistantPart[] = []
-      if (lastStep!.text) assistantContent.push({ type: 'text', text: lastStep!.text })
-      for (const tc of lastStep!.toolCalls ?? []) {
-        assistantContent.push({
-          type: 'tool-call',
-          toolCallId: tc.toolCallId,
-          toolName: tc.toolName,
-          input: tc.input,
-        })
-      }
-      messages = [...messages, { role: 'assistant', content: assistantContent }]
+      for (const step of actionSteps) {
+        const assistantContent: AssistantPart[] = []
+        if (step.text) assistantContent.push({ type: 'text', text: step.text })
+        for (const tc of step.toolCalls ?? []) {
+          assistantContent.push({
+            type: 'tool-call',
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            input: tc.input,
+          })
+        }
+        if (assistantContent.length > 0) {
+          messages = [...messages, { role: 'assistant', content: assistantContent }]
+        }
 
-      const toolResults = (lastStep!.toolResults ?? []).map((tr) => ({
-        type: 'tool-result' as const,
-        toolCallId: tr.toolCallId,
-        toolName: tr.toolName,
-        output: { type: 'json' as const, value: toJsonValue(tr.output) },
-      }))
-      if (toolResults.length > 0) {
-        messages = [...messages, { role: 'tool', content: toolResults }]
+        const toolResults = (step.toolResults ?? []).map((tr) => ({
+          type: 'tool-result' as const,
+          toolCallId: tr.toolCallId,
+          toolName: tr.toolName,
+          output: { type: 'json' as const, value: toJsonValue(tr.output) },
+        }))
+        if (toolResults.length > 0) {
+          messages = [...messages, { role: 'tool', content: toolResults }]
+        }
       }
     }
 

@@ -193,14 +193,22 @@ function buildConnectorContextString(
   binding: ConnectorBinding,
   identity: ConnectorIdentity,
   eventId?: string,
+  connectorId?: string,
 ): string {
   const parts: string[] = []
   parts.push('[Connector Context]')
   parts.push(`Platform: ${event.connector_id.replace('jiku.connector.', '')}`)
+  if (connectorId) parts.push(`Connector ID: ${connectorId}`)
 
-  // Plan 22 — scope_key + chat info
+  // Plan 22 — scope_key + chat info + raw ref_keys so the agent can register targets
   if (event.scope_key) {
     parts.push(`Chat scope: ${event.scope_key}`)
+  }
+  const chatId = event.ref_keys['chat_id']
+  const threadId = event.ref_keys['thread_id']
+  if (chatId) {
+    const threadHint = threadId ? `, thread_id=${threadId}` : ''
+    parts.push(`Chat ref: chat_id=${chatId}${threadHint}`)
   }
   const chatTitle = event.metadata?.['chat_title']
   const chatType = event.metadata?.['chat_type']
@@ -629,7 +637,7 @@ async function executeConversationAdapter(
     }
 
     // Enqueue — will be processed when current run finishes
-    const contextString = buildConnectorContextString(event, binding, identity, eventId)
+    const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId)
     const inputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
@@ -674,7 +682,7 @@ async function executeConversationAdapter(
     : null
 
   try {
-    const contextString = buildConnectorContextString(event, binding, identity, eventId)
+    const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId)
     await logConnectorMessage({
       connector_id: connectorId,
       conversation_id: conversationId,

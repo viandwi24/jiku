@@ -6,14 +6,18 @@ ALTER TABLE "connector_bindings"
   ADD COLUMN IF NOT EXISTS "scope_key_pattern" text;
 
 -- New: connector_scope_conversations
+-- FK names are explicit + shortened so Postgres (63-char limit) doesn't truncate them.
 CREATE TABLE IF NOT EXISTS "connector_scope_conversations" (
   "id"               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "connector_id"     uuid NOT NULL REFERENCES "connectors"("id") ON DELETE CASCADE,
+  "connector_id"     uuid NOT NULL,
   "scope_key"        text NOT NULL,
-  "agent_id"         uuid REFERENCES "agents"("id") ON DELETE SET NULL,
-  "conversation_id"  uuid REFERENCES "conversations"("id") ON DELETE SET NULL,
+  "agent_id"         uuid,
+  "conversation_id"  uuid,
   "last_activity_at" timestamp NOT NULL DEFAULT now(),
-  "created_at"       timestamp NOT NULL DEFAULT now()
+  "created_at"       timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT "fk_scope_conv_connector" FOREIGN KEY ("connector_id") REFERENCES "connectors"("id") ON DELETE CASCADE,
+  CONSTRAINT "fk_scope_conv_agent"     FOREIGN KEY ("agent_id")     REFERENCES "agents"("id")     ON DELETE SET NULL,
+  CONSTRAINT "fk_scope_conv_conv"      FOREIGN KEY ("conversation_id") REFERENCES "conversations"("id") ON DELETE SET NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS "uq_scope_conv"

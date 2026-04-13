@@ -79,6 +79,13 @@ const PERMISSION_GROUPS: { label: string; perms: { key: string; label: string }[
       { key: PERMISSIONS.ROLES_WRITE, label: 'Create / edit roles' },
     ],
   },
+  {
+    label: 'Cron Tasks',
+    perms: [
+      { key: PERMISSIONS.CRON_TASKS_READ, label: 'View cron tasks' },
+      { key: PERMISSIONS.CRON_TASKS_WRITE, label: 'Create / edit cron tasks' },
+    ],
+  },
 ]
 
 // ─── Role Editor Dialog ────────────────────────────────────────────────────────

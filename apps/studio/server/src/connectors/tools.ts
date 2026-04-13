@@ -10,7 +10,12 @@ import {
   findUserByIdentity,
   getConnectorTargets,
   getConnectorTargetByName,
+  getConnectorTargetById,
   getConnectorScopes,
+  getConnectorById,
+  createConnectorTarget,
+  updateConnectorTarget,
+  deleteConnectorTarget,
 } from '@jiku-studio/db'
 import type { ConnectorTarget } from '@jiku/types'
 import { connectorRegistry } from './registry.ts'
@@ -366,6 +371,185 @@ export function buildConnectorTools(projectId: string) {
           scope_key: target.scope_key ?? undefined,
         }
         return adapter.sendMessage(sendTarget, { text, markdown })
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_create_target',
+        name: 'Create Channel Target',
+        description:
+          'Register a named outbound destination so you (or any agent) can send to it later by name. ' +
+          'Use this when a user sets up a channel/group/topic for you to post to, or when you want to remember a private chat/group you are currently in. ' +
+          'For Telegram: pass chat_id (e.g. "-1001234" for groups, "@channel" for channels, or a DM user_id) and optionally thread_id for forum topics. ' +
+          'If you are currently reacting to a message inside a scope, copy the scope_key from the Connector Context for scope_key.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector UUID (from connector_list)'),
+        name: z.string().describe('Slug name, e.g. "morning-briefing", "team-sales-topic" — must be unique per connector'),
+        chat_id: z.string().describe('Platform chat_id, e.g. Telegram group "-1001234..." or channel "@mystore"'),
+        thread_id: z.string().optional().describe('Forum topic thread_id for group:*:topic:N scopes'),
+        scope_key: z.string().optional().describe('Optional scope_key, e.g. "group:-1001234:topic:42". Auto-derived when thread_id + chat_id given for a group.'),
+        display_name: z.string().optional(),
+        description: z.string().optional().describe('Why this target exists — helpful for future agent runs'),
+      }),
+      execute: async (args) => {
+        const {
+          connector_id, name, chat_id, thread_id, scope_key, display_name, description,
+        } = args as {
+          connector_id: string; name: string; chat_id: string
+          thread_id?: string; scope_key?: string; display_name?: string; description?: string
+        }
+        // Project scoping — refuse to create targets on connectors outside this project
+        const connector = await getConnectorById(connector_id)
+        if (!connector || connector.project_id !== projectId) {
+          return { success: false, error: 'Connector not found in this project' }
+        }
+        // Prevent collision
+        const existing = await getConnectorTargetByName(projectId, name, connector_id)
+        if (existing) return { success: false, error: `Target "${name}" already exists on this connector. Use connector_update_target to change it.` }
+
+        const ref_keys: Record<string, string> = { chat_id }
+        if (thread_id) ref_keys['thread_id'] = thread_id
+        // Auto-derive scope_key when caller passed thread_id/chat_id but not scope_key —
+        // heuristic only for Telegram-style ids; if caller passes explicit scope_key it wins.
+        let resolvedScope = scope_key
+        if (!resolvedScope && thread_id && /^-\d+/.test(chat_id)) {
+          resolvedScope = `group:${chat_id}:topic:${thread_id}`
+        }
+
+        const target = await createConnectorTarget({
+          connector_id,
+          name,
+          display_name: display_name ?? null,
+          description: description ?? null,
+          ref_keys,
+          scope_key: resolvedScope ?? null,
+        })
+        return { success: true, target }
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_update_target',
+        name: 'Update Channel Target',
+        description: 'Update an existing named target — rename, change chat_id/thread_id/scope_key, or update description.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        target_id: z.string().describe('Target UUID (from connector_list_targets)'),
+        name: z.string().optional(),
+        chat_id: z.string().optional(),
+        thread_id: z.string().optional().describe('Omit to keep current; pass empty string to clear'),
+        scope_key: z.string().optional(),
+        display_name: z.string().optional(),
+        description: z.string().optional(),
+      }),
+      execute: async (args) => {
+        const a = args as {
+          target_id: string; name?: string; chat_id?: string; thread_id?: string
+          scope_key?: string; display_name?: string; description?: string
+        }
+        const target = await getConnectorTargetById(a.target_id)
+        if (!target) return { success: false, error: 'Target not found' }
+        const connector = await getConnectorById(target.connector_id)
+        if (!connector || connector.project_id !== projectId) {
+          return { success: false, error: 'Target not in this project' }
+        }
+        const patch: Record<string, unknown> = {}
+        if (a.name !== undefined) patch['name'] = a.name
+        if (a.display_name !== undefined) patch['display_name'] = a.display_name
+        if (a.description !== undefined) patch['description'] = a.description
+        if (a.scope_key !== undefined) patch['scope_key'] = a.scope_key || null
+        if (a.chat_id !== undefined || a.thread_id !== undefined) {
+          const existingRef = (target.ref_keys ?? {}) as Record<string, string>
+          const next: Record<string, string> = { ...existingRef }
+          if (a.chat_id !== undefined) next['chat_id'] = a.chat_id
+          if (a.thread_id !== undefined) {
+            if (a.thread_id === '') delete next['thread_id']
+            else next['thread_id'] = a.thread_id
+          }
+          patch['ref_keys'] = next
+        }
+        const updated = await updateConnectorTarget(a.target_id, patch)
+        return { success: true, target: updated }
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_delete_target',
+        name: 'Delete Channel Target',
+        description: 'Delete a named target by id. Irreversible.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        target_id: z.string(),
+      }),
+      execute: async (args) => {
+        const { target_id } = args as { target_id: string }
+        const target = await getConnectorTargetById(target_id)
+        if (!target) return { success: false, error: 'Target not found' }
+        const connector = await getConnectorById(target.connector_id)
+        if (!connector || connector.project_id !== projectId) {
+          return { success: false, error: 'Target not in this project' }
+        }
+        await deleteConnectorTarget(target_id)
+        return { success: true }
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_save_current_scope',
+        name: 'Save Current Scope as Target',
+        description:
+          'Shortcut: save the scope of the current inbound event as a named target. Use when a user says ' +
+          '"remember this group as X" or "call this topic X". You must pass the scope_key you see in the ' +
+          'Connector Context for the current message.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string(),
+        scope_key: z.string().describe('scope_key from Connector Context, e.g. "group:-1001234:topic:42"'),
+        name: z.string().describe('Slug name to register'),
+        display_name: z.string().optional(),
+        description: z.string().optional(),
+      }),
+      execute: async (args) => {
+        const { connector_id, scope_key, name, display_name, description } = args as {
+          connector_id: string; scope_key: string; name: string; display_name?: string; description?: string
+        }
+        const connector = await getConnectorById(connector_id)
+        if (!connector || connector.project_id !== projectId) {
+          return { success: false, error: 'Connector not found in this project' }
+        }
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id)
+        const resolved = adapter?.targetFromScopeKey?.(scope_key)
+        if (!resolved) return { success: false, error: `Adapter cannot resolve scope_key: ${scope_key}` }
+
+        const existing = await getConnectorTargetByName(projectId, name, connector_id)
+        if (existing) return { success: false, error: `Target "${name}" already exists` }
+
+        const target = await createConnectorTarget({
+          connector_id,
+          name,
+          display_name: display_name ?? null,
+          description: description ?? null,
+          ref_keys: resolved.ref_keys,
+          scope_key,
+        })
+        return { success: true, target }
       },
     }),
 

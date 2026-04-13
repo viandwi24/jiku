@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-13 — Plan 22 follow-up: agent-side target mgmt + enriched context
+
+**Added:**
+- **Agent-side Channel Target CRUD.** Four new agent tools: `connector_create_target`, `connector_update_target`, `connector_delete_target`, `connector_save_current_scope`. Agents can now register their own named destinations without admin intervention — covers cases like "user asks the bot to remember this group/topic as X". `connector_save_current_scope` is a convenience shortcut that uses `adapter.targetFromScopeKey()` to derive ref_keys from the scope_key the agent already has in context.
+- **Richer Connector Context string.** Now emits `Connector ID:` (UUID needed for target-creation tools), `Chat ref: chat_id=... thread_id=...` so the agent can pipe raw ids directly into `connector_create_target`.
+- **Auto-derived scope_key in create_target.** When caller passes `thread_id` + a negative numeric `chat_id` (Telegram group pattern), the tool fills in `group:<chat_id>:topic:<thread_id>` automatically. Explicit scope_key still wins.
+
+**Fixed:**
+- **FK name truncation warning on `bun db:push`.** Postgres' 63-char identifier limit clipped auto-generated FK names on `connector_scope_conversations`. Switched to explicit `foreignKey({ name: 'fk_scope_conv_*', ... })` declarations in the schema + the migration SQL.
+
+**Files touched:**
+- `apps/studio/db/src/schema/connectors.ts` — explicit FK names on `connector_scope_conversations`
+- `apps/studio/db/src/migrations/0018_plan22_channel_system_v2.sql` — explicit `CONSTRAINT fk_scope_conv_*`
+- `apps/studio/server/src/connectors/tools.ts` — 4 new tools
+- `apps/studio/server/src/connectors/event-router.ts` — `buildConnectorContextString` now accepts `connectorId`; emits Connector ID + chat ref line
+
 ## 2026-04-13 — Plan 22: Channel System v2 — scope_key isolation, channel targets, media pipeline, Telegram group mgmt
 
 **Added:**

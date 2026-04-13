@@ -720,6 +720,14 @@ class TelegramAdapter extends ConnectorAdapter {
 
       // Text
       const rawText = content.text ?? ''
+
+      // Plan 22 revision — typing simulation: send placeholder, reveal progressively
+      // by editing every ~3s. Only for single-message text (skip when text overflows
+      // Telegram's 4000-char limit — falls back to chunked send below).
+      if (content.simulate_typing && rawText.length > 0 && rawText.length <= TELEGRAM_MAX_LENGTH) {
+        return await this.sendWithTypingSimulation(chatId, rawText, content.markdown === true, commonOpts)
+      }
+
       const text = content.markdown ? telegramifyMarkdown(rawText, 'escape') : rawText
       const chunks = splitMessage(text)
       let lastSent: { message_id: number; chat: { id: number } } | null = null
@@ -737,6 +745,65 @@ class TelegramAdapter extends ConnectorAdapter {
       }
     } catch (err) {
       return { success: false, error: String(err) }
+    }
+  }
+
+  /**
+   * Plan 22 revision — simulate typing by progressive reveal of full text.
+   * Send "⌛" placeholder, then edit every ~3s with a longer slice until full.
+   * Loading indicator (`\n\n⚪`) appended on each interim edit; final edit is clean.
+   */
+  private async sendWithTypingSimulation(
+    chatId: string,
+    fullText: string,
+    markdown: boolean,
+    commonOpts: Record<string, unknown>,
+  ): Promise<ConnectorSendResult> {
+    const TICK_MS = 2000
+    const sent = await this.bot!.api.sendMessage(chatId, '⌛', commonOpts as any)
+    const messageId = sent.message_id
+
+    // Reveal in 3 progressive slices (start, mid, full). Tweak: split by sentence-ish
+    // boundaries (newlines / periods) so the reveal feels natural rather than mid-word.
+    const sliceAt = (fraction: number): number => {
+      const target = Math.max(1, Math.floor(fullText.length * fraction))
+      // Look for a sentence/word boundary near the target
+      const window = fullText.slice(0, Math.min(target + 60, fullText.length))
+      const lastBreak = Math.max(
+        window.lastIndexOf('\n'),
+        window.lastIndexOf('. '),
+        window.lastIndexOf(', '),
+        window.lastIndexOf(' '),
+      )
+      return lastBreak > target * 0.6 ? lastBreak + 1 : target
+    }
+
+    const stops = [sliceAt(0.33), sliceAt(0.66)].filter(s => s > 0 && s < fullText.length)
+
+    for (const stop of stops) {
+      await new Promise<void>(r => setTimeout(r, TICK_MS))
+      const partial = fullText.slice(0, stop)
+      try {
+        await this.bot!.api.editMessageText(chatId, messageId, `${partial}\n\n⚪`)
+      } catch { /* swallow rate-limit / parse errors */ }
+    }
+
+    // Final: clean text with markdown if requested
+    await new Promise<void>(r => setTimeout(r, TICK_MS))
+    const finalText = markdown ? telegramifyMarkdown(fullText, 'escape') : fullText
+    try {
+      await this.bot!.api.editMessageText(chatId, messageId, finalText, {
+        parse_mode: markdown ? 'MarkdownV2' : undefined,
+      })
+    } catch (err) {
+      // Final markdown render failed — fall back to plain text
+      console.warn('[telegram] simulate_typing final edit failed, falling back to plain:', err)
+      await this.bot!.api.editMessageText(chatId, messageId, fullText).catch(() => {})
+    }
+
+    return {
+      success: true,
+      ref_keys: { message_id: String(messageId), chat_id: String(sent.chat.id) },
     }
   }
 
@@ -854,7 +921,11 @@ class TelegramAdapter extends ConnectorAdapter {
     const chatId = target.ref_keys['chat_id']
     const messageId = target.ref_keys['message_id']
     if (!chatId || !messageId) return
-    await this.bot.api.editMessageText(chatId, Number(messageId), content.text ?? '')
+    const rawText = content.text ?? ''
+    const text = content.markdown ? telegramifyMarkdown(rawText, 'escape') : rawText
+    await this.bot.api.editMessageText(chatId, Number(messageId), text || '⋯', {
+      parse_mode: content.markdown ? 'MarkdownV2' : undefined,
+    })
       .catch((err: unknown) => console.warn('[telegram] editMessage error:', err))
   }
 

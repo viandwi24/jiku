@@ -9,7 +9,7 @@ import { insertAuditLog } from '@jiku-studio/db'
  * event. Writes go to the `audit_logs` table via insertAuditLog.
  */
 
-export type ActorType = 'user' | 'agent' | 'system'
+export type ActorType = 'user' | 'agent' | 'system' | 'connector'
 
 export interface AuditContext {
   actor_id: string | null
@@ -72,18 +72,33 @@ export function auditContext(req: Request): AuditContext {
   }
 }
 
+// Plan 22 revision — guard non-UUID actor ids (e.g. "connector:<uuid>", "system")
+// so the Postgres UUID column doesn't reject the insert. The original prefix is
+// preserved in metadata.actor_label for traceability.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function write(entry: WriteEntry): void {
+  let actorId = entry.actor_id ?? null
+  let actorType = entry.actor_type ?? (entry.actor_id ? 'user' : 'system')
+  let metadata = entry.metadata
+  if (actorId && !UUID_RE.test(actorId)) {
+    metadata = { ...(metadata ?? {}), actor_label: actorId }
+    if (actorId.startsWith('connector:')) actorType = 'connector'
+    else if (actorId === 'system') actorType = 'system'
+    else actorType = actorType === 'user' ? 'system' : actorType
+    actorId = null
+  }
   // Fire-and-forget — never block request flow on audit write.
   insertAuditLog({
     project_id: entry.project_id ?? null,
     company_id: entry.company_id ?? null,
-    actor_id: entry.actor_id ?? null,
-    actor_type: entry.actor_type ?? (entry.actor_id ? 'user' : 'system'),
+    actor_id: actorId,
+    actor_type: actorType,
     event_type: entry.event_type,
     resource_type: entry.resource_type,
     resource_id: entry.resource_id ?? null,
     resource_name: entry.resource_name ?? null,
-    metadata: entry.metadata ?? {},
+    metadata: metadata ?? {},
     ip_address: entry.ip_address ?? null,
     user_agent: entry.user_agent ?? null,
   }).catch((err) => {

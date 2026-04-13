@@ -254,8 +254,10 @@ const SOURCE_LABELS: Record<string, string> = {
   mode: 'Mode',
   user_context: 'User Context',
   plugin: 'Plugins',
+  runtime: 'Runtime Context',
   memory: 'Memory',
   tool_hint: 'Tool Hints',
+  skill: 'Skills',
 }
 
 function SegmentGroupList({ segments }: { segments: ContextSegment[] }) {

@@ -107,6 +107,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_send',
+        side_effectful: true,
         name: 'Send Connector Message',
         description: 'Send a message to a platform chat via connector',
         group: 'connector',
@@ -119,20 +120,22 @@ export function buildConnectorTools(projectId: string) {
         text: z.string(),
         reply_to_ref_keys: z.record(z.string()).optional(),
         markdown: z.boolean().default(true),
+        simulate_typing: z.boolean().default(false).describe('When true, the adapter shows a "typing" effect by sending a placeholder and progressively editing it. Use for chat replies where the user is waiting; leave false for proactive notifications/broadcasts.'),
       }),
       execute: async (args) => {
-        const { connector_id, target_ref_keys, text, reply_to_ref_keys, markdown } = args as {
+        const { connector_id, target_ref_keys, text, reply_to_ref_keys, markdown, simulate_typing } = args as {
           connector_id: string
           target_ref_keys: Record<string, string>
           text: string
           reply_to_ref_keys?: Record<string, string>
           markdown: boolean
+          simulate_typing: boolean
         }
         const adapter = connectorRegistry.getAdapterForConnector(connector_id)
         if (!adapter) return { success: false, error: 'Connector not active' }
         return adapter.sendMessage(
           { ref_keys: target_ref_keys, reply_to_ref_keys },
-          { text, markdown }
+          { text, markdown, simulate_typing },
         )
       },
     }),
@@ -174,6 +177,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_run_action',
+        side_effectful: true,
         name: 'Run Connector Action',
         description: 'Execute a platform-specific action on a connector (e.g. send_file, send_reaction, pin_message, delete_message). Use connector_list_actions first to see available actions and their required params.',
         group: 'connector',
@@ -260,6 +264,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'identity_set',
+        side_effectful: true,
         name: 'Set User Identity',
         description: 'Set an identity attribute for a user (e.g. telegram_user_id = 123)',
         group: 'connector',
@@ -343,6 +348,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_send_to_target',
+        side_effectful: true,
         name: 'Send to Channel Target',
         description: 'Send a message to a named channel target. Use connector_list_targets first to see available targets.',
         group: 'connector',
@@ -354,10 +360,11 @@ export function buildConnectorTools(projectId: string) {
         text: z.string().describe('Message text'),
         connector_id: z.string().optional().describe('Connector ID (omit if target name is unique in the project)'),
         markdown: z.boolean().default(true),
+        simulate_typing: z.boolean().default(false).describe('When true, the adapter shows a "typing" effect by editing a placeholder. Off for notifications/broadcasts.'),
       }),
       execute: async (args) => {
-        const { target_name, text, connector_id, markdown } = args as {
-          target_name: string; text: string; connector_id?: string; markdown: boolean
+        const { target_name, text, connector_id, markdown, simulate_typing } = args as {
+          target_name: string; text: string; connector_id?: string; markdown: boolean; simulate_typing: boolean
         }
         const target = await getConnectorTargetByName(projectId, target_name, connector_id)
         if (!target) {
@@ -370,13 +377,14 @@ export function buildConnectorTools(projectId: string) {
           ref_keys: target.ref_keys as Record<string, string>,
           scope_key: target.scope_key ?? undefined,
         }
-        return adapter.sendMessage(sendTarget, { text, markdown })
+        return adapter.sendMessage(sendTarget, { text, markdown, simulate_typing })
       },
     }),
 
     defineTool({
       meta: {
         id: 'connector_create_target',
+        side_effectful: true,
         name: 'Create Channel Target',
         description:
           'Register a named outbound destination so you (or any agent) can send to it later by name. ' +
@@ -436,6 +444,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_update_target',
+        side_effectful: true,
         name: 'Update Channel Target',
         description: 'Update an existing named target — rename, change chat_id/thread_id/scope_key, or update description.',
         group: 'connector',
@@ -485,6 +494,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_delete_target',
+        side_effectful: true,
         name: 'Delete Channel Target',
         description: 'Delete a named target by id. Irreversible.',
         group: 'connector',
@@ -510,6 +520,7 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_save_current_scope',
+        side_effectful: true,
         name: 'Save Current Scope as Target',
         description:
           'Shortcut: save the scope of the current inbound event as a named target. Use when a user says ' +

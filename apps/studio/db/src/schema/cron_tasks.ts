@@ -11,6 +11,15 @@ export const cron_tasks = pgTable('cron_tasks', {
   description:           text('description'),
   cron_expression:       varchar('cron_expression', { length: 100 }).notNull(),
   prompt:                text('prompt').notNull(),
+  /**
+   * Plan 22 revision — structured execution context for the cron.
+   * Shape: { origin?: { platform, originator_user_id, connector_id, chat_id, scope_key },
+   *          delivery?: { connector_id, target_name?, chat_id?, thread_id?, scope_key?, platform? },
+   *          subject?: { user_id?, identity_hints? } }
+   * Scheduler composes the [Cron Trigger] / [Cron Delivery] prelude from this at fire time.
+   * Kept separate from `prompt` so UI prompt edits cannot wipe delivery context.
+   */
+  context:               jsonb('context').notNull().default({}),
   enabled:               boolean('enabled').notNull().default(true),
   caller_id:             uuid('caller_id').references(() => users.id),
   caller_role:           varchar('caller_role', { length: 100 }),

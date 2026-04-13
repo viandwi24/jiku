@@ -1,42 +1,23 @@
 import { getAgentById, updateAgent, createTaskConversation } from '@jiku-studio/db'
 import { runTaskConversation } from './runner.ts'
+import { Cron } from 'croner'
 
-/** Minimal cron parser — returns the next Date after `from` for a 5-field cron expression */
+/**
+ * Returns the next Date after `from` for a standard 5-field cron expression.
+ * Uses `croner` (same library as cron/scheduler.ts + dream-scheduler.ts) so
+ * patterns like `*\/30 * * * *` and `0 9 * * 1-5` work correctly. Previous
+ * hand-rolled parser silently treated `*\/30` as NaN and fell back to
+ * "every minute", causing wrong fire intervals.
+ */
 function getNextCronDate(expression: string, from: Date = new Date()): Date | null {
   try {
-    // Simple approach: use setInterval is not feasible; use a lightweight calculation
-    // For now return a rough estimate based on common patterns
-    const parts = expression.trim().split(/\s+/)
-    if (parts.length !== 5) return null
-
-    const [min, hour] = parts
-    const next = new Date(from)
-    next.setSeconds(0, 0)
-
-    // Parse minute
-    const minuteVal = (min ?? '*') === '*' ? -1 : parseInt(min ?? '0', 10)
-    // Parse hour
-    const hourVal = (hour ?? '*') === '*' ? -1 : parseInt(hour ?? '0', 10)
-
-    if (hourVal >= 0 && minuteVal >= 0) {
-      // e.g. "30 9 * * *" = every day at 09:30
-      next.setMinutes(minuteVal)
-      next.setHours(hourVal)
-      if (next <= from) next.setDate(next.getDate() + 1)
-    } else if (hourVal >= 0) {
-      // e.g. "* 9 * * *" = every minute during hour 9
-      next.setHours(hourVal)
-      next.setMinutes(from.getMinutes() + 1)
-      if (next.getHours() !== hourVal) next.setDate(next.getDate() + 1)
-    } else if (minuteVal >= 0) {
-      // e.g. "0 * * * *" = every hour at minute 0
-      next.setMinutes(minuteVal)
-      if (next <= from) next.setHours(next.getHours() + 1)
-    } else {
-      // "* * * * *" = every minute
-      next.setMinutes(next.getMinutes() + 1)
-    }
-    return next
+    const trimmed = expression.trim()
+    // Reject 6-field (with seconds) — heartbeat policy is minute-resolution at most
+    // to prevent runaway loops if someone enters "*/30 * * * * *" by mistake.
+    if (trimmed.split(/\s+/).length !== 5) return null
+    const cron = new Cron(trimmed)
+    const next = cron.nextRun(from)
+    return next ?? null
   } catch {
     return null
   }

@@ -1,3 +1,20 @@
+## Phase (2026-04-13) — Plan 22 revision (post-ship hardening) — SHIPPED
+
+Post-ship revision addressing cron infinite loop, edit-replay bug, admin permissions, and cross-user awareness. Details: ADR-060..063 in `decisions.md`; file list in `changelog.md` under "Plan 22 revision".
+
+### Key additions this revision
+- [x] `ToolMeta.side_effectful` + runner-level dedup map → edit-replay safe
+- [x] `cron_tasks.context` jsonb; `cron/context.ts` composes prelude at fire time; `prompt` becomes pure intent
+- [x] `[Company & Team]` system segment via `extra_system_segments` + `runtime/team-structure.ts`
+- [x] Admin can see/configure cron tasks (route filter loosened; perm group added to UI; backfill migration 0019)
+- [x] System-user UUID guard in runtime enrichment
+- [x] Cron dynamic mutation tools kept available at fire time (ADR-063)
+
+### Migration state
+- `0018` — Plan 22 core (scope_conv + targets + bindings.scope_key_pattern)
+- `0019` — Backfill admin role with cron_tasks perms
+- `0020` — cron_tasks.context jsonb
+
 ## Phase (2026-04-13) — Plan 22: Channel System v2 — SHIPPED
 
 All 5 phases complete. End-to-end chain: Telegram group/topic → scope_key → scope conversation → AI → scope-aware reply. Inbound media now captured via event log (lazy fetch). Agents can publish to named Channel Targets. Binding editor exposes `scope_key_pattern`.

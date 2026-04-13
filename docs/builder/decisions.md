@@ -1,5 +1,47 @@
 # Decisions
 
+## ADR-060 — Side-effectful tool dedup on replay
+
+**Context:** AI SDK replays tool executions when the user edits a previous chat message. Side-effectful tools (cron_create, connector_send, fs_write) get called again → duplicate DB rows, double-sent messages, lost delivery context.
+
+**Decision:** `ToolMeta.side_effectful?: boolean`. The runner builds a map `${tool_name}:${stableHash(args)} → cached_result` from full conversation history at run start. The tool-call `execute()` wrapper short-circuits for side-effectful tools when the key exists in the map.
+
+**Consequences:** Edit safe for mutating tools. Legitimate retry with identical args is collapsed (rare — usually a real retry changes at least one arg). Non-side-effectful tools are unaffected so read-heavy tools still refresh on every call.
+
+---
+
+## ADR-061 — Cron context separation (prompt vs context jsonb)
+
+**Context:** Delivery + origin + subject blocks were baked into `cron_tasks.prompt`. Editing `prompt` via UI wiped delivery, orphaning the cron. Scheduler had no structured way to re-compose the prelude.
+
+**Decision:** New `cron_tasks.context` jsonb column holding `{ origin, delivery, subject, notes }`. `prompt` becomes pure intent (short, editable). Scheduler composes `[Cron Trigger]` + `[Cron Origin]` + `[Cron Subject]` + prompt + `[Cron Delivery]` at fire time via `cron/context.ts`.
+
+`cron_create` accepts `origin`, `delivery`, `subject` as separate input fields. `cron_update` shallow-merges `context`.
+
+**Consequences:** Prompt edits no longer destroy context. Structured context queryable/inspectable. Subject distinct from originator — supports "user A minta diingatkan user B".
+
+---
+
+## ADR-062 — Per-run extra_system_segments (no global plugin for per-project context)
+
+**Context:** Plugin prompt segments inject globally. Per-project data (members, roles, identities) needs project + caller context that plugins don\'t receive. Adding projectId to every `getPromptSegmentsAsync()` call would bleed scope across the plugin API.
+
+**Decision:** `JikuRunParams.extra_system_segments?: string[]`. Studio runtimeManager.run always appends a `[Company & Team]` segment — members + role + identities (user_identities + mapped connector_identities). Kept outside the plugin system so it doesn\'t pretend to be project-agnostic.
+
+**Consequences:** Agents have cross-user awareness without extra tool round-trips. Segment is refetched per run (two indexed queries — cheap). Not cached; stale risk is minimal (membership changes rare vs run frequency).
+
+---
+
+## ADR-063 — Cron-triggered runs keep cron mutation tools (no blanket suppression)
+
+**Context:** Initial proposal was to strip `cron_create/update/delete` from cron-fired runs to prevent infinite self-scheduling loops.
+
+**Decision:** Revert. Conditional/dynamic cron chains ("if X tomorrow, schedule Y") are a real use case. Loop prevention handled by `[Cron Trigger]` preamble + `side_effectful` dedup + prompt-shape rails.
+
+**Consequences:** More flexibility, with loop risk pushed to prompt discipline. `JikuRunParams.suppress_tool_ids` remains as an escape hatch but is not applied to cron.
+
+---
+
 ## ADR-056 — scope_key as conversation isolation unit for multi-chat connectors
 
 **Context:** `connector_identities.conversation_id` is keyed by identity — fine for DMs, broken for group chats where many users share a "room". Topic-enabled supergroups add a second axis. Storing per-identity conversations in a group would fragment context and mis-attribute history.

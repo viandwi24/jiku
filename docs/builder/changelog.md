@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-04-13 — Plan 22 revision: project default_timezone + Project Context segment + preview parity
+
+**Added:**
+- **Project default timezone.** New `projects.default_timezone text NOT NULL DEFAULT 'UTC'` (migration `0021`). Settings → General has a datalist input populated from `Intl.supportedValuesOf('timeZone')`. Validated server-side via `Intl.DateTimeFormat` probe before save.
+- **`[Project Context]` system segment.** `runtime/project-context.ts` builds: project name, default timezone (with shortOffset hint), current UTC time, current local time, and explicit interpretation rules (local-time-without-zone defaults to project tz; cron expressions stay UTC; conversion example using project tz). Injected via `extra_system_segments` in both `runtimeManager.run` and `runtimeManager.previewRun`.
+- **Preview parity.** Both `[Company & Team]` and `[Project Context]` now appear in `previewRun` segments list (labelled "Runtime Segment 1/2"), so the Context Preview Sheet matches what the model actually receives. Previously the team segment was added at run time only — invisible in preview.
+- **`cron_create.cron_expression` description** references `[Project Context]` as the timezone fallback so the agent knows to consult it.
+
+**DB migration:** `0021_plan22_project_timezone.sql`.
+
+**Files touched:**
+- `apps/studio/db/src/schema/projects.ts` + `migrations/0021_plan22_project_timezone.sql`
+- `apps/studio/server/src/routes/projects.ts` (PATCH accepts `default_timezone` with IANA validation)
+- `apps/studio/server/src/runtime/project-context.ts` (new)
+- `apps/studio/server/src/runtime/manager.ts` (`previewRun` injects extra segments; `run` already does)
+- `packages/core/src/runner.ts` (`previewRun` accepts + appends `extra_system_segments`)
+- `packages/core/src/runtime.ts` (`previewRun` threads `extra_system_segments`)
+- `apps/studio/server/src/cron/tools.ts` (cron_expression description)
+- `apps/studio/web/lib/api.ts` (Project type + `update` body type)
+- `apps/studio/web/app/(app)/.../settings/general/page.tsx` (timezone datalist input)
+
+## 2026-04-13 — Plan 22 revision: cron architecture + side-effect dedup + team structure
+
+**Fixed:**
+- **Cron infinite loop.** Cron-fired agent re-interpreted stored prompt as a new reminder request → called `cron_create` recursively. Root cause: prompt stored the user\'s verbatim request. Fix: `[Cron Trigger]` preamble composed at fire time + `prompt` description forbids echoing user + two soft rails reject short / first-person prompts.
+- **Edit bleed bug (ADR-060).** Editing a chat message caused side-effectful tools (`cron_create`, `connector_send`, etc.) to re-execute during AI SDK replay, overwriting the original DB row and wiping delivery context. New `ToolMeta.side_effectful` flag + runner-level dedup map (`tool_name:hash(args) → cached_result`) short-circuits replay execution.
+- **Cron context wiped by prompt edit (ADR-061).** Delivery/Origin/Subject blocks used to be concatenated into `prompt`, so editing `prompt` in UI deleted them. New `cron_tasks.context` jsonb column stores structured origin/delivery/subject; scheduler composes the prelude at fire time via `apps/studio/server/src/cron/context.ts`.
+- **Admin invisible cron list.** Admin role members saw empty cron list because route filtered by `callerIdFilter: userId` for everyone except superadmin. Now anyone with `cron_tasks:write` sees the full project list.
+- **Admin cron menu missing.** Existing Admin roles had stale permission arrays missing `cron_tasks:*`. Migration `0019_plan22_backfill_admin_cron_perms.sql` patches them. Permission settings UI now exposes the "Cron Tasks" group so it can be toggled per role.
+- **System-user UUID crash.** Cron/reflection jobs invoking the runtime with caller `user_id = \'system\'` (or `connector:<uuid>`) crashed the plugin-permission loader on Postgres UUID cast. Runtime guard skips the lookup for non-UUID caller ids.
+
+**Added:**
+- **Company & Team prompt segment (ADR-062).** New `JikuRunParams.extra_system_segments` + `runtime/team-structure.ts` build a per-run `[Company & Team]` block listing project members, roles, and known identities (`user_identities` + approved `connector_identities.external_ref_keys`). Agents gain cross-user awareness so "ingatkan user B" resolves without guessing.
+- **Cron dynamic mutation allowed (ADR-063).** Cron-triggered runs KEEP access to `cron_create/update/delete` — supports conditional scheduling ("kalau stok < 10, bikin reminder besok"). Loop prevention relies on prompt preamble + side-effect dedup instead of tool suppression.
+- **Explicit cron inputs.** `cron_create` now takes `origin` + `delivery` + `subject` as structured fields. `cron_update` shallow-merges `context` so editing one field doesn\'t nuke the others.
+- **Soft rails on cron prompt.** Reject when prompt `< 30 chars` or starts with first-person patterns ("Ingatkan saya...", "Remind me..."); agent retries with reworded prompt.
+
+**Files touched:**
+- `packages/types/src/index.ts` — `ToolMeta.side_effectful`, `JikuRunParams.suppress_tool_ids`, `JikuRunParams.extra_system_segments`
+- `packages/core/src/runner.ts` — `priorSideEffectResults` map + dedup in execute wrapper; combine plugin + extra segments
+- `apps/studio/db/src/schema/cron_tasks.ts` + `migrations/0019_…sql` + `migrations/0020_plan22_cron_context.sql`
+- `apps/studio/server/src/cron/context.ts` (new), `cron/tools.ts`, `cron/scheduler.ts`
+- `apps/studio/server/src/runtime/team-structure.ts` (new), `runtime/manager.ts` (UUID guard, team segment injection)
+- `apps/studio/server/src/routes/cron-tasks.ts` (admin list fix)
+- `apps/studio/server/src/connectors/tools.ts` (side_effectful flags)
+- `apps/studio/web/app/(app)/.../settings/permissions/page.tsx` (Cron Tasks group)
+
 ## 2026-04-13 — Plan 22 follow-up: agent-side target mgmt + enriched context
 
 **Added:**

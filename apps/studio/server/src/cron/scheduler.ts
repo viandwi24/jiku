@@ -7,6 +7,7 @@ import {
   createTaskConversation,
 } from '@jiku-studio/db'
 import { runTaskConversation } from '../task/runner.ts'
+import { composeCronRunInput, type CronContext } from './context.ts'
 
 interface ScheduledCronJob {
   taskId: string
@@ -75,7 +76,8 @@ export class CronTaskScheduler {
     })
 
     // Run async, non-blocking
-    runTaskConversation(task.project_id, conv.id, task.agent_id, task.prompt, task.caller_id ?? null, { triggeredByCron: true, allowCreateCron: true })
+    const runInput = composeCronRunInput(task.prompt, (task.context ?? {}) as CronContext)
+    runTaskConversation(task.project_id, conv.id, task.agent_id, runInput, task.caller_id ?? null, { triggeredByCron: true, allowCreateCron: true })
       .then(async () => {
         await incrementRunCount(taskId)
         const updatedTask = await getCronTaskById(taskId)

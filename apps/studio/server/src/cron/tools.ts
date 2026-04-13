@@ -8,38 +8,12 @@ import {
 } from '@jiku-studio/db'
 import type { ToolDefinition } from '@jiku/types'
 import { cronTaskScheduler } from './scheduler.ts'
+import type { CronContext } from './context.ts'
 
 interface CallerSnapshotContext {
   callerId: string | null
   callerRole: string | null
   callerIsSuperadmin: boolean
-}
-
-function buildCronDeliveryBlock(delivery?: {
-  connector_id?: string
-  target_name?: string
-  chat_id?: string
-  thread_id?: string
-  scope_key?: string
-  platform?: string
-}): string {
-  if (!delivery) return ''
-  const platform = delivery.platform ?? 'the original channel'
-  const lines: string[] = ['', '[Cron Delivery]']
-  lines.push(`This reminder was requested from ${platform}, so the user expects the response on ${platform} — not as plain text in this task run.`)
-  lines.push('After producing the content, you MUST deliver it using ONE of the tools below (pick the first one that has enough data):')
-  if (delivery.target_name) {
-    lines.push(`- Preferred: connector_send_to_target({ target_name: "${delivery.target_name}"${delivery.connector_id ? `, connector_id: "${delivery.connector_id}"` : ''}, text: <your message>, markdown: true })`)
-  }
-  if (delivery.scope_key && delivery.connector_id) {
-    lines.push(`- Or: connector_run_action({ connector_id: "${delivery.connector_id}", action_id: "send_to_scope", params: { scope_key: "${delivery.scope_key}", text: <your message>, markdown: true } })`)
-  }
-  if (delivery.chat_id && delivery.connector_id) {
-    const threadHint = delivery.thread_id ? `, thread_id: "${delivery.thread_id}"` : ''
-    lines.push(`- Or raw: connector_send({ connector_id: "${delivery.connector_id}", target_ref_keys: { chat_id: "${delivery.chat_id}"${threadHint} }, text: <your message>, markdown: true })`)
-  }
-  lines.push('Only skip delivery if the instruction explicitly says "no notification" — otherwise text in the task log never reaches the user.')
-  return lines.join('\n')
 }
 
 export function buildCronCreateTool(
@@ -51,6 +25,7 @@ export function buildCronCreateTool(
     meta: {
       id: 'cron_create',
       name: 'Create Cron Task',
+      side_effectful: true,
       description:
         'Create a scheduled cron task for this agent. SAFETY CRITICAL — a bad prompt here will run on a schedule forever, potentially causing infinite loops, spam, or silent failures. ' +
         'Before calling this tool you MUST confirm all of the following:\n' +
@@ -68,8 +43,9 @@ export function buildCronCreateTool(
       description: z.string().optional().describe('Optional description — summarize who asked for it, why, and the expected output. Useful for audit.'),
       cron_expression: z.string().max(100).describe(
         '5-field cron expression evaluated in UTC. Convert from the user\'s local time BEFORE passing. ' +
+        'Default timezone is in [Project Context] above — use it as fallback when the user doesn\'t specify a zone. ' +
         'Examples: "0 10 * * *" = 10:00 UTC daily; "0 10 * * 1-5" = weekdays 10:00 UTC. ' +
-        'If the user said a local time (e.g. "jam 17 WIB"), convert: WIB=UTC+7 so 17:00 WIB → "0 10 * * *".',
+        'If project default is Asia/Jakarta (UTC+7) and user says "jam 17", that\'s 17 WIB → cron_expression "0 10 * * *".',
       ),
       prompt: z.string().describe(
         'THE INSTRUCTION FUTURE-YOU WILL RECEIVE when the cron fires. Treated as a command, not a conversation.\n' +
@@ -92,13 +68,25 @@ export function buildCronCreateTool(
         chat_id: z.string().optional().describe('Raw chat_id (from current Chat ref) — fallback when no named target'),
         thread_id: z.string().optional().describe('Forum topic thread_id if applicable'),
         scope_key: z.string().optional().describe('scope_key from Connector Context — enables send_to_scope'),
-        platform: z.string().optional().describe('Human label, e.g. "Telegram", "Discord" — used in the delivery instructions for your future self'),
+        platform: z.string().optional().describe('Human label, e.g. "Telegram", "Discord"'),
       }).optional().describe(
-        'Where to send the output when the task fires. ' +
-        'DEFAULT RULE: if the user made this request from a channel (Telegram, Discord, etc.) and did not say "don\'t notify me" or specify another channel, ' +
-        'ALWAYS fill this with the current channel\'s connector_id + chat_id/scope_key. ' +
-        'Only omit when user explicitly says the task is silent / runs in background without reply.',
+        'OPTIONAL delivery hint. Fill when the task produces user-facing output (notifications, reminders, digests). ' +
+        'Omit for purely internal tasks (file writes, internal triggers, conditional cron creators). ' +
+        'Default rule: if you created this task in response to a user asking for a reminder/notification on a channel, copy the channel\'s connector_id + chat_id/scope_key here.',
       ),
+      origin: z.object({
+        platform: z.string().optional().describe('Where the request came from, e.g. "Telegram"'),
+        originator_display_name: z.string().optional(),
+        originator_user_id: z.string().optional().describe('Jiku user_id of the person who asked'),
+        connector_id: z.string().optional(),
+        chat_id: z.string().optional(),
+        scope_key: z.string().optional(),
+      }).optional().describe('Optional — who/where this task was requested from. Helps future-you orient.'),
+      subject: z.object({
+        user_id: z.string().optional().describe('Jiku user_id of the person the task is ABOUT (may differ from originator, e.g. "ingatkan user B")'),
+        display_name: z.string().optional(),
+        identity_hints: z.record(z.string(), z.string()).optional().describe('Known identity keys/values, e.g. { telegram_user_id: "..." }'),
+      }).optional().describe('Optional — who the task is ABOUT. Distinct from originator: originator = who asked; subject = who is affected.'),
       enabled: z.boolean().default(true).describe('Whether the task is enabled immediately'),
     }),
     execute: async (input: unknown) => {
@@ -108,17 +96,12 @@ export function buildCronCreateTool(
         cron_expression: string
         prompt: string
         enabled: boolean
-        delivery?: {
-          connector_id?: string
-          target_name?: string
-          chat_id?: string
-          thread_id?: string
-          scope_key?: string
-        }
+        delivery?: CronContext['delivery']
+        origin?: CronContext['origin']
+        subject?: CronContext['subject']
       }
 
       // Safety rails — cheap heuristics that catch the most common "bad prompt" failure modes.
-      // These are intentionally lenient (agent can retry) not exhaustive.
       const trimmed = parsed.prompt.trim()
       if (trimmed.length < 30) {
         return {
@@ -126,7 +109,6 @@ export function buildCronCreateTool(
           error: 'prompt too short to be self-contained. Expand into a full actionable instruction for future-you — include who, what, and any required context. See the `prompt` field description for examples.',
         }
       }
-      // Catch the classic "echoing the user" failure.
       const firstPerson = /^(ingatkan saya|reminder me|remind me|tolong ingatkan|catat untuk saya)\b/i
       if (firstPerson.test(trimmed)) {
         return {
@@ -135,15 +117,10 @@ export function buildCronCreateTool(
         }
       }
 
-      const preamble =
-        '[Cron Trigger]\n' +
-        'The scheduler is invoking you now — there is NO new user message in this run. ' +
-        'Treat the Instruction block below as a command FROM YOURSELF (the past-you that created this task) TO YOURSELF (present-you that must act).\n' +
-        '- If the Instruction describes content to deliver (e.g. a reminder, summary, digest): produce that content and send it via [Cron Delivery] — do NOT ask the user clarifying questions, the user is not in the loop right now.\n' +
-        '- If the Instruction describes a conditional (e.g. "kalau X maka buat cron baru"): you MAY call cron_create/update/delete as needed — this is supported.\n' +
-        '- Never interpret the Instruction as a fresh request to set up a reminder unless it explicitly says so — the reminder already exists (it is this task).\n\n' +
-        'Instruction:\n'
-      const fullPrompt = preamble + parsed.prompt + buildCronDeliveryBlock(parsed.delivery)
+      const context: CronContext = {}
+      if (parsed.origin) context.origin = parsed.origin
+      if (parsed.delivery) context.delivery = parsed.delivery
+      if (parsed.subject) context.subject = parsed.subject
 
       const task = await createCronTask({
         project_id: projectId,
@@ -151,12 +128,16 @@ export function buildCronCreateTool(
         name: parsed.name,
         description: parsed.description ?? null,
         cron_expression: parsed.cron_expression,
-        prompt: fullPrompt,
+        // Stored prompt is now pure intent — [Cron Trigger] / [Cron Delivery] / [Cron Origin]
+        // are composed by the scheduler from `context` at fire time. This means editing
+        // `prompt` via UI never wipes delivery info.
+        prompt: parsed.prompt,
+        context: context as unknown as Record<string, unknown>,
         enabled: parsed.enabled,
         caller_id: callerCtx.callerId,
         caller_role: callerCtx.callerRole,
         caller_is_superadmin: callerCtx.callerIsSuperadmin,
-        metadata: parsed.delivery ? { delivery: parsed.delivery } : {},
+        metadata: {},
       })
 
       if (task.enabled) {
@@ -208,6 +189,7 @@ export function buildCronUpdateTool(
     meta: {
       id: 'cron_update',
       name: 'Update Cron Task',
+      side_effectful: true,
       description: 'Update an existing cron task (name, schedule, prompt, or enabled state)',
       group: 'cron',
     },
@@ -218,7 +200,13 @@ export function buildCronUpdateTool(
       name: z.string().max(255).optional(),
       description: z.string().optional(),
       cron_expression: z.string().max(100).optional(),
-      prompt: z.string().optional(),
+      prompt: z.string().optional().describe('Pure intent string — do NOT include [Cron Trigger] / [Cron Delivery] blocks; those are composed from `context` at fire time.'),
+      context: z.object({
+        origin: z.record(z.string(), z.unknown()).optional(),
+        delivery: z.record(z.string(), z.unknown()).optional(),
+        subject: z.record(z.string(), z.unknown()).optional(),
+        notes: z.string().optional(),
+      }).optional().describe('Partial context patch. Only the keys you pass are replaced; unspecified keys are preserved.'),
       enabled: z.boolean().optional(),
     }),
     execute: async (input: unknown) => {
@@ -228,6 +216,7 @@ export function buildCronUpdateTool(
         description?: string
         cron_expression?: string
         prompt?: string
+        context?: Partial<CronContext>
         enabled?: boolean
       }
 
@@ -245,6 +234,11 @@ export function buildCronUpdateTool(
       if (parsed.description !== undefined) updates.description = parsed.description
       if (parsed.cron_expression !== undefined) updates.cron_expression = parsed.cron_expression
       if (parsed.prompt !== undefined) updates.prompt = parsed.prompt
+      if (parsed.context !== undefined) {
+        // Shallow merge: unspecified top-level keys preserved.
+        const current = (existing.context ?? {}) as Record<string, unknown>
+        updates.context = { ...current, ...parsed.context } as typeof existing.context
+      }
       if (parsed.enabled !== undefined) updates.enabled = parsed.enabled
 
       const task = await updateCronTask(parsed.task_id, updates)
@@ -271,6 +265,7 @@ export function buildCronDeleteTool(
     meta: {
       id: 'cron_delete',
       name: 'Delete Cron Task',
+      side_effectful: true,
       description: 'Delete an existing cron task',
       group: 'cron',
     },

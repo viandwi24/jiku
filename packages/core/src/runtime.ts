@@ -107,6 +107,8 @@ export class JikuRuntime {
     caller: JikuRunParams['caller']
     mode: JikuRunParams['mode']
     conversation_id?: string
+    extra_system_segments?: Array<{ label: string; content: string }>
+    extra_system_prepend?: Array<{ label: string; content: string }>
   }): Promise<PreviewRunResult> {
     const runner = this.agents.get(params.agent_id)
     if (!runner) throw new Error(`Agent '${params.agent_id}' not found`)
@@ -116,6 +118,8 @@ export class JikuRuntime {
       conversation_id: params.conversation_id,
       rules: this.rules,
       subject_matcher: this.subjectMatcher,
+      extra_system_segments: params.extra_system_segments,
+      extra_system_prepend: params.extra_system_prepend,
     })
   }
 

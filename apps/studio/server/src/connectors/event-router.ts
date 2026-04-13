@@ -240,7 +240,7 @@ function buildConnectorContextString(
   parts.push(`Message received at: ${msgTime.toISOString()} (server timezone: ${serverTz})`)
   if (userTz) {
     const localTime = msgTime.toLocaleString('en-US', { timeZone: userTz, dateStyle: 'full', timeStyle: 'long' })
-    parts.push(`User locale: ${langCode} — estimated timezone: ${userTz} — user local time: ${localTime}`)
+    parts.push(`User locale: ${langCode} — user local time: ${localTime}`)
   } else if (langCode) {
     parts.push(`User locale: ${langCode} (timezone unknown)`)
   }
@@ -308,6 +308,46 @@ export async function routeConnectorEvent(
       const sk = adapter.computeScopeKey({ ref_keys: event.ref_keys, metadata: event.metadata })
       if (sk) event.scope_key = sk
     }
+  }
+
+  // Plan 22 revision — /reset command intercept (detach current scope/identity from its conversation).
+  // Conversation row is preserved in DB (history intact); next message creates a new one.
+  if (connectorUuid && event.type === 'message' && /^\/reset(\s|$)/i.test((event.content?.text ?? '').trim())) {
+    const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
+    let cleared = 0
+    try {
+      if (event.scope_key) {
+        // Group/topic — clear scope conversation rows for this connector + scope (any agent).
+        const { db, connector_scope_conversations, eq, and } = await import('@jiku-studio/db')
+        await db
+          .update(connector_scope_conversations)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .set({ conversation_id: null as any, last_activity_at: new Date() })
+          .where(and(
+            eq(connector_scope_conversations.connector_id, connectorUuid),
+            eq(connector_scope_conversations.scope_key, event.scope_key),
+          ))
+        cleared = 1
+      } else {
+        // DM — clear identity.conversation_id for the matching identity.
+        const externalUserId = event.sender.external_id
+        const identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+        if (identity) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await updateIdentity(identity.id, { conversation_id: null as any })
+          cleared = 1
+        }
+      }
+    } catch (err) {
+      console.error('[connector] /reset failed:', err)
+    }
+    adapter?.sendMessage(
+      { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+      cleared
+        ? { text: '🔄 Conversation reset. Pesan berikutnya akan mulai percakapan baru. (history lama tetap tersimpan)' }
+        : { text: 'ℹ️ Tidak ada conversation aktif untuk direset.' },
+    ).catch(() => {})
+    return 'routed'
   }
 
   // 0. Invite code redemption — intercept /start <code> or /join <code>
@@ -662,7 +702,7 @@ async function executeConversationAdapter(
         if (responseText && connectorAdapter) {
           connectorAdapter.sendMessage(
             { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-            { text: responseText, markdown: true },
+            { text: responseText, markdown: true, simulate_typing: true },
           ).catch(() => {})
         }
       },
@@ -724,25 +764,68 @@ async function executeConversationAdapter(
       }
     })()
 
-    // Drain main branch for response text
+    // Drain main branch for response text + usage + snapshot
     let responseText = ''
+    let usageInput = 0
+    let usageOutput = 0
+    let providerId: string | null = null
+    let modelId: string | null = null
+    let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string } | null = null
+
     const reader = drainStream.getReader()
     try {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        if (value.type === 'text-delta') responseText += (value as { delta?: string; textDelta?: string }).delta ?? (value as { delta?: string; textDelta?: string }).textDelta ?? ''
+        const v = value as { type: string; delta?: string; textDelta?: string; data?: unknown }
+        if (v.type === 'text-delta') {
+          responseText += v.delta ?? v.textDelta ?? ''
+        } else if (v.type === 'data-jiku-usage') {
+          const d = v.data as { input_tokens?: number; output_tokens?: number } | undefined
+          if (d) {
+            usageInput = d.input_tokens ?? 0
+            usageOutput = d.output_tokens ?? 0
+          }
+        } else if (v.type === 'data-jiku-meta') {
+          const d = v.data as { provider_id?: string; model_id?: string } | undefined
+          providerId = d?.provider_id ?? providerId
+          modelId = d?.model_id ?? modelId
+        } else if (v.type === 'data-jiku-run-snapshot') {
+          runSnapshot = v.data as { system_prompt: string; messages: unknown[]; response?: string }
+        }
       }
     } finally {
       reader.releaseLock()
     }
 
+    // Plan 22 revision — record usage for connector-triggered chat runs (parity with HTTP /chat path).
+    if (usageInput > 0 || usageOutput > 0) {
+      const { recordLLMUsage } = await import('../usage/tracker.ts')
+      recordLLMUsage({
+        source: 'chat',
+        mode: 'chat',
+        project_id: projectId,
+        agent_id: agentId,
+        conversation_id: conversationId,
+        provider: providerId,
+        model: modelId,
+        input_tokens: usageInput,
+        output_tokens: usageOutput,
+        raw_system_prompt: runSnapshot?.system_prompt ?? null,
+        raw_messages: runSnapshot?.messages ?? null,
+        raw_response: runSnapshot?.response ?? (responseText || null),
+      })
+    }
+
     if (!responseText) return
 
     if (connectorAdapter) {
+      // Auto-reply path = user-facing reply → simulate_typing on by default.
+      // (Agent-initiated sends via tools default to false; the agent can pass
+      // simulate_typing:true explicitly when it wants the effect.)
       const sendResult = await connectorAdapter.sendMessage(
         { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-        { text: responseText, markdown: true }
+        { text: responseText, markdown: true, simulate_typing: true },
       )
       await logConnectorMessage({
         connector_id: connectorId,

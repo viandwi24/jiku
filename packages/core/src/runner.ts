@@ -217,11 +217,13 @@ export class AgentRunner {
       ...(this.agent.built_in_tools ?? []),
       ...(params.extra_built_in_tools ?? []),
     ]
+    // Built-in tools use their bare meta.id as tool_name (no `builtin_` prefix).
+    // resolved_id keeps the `__builtin__:` namespace internally for tool_states / audit.
     const builtInResolved = allBuiltIn.map(t => ({
       ...t,
       plugin_id: '__builtin__',
       resolved_id: `__builtin__:${t.meta.id}`,
-      tool_name: `builtin_${t.meta.id}`,
+      tool_name: t.meta.id,
       resolved_permission: '*',
     }))
     let modeTools = [
@@ -379,13 +381,19 @@ export class AgentRunner {
     }
 
     // 6. Build system prompt + history (before stream starts)
-    const pluginSegments = await this.plugins.getPromptSegmentsAsync()
+    const pluginSegmentsMeta = await this.plugins.getPromptSegmentsWithMetaAsync()
+    const labeledPluginSegments = pluginSegmentsMeta.map(p => ({
+      label: `${p.plugin_name} (${p.plugin_id})`,
+      content: p.segment,
+    }))
     const systemPrompt = buildSystemPrompt({
       base: this.agent.base_prompt,
       mode,
       active_tools: modeTools,
       caller,
-      plugin_segments: pluginSegments,
+      plugin_segments: labeledPluginSegments,
+      prepend_segments: params.extra_system_prepend,
+      runtime_segments: params.extra_system_segments,
       memory_section: memorySection,
       persona_section: personaSection,
       skill_section: this.skillSection ?? undefined,
@@ -394,6 +402,36 @@ export class AgentRunner {
 
     const history = await this.storage.getMessages(conversation_id)
     const effectiveHistory = applyCompactBoundary(history)
+
+    // Plan 22 revision — build a lookup of previously-executed side-effectful tool calls
+    // keyed by `${toolName}:${hash(args)}`. Used to short-circuit re-execution on edit replay.
+    // We scan the FULL history (not effectiveHistory) so dedup survives context compaction.
+    const priorSideEffectResults = new Map<string, unknown>()
+    const stableStringify = (v: unknown): string => {
+      const seen = new WeakSet()
+      const walk = (x: unknown): unknown => {
+        if (x === null || typeof x !== 'object') return x
+        if (seen.has(x as object)) return null
+        seen.add(x as object)
+        if (Array.isArray(x)) return x.map(walk)
+        const o = x as Record<string, unknown>
+        return Object.keys(o).sort().reduce<Record<string, unknown>>((acc, k) => {
+          acc[k] = walk(o[k]); return acc
+        }, {})
+      }
+      try { return JSON.stringify(walk(v)) } catch { return '' }
+    }
+    for (const m of history) {
+      if (m.role !== 'assistant') continue
+      const toolParts = m.parts.filter(p => p.type === 'tool-invocation') as Array<{
+        type: 'tool-invocation'; toolName: string; args: unknown; state: string; result?: unknown
+      }>
+      for (const tp of toolParts) {
+        if (tp.state !== 'result') continue
+        priorSideEffectResults.set(`${tp.toolName}:${stableStringify(tp.args)}`, tp.result)
+      }
+    }
+
     const messages: ModelMessage[] = []
     for (const m of effectiveHistory) {
       if (m.role === 'user') {
@@ -572,12 +610,23 @@ export class AgentRunner {
               },
             })
           } else {
+            const sideEffectful = resolvedTool.meta.side_effectful === true
+            const toolNameKey = resolvedTool.tool_name
             aiTools[resolvedTool.tool_name] = tool({
               description: resolvedTool.meta.description,
               inputSchema: toInputSchema(resolvedTool.input),
               execute: async (args: unknown) => {
                 enforcePermission()
                 void toolHooks?.onInvoke?.({ ...hookInfo, args })
+                // Plan 22 revision — dedup on edit replay: if this exact tool+args
+                // was already executed earlier in this conversation, return the cached
+                // result instead of re-running (prevents duplicate cron rows / double sends).
+                if (sideEffectful) {
+                  const key = `${toolNameKey}:${stableStringify(args)}`
+                  if (priorSideEffectResults.has(key)) {
+                    return priorSideEffectResults.get(key)
+                  }
+                }
                 try {
                   return await resolvedTool.execute(args, toolCtx)
                 } catch (error) {
@@ -710,8 +759,12 @@ export class AgentRunner {
     conversation_id?: string
     rules: PolicyRule[]
     subject_matcher?: SubjectMatcher
+    extra_system_segments?: Array<{ label: string; content: string }>
+    extra_system_prepend?: Array<{ label: string; content: string }>
   }): Promise<PreviewRunResult> {
     const { caller, mode, rules, subject_matcher } = params
+    const extraSystemSegments = params.extra_system_segments ?? []
+    const extraSystemPrepend = params.extra_system_prepend ?? []
 
     const scope = resolveScope({
       caller,
@@ -729,7 +782,7 @@ export class AgentRunner {
       ...t,
       plugin_id: '__builtin__',
       resolved_id: `__builtin__:${t.meta.id}`,
-      tool_name: `builtin_${t.meta.id}`,
+      tool_name: t.meta.id,
       resolved_permission: '*',
     }))
     const modeTools = [
@@ -784,6 +837,12 @@ export class AgentRunner {
     // Order must match buildSystemPrompt() in resolver/prompt.ts so the preview
     // reflects the actual system prompt layout.
     const segments: ContextSegment[] = [
+      ...extraSystemPrepend.map(({ label, content }) => ({
+        source: 'runtime' as const,
+        label: `${label} (prepend)`,
+        content,
+        token_estimate: estimateTokens(content),
+      })),
       {
         source: 'base_prompt',
         label: 'Base Prompt',
@@ -848,6 +907,12 @@ export class AgentRunner {
         content: segment,
         token_estimate: estimateTokens(segment),
       })),
+      ...extraSystemSegments.map(({ label, content }) => ({
+        source: 'runtime' as const,
+        label,
+        content,
+        token_estimate: estimateTokens(content),
+      })),
     ]
 
     const totalTokens = segments.reduce((acc, s) => acc + s.token_estimate, 0)
@@ -877,12 +942,18 @@ export class AgentRunner {
       warnings.push(`Context at ${usagePercent.toFixed(0)}% — compaction may trigger soon`)
     }
 
+    const labeledPluginPreview = pluginSegmentsWithMeta.map(p => ({
+      label: `${p.plugin_name} (${p.plugin_id})`,
+      content: p.segment,
+    }))
     const systemPrompt = buildSystemPrompt({
       base: this.agent.base_prompt,
       mode,
       active_tools: modeTools,
       caller,
-      plugin_segments: pluginSegments,
+      plugin_segments: labeledPluginPreview,
+      prepend_segments: extraSystemPrepend,
+      runtime_segments: extraSystemSegments,
       memory_section: memorySection,
       persona_section: personaSection,
       skill_section: this.skillSection ?? undefined,

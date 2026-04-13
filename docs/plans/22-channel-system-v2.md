@@ -1189,3 +1189,74 @@ connector_run_action("send_media_group", {
 - Connector yang sudah ada tidak terpengaruh sampai adapter mereka implement `computeScopeKey`
 - `connector_identities.conversation_id` tetap ada dan tidak deprecated
 - Semua tools lama (`connector_send`, `connector_run_action`, dll) tetap berfungsi tanpa perubahan
+
+---
+
+## Revision — 2026-04-13 (post-ship bug fixes + architecture tightening)
+
+Catatan revisi yang tidak mengubah scope plan, tapi mengatasi bug dan gap yang muncul setelah shipped.
+
+### Masalah yang dilaporkan
+
+1. **Cron infinite loop** — cron prompt disimpan verbatim seperti pesan user, saat fire agent re-interpret sebagai permintaan bikin cron baru → loop.
+2. **Edit pesan user menghapus delivery context** di prompt cron yang sudah dibuat (AI SDK `execute()` dipanggil ulang saat replay history hasil edit — tool side-effectful dieksekusi dua kali, overwrite).
+3. **Missing cron menu** untuk admin karena permission list role stale pasca-penambahan `cron_tasks:*`.
+4. **Cron agent tidak tahu "user B"** — hanya tahu user yang chat sekarang. Perlu cross-user awareness untuk "ingatkan user B jam 8".
+5. **Delivery context hilang saat edit prompt** — karena `[Cron Trigger]` + `[Cron Delivery]` di-stuff ke dalam `prompt` string yang user bisa edit.
+
+### Keputusan arsitektur (lanjutan ADR)
+
+#### ADR-060 — Side-effectful tool dedup on replay
+
+**Decision.** Tambah `ToolMeta.side_effectful?: boolean`. Runner scan full conversation history sekali di awal run, build map `${tool_name}:${hash(args)} → result`. Saat AI SDK call tool `execute()`, kalau tool `side_effectful` dan key sudah ada di map → return cached result, skip executor. Hash pakai stable JSON stringify (sorted keys).
+
+Tools yang ditandai: `cron_create/update/delete`, `connector_send`, `connector_send_to_target`, `connector_run_action`, `connector_create_target/update_target/delete_target/save_current_scope`, `identity_set`.
+
+**Consequences.** Edit pesan user → tool result lama di-replay tanpa double-write. Cron rows nggak duplikasi, pesan nggak kirim dobel. Kerugian: kalau user *sengaja* mau tool jalan dua kali dengan args identik (jarang) — harus ubah args sedikit.
+
+#### ADR-061 — Cron context separation (prompt vs context jsonb)
+
+**Decision.** `cron_tasks` tambah kolom `context jsonb`. Shape: `{ origin, delivery, subject, notes }`. `prompt` jadi intent murni (pendek, bisa user edit). Scheduler compose `[Cron Trigger]` + `[Cron Origin]` + `[Cron Subject]` + `prompt` + `[Cron Delivery]` saat fire, lewat helper di `apps/studio/server/src/cron/context.ts`.
+
+`cron_create` tool sekarang terima `origin`, `delivery`, `subject` sebagai field terpisah. `cron_update` shallow-merge `context` — UI edit prompt TIDAK sentuh context.
+
+**Consequences.** Edit prompt aman. Context terstruktur bisa di-inspeksi / di-query / ditampilkan di UI tanpa parse string. Subject ≠ originator (untuk kasus "user A minta diingatkan user B").
+
+#### ADR-062 — Per-run extra_system_segments (no global plugin for per-project context)
+
+**Context.** Plugin prompt segments diinjeksi global (tidak project-aware di call site). Untuk Company & Team structure yang per-project + per-caller, plugin nggak cocok.
+
+**Decision.** Tambah `JikuRunParams.extra_system_segments?: string[]`. Studio `runtimeManager.run` selalu append segment "[Company & Team]" — list members + role + known identities (user_identities + connector_identities.external_ref_keys untuk mapped_user). Rules instruksi: pakai `identity_find` / `identity_get` untuk resolve, jangan tebak kalau identity kosong.
+
+**Consequences.** Agent paham siapa "user B" + channel mana yang reachable. Tanpa harus loop tool call.
+
+#### ADR-063 — Cron-triggered runs KEEP cron mutation tools (no suppression)
+
+**Context.** Sempat diusulkan strip `cron_create/update/delete` saat cron-triggered run untuk cegah loop.
+
+**Decision.** Batalkan. Cron dinamis (cron yang bikin cron conditional) adalah fitur yang diinginkan. Cegah loop murni lewat prompt discipline + [Cron Trigger] preamble + side-effectful dedup.
+
+Mekanisme `JikuRunParams.suppress_tool_ids` tetap ada sebagai escape hatch, cuma tidak di-apply untuk cron.
+
+### Perubahan file
+
+- Types: `packages/types/src/index.ts` — `ToolMeta.side_effectful`, `JikuRunParams.suppress_tool_ids`, `JikuRunParams.extra_system_segments`.
+- Core runner: `packages/core/src/runner.ts` — build `priorSideEffectResults` map, dedup di execute wrapper; combine plugin segments + `extra_system_segments`.
+- DB schema: `apps/studio/db/src/schema/cron_tasks.ts` — `context jsonb` kolom.
+- DB migration: `apps/studio/db/src/migrations/0019_plan22_backfill_admin_cron_perms.sql` (backfill cron perms ke Admin role), `0020_plan22_cron_context.sql` (cron context column).
+- Cron: `apps/studio/server/src/cron/context.ts` (baru — prelude composer), `apps/studio/server/src/cron/tools.ts` (cron_create/update refactor — field origin/delivery/subject terpisah, prompt bersih, safety rails), `apps/studio/server/src/cron/scheduler.ts` (compose prelude dari context saat fire).
+- Runtime: `apps/studio/server/src/runtime/team-structure.ts` (baru — build [Company & Team] segment), `apps/studio/server/src/runtime/manager.ts` (inject team segment ke setiap run, UUID guard untuk non-user caller `'system'`/`'connector:*'`).
+- Connectors: `apps/studio/server/src/connectors/tools.ts` — tandai tools side-effectful.
+- Routes: `apps/studio/server/src/routes/cron-tasks.ts` — admin lihat semua cron saat punya `cron_tasks:write`.
+- Web UI: `apps/studio/web/app/(app)/.../settings/permissions/page.tsx` — tambah group "Cron Tasks" di permission UI.
+- Telegram adapter: tool `cron_create` description + safety rails (pre-existing dari plan 22, diperkuat di revisi).
+
+### Migration & run order
+
+1. `bun db:push` — apply `0018` (jika belum) + `0019` + `0020`.
+2. Restart server.
+3. Hapus cron task lama yang format prompt-nya masih gabungan (pre-context separation); buat ulang via chat agar tersimpan ke `context` jsonb. Atau patch manual via `cron_update` → isi `context.delivery`.
+4. QA: kirim "ingatkan saya jam X" via Telegram → cek `cron_tasks.prompt` = intent pendek; `cron_tasks.context` = { origin, delivery }; saat fire, task conversation input punya `[Cron Trigger]` + `[Cron Delivery]` block terkomposisi.
+5. QA edit: edit pesan user yang trigger cron_create sebelumnya → cron row original TIDAK berubah (side-effectful dedup aktif).
+
+

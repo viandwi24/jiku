@@ -83,6 +83,15 @@ export interface ToolMeta {
    * superadmin) before the tool can be invoked.
    */
   required_plugin_permission?: string
+  /**
+   * Plan 22 revision — if true, the tool has external side effects (writes DB,
+   * sends a message, creates a file, etc). The runner deduplicates these on
+   * replay: if a prior assistant message in the same conversation already has a
+   * tool-invocation with identical tool_name + args, the cached `result` is
+   * returned instead of calling `execute()` again. Prevents duplicate cron task
+   * creation / duplicate connector_send when a user edits an earlier message.
+   */
+  side_effectful?: boolean
 }
 
 /** Plan 15.1: Chunk yielded during tool streaming */
@@ -617,6 +626,20 @@ export interface JikuRunParams {
    * prevents a cron task from recursively creating more cron tasks (infinite loop).
    */
   suppress_tool_ids?: string[]
+  /**
+   * Plan 22 revision — extra system-prompt segments appended to the base system prompt
+   * for this single run only. Used by Studio to inject per-project, per-caller context
+   * (e.g. Company & Team structure, Project Context) without registering a global plugin.
+   * Each segment carries an explicit label so it appears with a meaningful name in the
+   * Context Preview Sheet (instead of "Runtime Segment 1").
+   */
+  extra_system_segments?: Array<{ label: string; content: string }>
+  /**
+   * Plan 22 revision — system-prompt segments injected BEFORE base_prompt.
+   * Use for hard rules that must override agent persona (e.g. "you CAN schedule via cron_create" —
+   * weak agents otherwise default to "I can't" because base_prompt persona dominates).
+   */
+  extra_system_prepend?: Array<{ label: string; content: string }>
   /** Plan 15.2: Semantic similarity scores from Qdrant (memoryId → score 0-1). Injected by studio layer. */
   semantic_scores?: Map<string, number>
 }
@@ -680,7 +703,7 @@ export interface ResolvedScope {
 // ============================================================
 
 export interface ContextSegment {
-  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona' | 'skill'
+  source: 'base_prompt' | 'mode' | 'user_context' | 'plugin' | 'memory' | 'tool_hint' | 'persona' | 'skill' | 'runtime'
   label: string
   content: string
   token_estimate: number
@@ -1127,6 +1150,12 @@ export interface ConnectorContent {
   buttons?: Array<{ text: string; data: string }>
   /** Plan 22 — Override target scope (e.g. thread/topic within a group) */
   target_scope_key?: string
+  /**
+   * Plan 22 revision — when true, adapter simulates a "typing" effect by sending
+   * a placeholder and progressively editing it (text-only sends). Default false —
+   * proactive notifications/broadcasts skip the effect.
+   */
+  simulate_typing?: boolean
 }
 
 export interface ConnectorSendResult {

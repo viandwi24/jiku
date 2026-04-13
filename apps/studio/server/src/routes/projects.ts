@@ -40,15 +40,24 @@ router.patch('/projects/:pid', requirePermission('settings:write'), async (req, 
   const project = await getProjectById(projectId)
   if (!project) { res.status(404).json({ error: 'Project not found' }); return }
 
-  const { name, slug } = req.body as { name?: string; slug?: string }
+  const { name, slug, default_timezone } = req.body as { name?: string; slug?: string; default_timezone?: string }
   if (slug && slug !== project.slug) {
     const existing = await getProjectBySlug(project.company_id, slug)
     if (existing) { res.status(409).json({ error: 'Slug already taken' }); return }
+  }
+  if (default_timezone !== undefined) {
+    // Validate IANA — Intl.supportedValuesOf when available, fallback to formatter probe.
+    const valid = (() => {
+      try { new Intl.DateTimeFormat('en-US', { timeZone: default_timezone }); return true }
+      catch { return false }
+    })()
+    if (!valid) { res.status(400).json({ error: `Invalid IANA timezone: ${default_timezone}` }); return }
   }
 
   const updated = await updateProject(projectId, {
     ...(name !== undefined ? { name } : {}),
     ...(slug !== undefined ? { slug } : {}),
+    ...(default_timezone !== undefined ? { default_timezone } : {}),
   })
   res.json({ project: updated })
 })

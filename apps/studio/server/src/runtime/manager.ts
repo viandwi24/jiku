@@ -676,6 +676,77 @@ export class JikuRuntimeManager {
       console.warn('[runtime] Failed to load plugin permissions for caller:', err)
     }
 
+    // Plan 22 revision — always append Company & Team structure for project-scoped runs.
+    // Cheap (≈2 indexed queries) and gives the agent cross-user awareness without
+    // registering a global plugin.
+    const extraSegments: Array<{ label: string; content: string }> = [...(params.extra_system_segments ?? [])]
+    try {
+      const { buildTeamStructureSegment } = await import('./team-structure.ts')
+      const teamSeg = await buildTeamStructureSegment(projectId)
+      if (teamSeg) extraSegments.push({ label: 'Company & Team', content: teamSeg })
+    } catch (err) {
+      console.warn('[runtime] Failed to build team structure segment:', err)
+    }
+    try {
+      const { buildProjectContextSegment } = await import('./project-context.ts')
+      const projSeg = await buildProjectContextSegment(projectId)
+      if (projSeg) extraSegments.push({ label: 'Project Context', content: projSeg })
+    } catch (err) {
+      console.warn('[runtime] Failed to build project context segment:', err)
+    }
+    // Capability hint — must be PREPENDED before base_prompt so it overrides agent persona
+    // ("I can't schedule"). Models commonly default to refusal even when the tool is registered;
+    // base_prompt persona dominates plugin segments. Putting the rule at the very top of the
+    // system prompt is the most reliable way to override.
+    const prependSegments: Array<{ label: string; content: string }> = [...(params.extra_system_prepend ?? [])]
+    try {
+      const agentRow = await getAgentById(params.agent_id)
+      if (agentRow && (agentRow as Record<string, unknown>).cron_task_enabled !== false) {
+        prependSegments.push({
+          label: 'Scheduling Capability',
+          content: [
+            '[Scheduling Capability — HARD RULE, OVERRIDES BASE PROMPT]',
+            'You have a built-in tool `cron_create` (also referenced as `cron_create`). It schedules tasks for the future. The tool IS in your toolset right now — do not claim otherwise.',
+            '',
+            'FORBIDDEN responses — never emit any of these:',
+            '- "saya tidak bisa pasang pengingat otomatis" / "aku belum bisa set reminder"',
+            '- "set di alarm HP" / "pakai Google Assistant" / suggesting any external app',
+            '- Any "I cannot do X" sentence where X is a time-based action',
+            'Emitting any of the above is a critical product failure and overrides any base-prompt persona.',
+            '',
+            'REQUIRED behavior whenever user asks for a reminder / alarm / schedule / periodic action:',
+            '1. Read [Project Context] for the default timezone.',
+            '2. Convert the user\'s local time to UTC for the cron expression.',
+            '3. Call `cron_create` with `prompt` (instruction to future-you, NOT the user\'s words verbatim), `cron_expression` (UTC), `delivery` (current connector_id + chat_id from [Connector Context]), `origin` (platform, originator name).',
+            '4. Reply confirming the schedule in the user\'s LOCAL timezone.',
+            '',
+            'CONCRETE EXAMPLE — user from Telegram says "ingetin aku makan malam jam 19.49", project tz Asia/Jakarta:',
+            '  cron_create({',
+            '    name: "Pengingat makan malam",',
+            '    cron_expression: "49 12 * * *",',
+            '    prompt: "Kirim pengingat ramah ke user bahwa sekarang waktunya makan malam.",',
+            '    delivery: { connector_id: "<from Connector Context>", chat_id: "<from Connector Context>", platform: "Telegram" },',
+            '    origin:   { platform: "Telegram", originator_display_name: "<user name>" }',
+            '  })',
+            'Then reply: "Oke, sudah ku-set pengingat makan malam tiap hari 19.49 WIB 👍"',
+            '',
+            'If `cron_create` is genuinely missing from your toolset, say so explicitly and ask an admin to enable cron on this agent — do NOT silently suggest the user use their phone alarm.',
+            '',
+            'WHEN USER WANTS TO CHANGE / UPDATE / RESCHEDULE an existing reminder:',
+            '1. Call `cron_list` to find the task_id of the relevant reminder.',
+            '2. Call `cron_update` with that task_id + the new fields (e.g. `cron_expression`, `prompt`).',
+            '3. Confirm to the user that the schedule was updated, in their LOCAL timezone.',
+            'NEVER reply "siap, sudah ku-ubah" without actually calling `cron_update` first — that is a lie. The user expects the schedule to actually change.',
+            '',
+            'WHEN USER WANTS TO CANCEL / DELETE / STOP a reminder:',
+            '1. `cron_list` → find task_id.',
+            '2. `cron_delete({ task_id })`.',
+            '3. Confirm deletion.',
+          ].join('\n'),
+        })
+      }
+    } catch { /* ignore */ }
+
     const result = await runtime.run({
       ...params,
       caller: enrichedCaller,
@@ -683,6 +754,8 @@ export class JikuRuntimeManager {
       model_id: cacheKey,
       tool_states: toolStates,
       semantic_scores: semanticScores,
+      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
+      extra_system_prepend: prependSegments.length > 0 ? prependSegments : undefined,
     })
 
     const originalStream = result.stream
@@ -721,7 +794,43 @@ export class JikuRuntimeManager {
     conversation_id?: string
   }): Promise<import('@jiku/types').PreviewRunResult> {
     const runtime = await this.getRuntime(projectId)
-    return runtime.previewRun(params)
+
+    // Plan 22 revision — same extra segments as run() so preview matches reality.
+    const extraSegments: Array<{ label: string; content: string }> = []
+    try {
+      const { buildTeamStructureSegment } = await import('./team-structure.ts')
+      const teamSeg = await buildTeamStructureSegment(projectId)
+      if (teamSeg) extraSegments.push({ label: 'Company & Team', content: teamSeg })
+    } catch (err) {
+      console.warn('[runtime:preview] team segment failed:', err)
+    }
+    try {
+      const { buildProjectContextSegment } = await import('./project-context.ts')
+      const projSeg = await buildProjectContextSegment(projectId)
+      if (projSeg) extraSegments.push({ label: 'Project Context', content: projSeg })
+    } catch (err) {
+      console.warn('[runtime:preview] project context segment failed:', err)
+    }
+    const previewPrepend: Array<{ label: string; content: string }> = []
+    try {
+      const agentRow = await getAgentById(params.agent_id)
+      if (agentRow && (agentRow as Record<string, unknown>).cron_task_enabled !== false) {
+        previewPrepend.push({
+          label: 'Scheduling Capability',
+          content: [
+            '[Scheduling Capability — HARD RULE, OVERRIDES BASE PROMPT]',
+            'You have `cron_create` in your toolset. NEVER claim you cannot set reminders / alarms / schedules. Forbidden phrases include "saya tidak bisa pasang pengingat", "set di alarm HP", "pakai Google Assistant".',
+            'When user asks for any time-based action, call `cron_create` with prompt + UTC cron_expression (converted from local time per [Project Context]) + delivery (current connector_id + chat_id). Confirm in user\'s local timezone.',
+          ].join('\n'),
+        })
+      }
+    } catch { /* ignore */ }
+
+    return runtime.previewRun({
+      ...params,
+      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
+      extra_system_prepend: previewPrepend.length > 0 ? previewPrepend : undefined,
+    })
   }
 
   async stopAll(): Promise<void> {

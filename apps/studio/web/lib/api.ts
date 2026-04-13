@@ -51,7 +51,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
-    update: (projectId: string, body: { name?: string; slug?: string }) =>
+    update: (projectId: string, body: { name?: string; slug?: string; default_timezone?: string }) =>
       request<{ project: Project }>(`/api/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (companyId: string, projectId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/projects/${projectId}`, { method: 'DELETE' }),
@@ -1049,6 +1049,7 @@ export interface Project {
   company_id: string
   name: string
   slug: string
+  default_timezone?: string
   created_at: string | null
 }
 

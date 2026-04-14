@@ -251,7 +251,7 @@ export default definePlugin({
           name: 'Web Read',
           description: 'Fetch a public URL and return a clean reader-mode article (title, byline, content as Markdown/HTML/text, lead image, publish date). Use for news articles, blog posts, docs. Returns structured fields — do NOT paste the raw content back to the user unless asked; use it as input for further reasoning.',
         },
-        permission: 'web:read',
+        permission: '*',
         modes: ['chat', 'task'],
         input: z.object({
           url: z.string().url().describe('Public HTTP(S) URL to fetch'),
@@ -306,7 +306,7 @@ export default definePlugin({
           name: 'Web Fetch Metadata',
           description: 'Cheap metadata-only fetch for a URL (title, description, og:image, author, site_name). Use this to preview a link without paying the cost of full article extraction.',
         },
-        permission: 'web:read',
+        permission: '*',
         modes: ['chat', 'task'],
         input: z.object({
           url: z.string().url().describe('Public HTTP(S) URL'),
@@ -339,7 +339,7 @@ export default definePlugin({
           name: 'Web Read Many',
           description: 'Batch-read up to 10 URLs in parallel (concurrency 3). Returns per-URL results with errors isolated. Use for multi-source research.',
         },
-        permission: 'web:read',
+        permission: '*',
         modes: ['chat', 'task'],
         input: z.object({
           urls: z.array(z.string().url()).min(1).max(10).describe('List of URLs to fetch (max 10)'),

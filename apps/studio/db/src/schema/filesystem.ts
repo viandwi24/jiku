@@ -45,6 +45,9 @@ export const project_files = pgTable('project_files', {
     sql`lower(${sql.raw('name')})`,
   ),
 
+  // Plan 26 — FS tool permission (null = inherit, 'read+write' | 'read')
+  tool_permission: varchar('tool_permission', { length: 20 }),
+
   created_by:    uuid('created_by').references(() => users.id),
   updated_by:    uuid('updated_by').references(() => users.id),
   created_at:    timestamp('created_at').defaultNow().notNull(),

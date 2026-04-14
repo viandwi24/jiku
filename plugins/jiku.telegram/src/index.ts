@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { definePlugin, ConnectorAdapter } from '@jiku/kit'
 import type {
   ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent,
-  ConnectorSendResult, ConnectorMediaItem, ConnectorEventMedia,
+  ConnectorSendResult, ConnectorMediaItem, ConnectorEventMedia, ResolvedEventContext,
 } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
 import { StudioPlugin } from '@jiku-plugin/studio'
@@ -466,12 +466,33 @@ class TelegramAdapter extends ConnectorAdapter {
     {
       id: 'forward_message',
       name: 'Forward Message',
-      description: 'Forward a message from one chat to another',
+      description: 'Forward a message from one chat to another. IMPORTANT TRADE-OFF: `hide_sender` controls whether the "Forwarded from" header is shown, but this interacts with how Telegram renders custom_emoji (animated Premium emoji). Premium custom_emoji only render when attributed to a Premium user — bots are not Premium accounts. So: (a) hide_sender=true → pesan muncul seolah bot yang author, NO "Forwarded from" header, but custom_emoji fallback ke glyph Unicode statis (kehilangan animasi); (b) hide_sender=false → native forward dengan header "Forwarded from <original sender>", custom_emoji animate utuh karena atribusi ke sender asli yang Premium. Default hide_sender=true. If the source message contains custom_emoji and visual fidelity matters, set hide_sender=false.',
       params: {
         from_chat_id: { type: 'string', description: 'Source chat ID', required: true },
         message_id: { type: 'string', description: 'Message ID to forward', required: true },
         to_chat_id: { type: 'string', description: 'Destination chat ID', required: true },
+        hide_sender: { type: 'boolean', description: 'Hide original sender — no "Forwarded from" header. Default: true. WARNING: hiding the sender routes to copyMessage internally, which makes the bot the new author — Premium custom_emoji in the source will fallback to static Unicode glyphs. To preserve animated custom_emoji set this to false (shows the forward header).', required: false },
         thread_id: { type: 'string', description: 'Destination topic thread ID', required: false },
+        disable_notification: { type: 'boolean', description: 'Send silently (no notification sound)', required: false },
+        protect_content: { type: 'boolean', description: 'Prevent the forwarded copy from being forwarded/saved again', required: false },
+      },
+    },
+    {
+      id: 'copy_message',
+      name: 'Copy Message',
+      description: 'Copy a message to another chat WITHOUT the "Forwarded from" header — bot becomes the new author. CAVEAT: Premium custom_emoji in the source will NOT animate (bots aren\'t Premium accounts, and Telegram renders custom_emoji based on sender identity). Regular formatting (bold, italic, url, mention) IS preserved. Use this to repost "as-if-bot-authored" content where custom_emoji isn\'t critical, or when you want to override the caption while keeping media. If the source uses Premium custom_emoji and fidelity matters, use forward_message with hide_sender=false instead.',
+      params: {
+        from_chat_id: { type: 'string', description: 'Source chat ID', required: true },
+        message_id: { type: 'string', description: 'Message ID to copy', required: true },
+        to_chat_id: { type: 'string', description: 'Destination chat ID', required: true },
+        thread_id: { type: 'string', description: 'Destination topic thread ID', required: false },
+        caption: { type: 'string', description: 'Override caption for media messages. Omit to keep the original caption.', required: false },
+        caption_markdown: { type: 'boolean', description: 'Parse override caption as Markdown. Mutually exclusive with caption_entities.', required: false },
+        caption_entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the override caption — use when you need custom_emoji / text_mention that markdown can\'t express. Mutually exclusive with caption_markdown.', required: false },
+        show_caption_above_media: { type: 'boolean', description: 'Show the caption above the media instead of below (for photo/video messages).', required: false },
+        reply_to_message_id: { type: 'string', description: 'Make the copy a reply to this message_id in the destination chat', required: false },
+        disable_notification: { type: 'boolean', description: 'Send silently (no notification sound)', required: false },
+        protect_content: { type: 'boolean', description: 'Prevent the copy from being forwarded/saved', required: false },
       },
     },
     {
@@ -664,13 +685,94 @@ class TelegramAdapter extends ConnectorAdapter {
       }
 
       case 'forward_message': {
-        const { from_chat_id, message_id, to_chat_id, thread_id } = params as {
-          from_chat_id: string; message_id: string; to_chat_id: string; thread_id?: string
+        const {
+          from_chat_id, message_id, to_chat_id, thread_id,
+          hide_sender, disable_notification, protect_content,
+        } = params as {
+          from_chat_id?: string; message_id?: string; to_chat_id?: string
+          hide_sender?: boolean; thread_id?: string
+          disable_notification?: boolean; protect_content?: boolean
         }
+
+        // Predicted errors — return with actionable hint so the agent can self-recover.
+        if (!from_chat_id) return { success: false, error: 'Missing required param: from_chat_id', hint: 'Pass the source chat_id — find it in inbound event raw_payload.chat.id or connector_get_events result.' }
+        if (!message_id) return { success: false, error: 'Missing required param: message_id', hint: 'Pass the source message_id — find it in inbound event raw_payload.message.message_id.' }
+        if (!to_chat_id) return { success: false, error: 'Missing required param: to_chat_id', hint: 'Pass the destination chat_id. Resolve from target alias via connector_list if needed.' }
+        if (!/^-?\d+$/.test(message_id)) return { success: false, error: `message_id must be numeric, got "${message_id}"`, hint: 'Telegram message_ids are integers. Did you pass a uuid or ref_key by mistake?' }
+
         const opts: Record<string, unknown> = {}
         if (thread_id) opts.message_thread_id = Number(thread_id)
-        const sent = await this.bot.api.forwardMessage(to_chat_id, from_chat_id, Number(message_id), opts as any)
-        return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
+        if (disable_notification) opts.disable_notification = true
+        if (protect_content) opts.protect_content = true
+
+        // Default: hide sender → route to copyMessage (no "Forwarded from" header).
+        // Both APIs preserve entities server-side (including custom_emoji).
+        const effectiveHide = hide_sender ?? true
+        try {
+          const sent = effectiveHide
+            ? await this.bot.api.copyMessage(to_chat_id, from_chat_id, Number(message_id), opts as any)
+            : await this.bot.api.forwardMessage(to_chat_id, from_chat_id, Number(message_id), opts as any)
+
+          // copyMessage returns MessageId { message_id }, forwardMessage returns full Message.
+          const sentAny = sent as { message_id: number; chat?: { id: number } }
+          const chatIdStr = sentAny.chat ? String(sentAny.chat.id) : String(to_chat_id)
+          return {
+            success: true,
+            message_id: String(sentAny.message_id),
+            chat_id: chatIdStr,
+            hidden_sender: effectiveHide,
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          const hint = this.hintForTelegramError(msg, { from_chat_id, to_chat_id, message_id })
+          return { success: false, error: msg, ...(hint ? { hint } : {}) }
+        }
+      }
+
+      case 'copy_message': {
+        const {
+          from_chat_id, message_id, to_chat_id, thread_id,
+          caption, caption_markdown, caption_entities, show_caption_above_media,
+          reply_to_message_id,
+          disable_notification, protect_content,
+        } = params as {
+          from_chat_id?: string; message_id?: string; to_chat_id?: string; thread_id?: string
+          caption?: string; caption_markdown?: boolean; caption_entities?: unknown[]
+          show_caption_above_media?: boolean; reply_to_message_id?: string
+          disable_notification?: boolean; protect_content?: boolean
+        }
+
+        if (!from_chat_id) return { success: false, error: 'Missing required param: from_chat_id', hint: 'Pass the source chat_id.' }
+        if (!message_id) return { success: false, error: 'Missing required param: message_id', hint: 'Pass the source message_id (numeric).' }
+        if (!to_chat_id) return { success: false, error: 'Missing required param: to_chat_id', hint: 'Pass the destination chat_id.' }
+        if (!/^-?\d+$/.test(message_id)) return { success: false, error: `message_id must be numeric, got "${message_id}"`, hint: 'Telegram message_ids are integers.' }
+        if (caption_markdown && caption_entities) return { success: false, error: 'caption_markdown and caption_entities are mutually exclusive', hint: 'Pick one: caption_markdown (convenience) or caption_entities (precise control, required for custom_emoji in caption).' }
+
+        const opts: Record<string, unknown> = {}
+        if (thread_id) opts.message_thread_id = Number(thread_id)
+        if (disable_notification) opts.disable_notification = true
+        if (protect_content) opts.protect_content = true
+        if (show_caption_above_media) opts.show_caption_above_media = true
+        if (reply_to_message_id) opts.reply_parameters = { message_id: Number(reply_to_message_id) }
+        if (caption !== undefined) {
+          if (caption_entities) {
+            opts.caption = caption
+            opts.caption_entities = caption_entities
+          } else if (caption_markdown) {
+            opts.caption = telegramifyMarkdown(caption, 'escape')
+            opts.parse_mode = 'MarkdownV2'
+          } else {
+            opts.caption = caption
+          }
+        }
+        try {
+          const sent = await this.bot.api.copyMessage(to_chat_id, from_chat_id, Number(message_id), opts as any)
+          return { success: true, message_id: String(sent.message_id), chat_id: String(to_chat_id) }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          const hint = this.hintForTelegramError(msg, { from_chat_id, to_chat_id, message_id })
+          return { success: false, error: msg, ...(hint ? { hint } : {}) }
+        }
       }
 
       case 'set_chat_description': {
@@ -693,6 +795,43 @@ class TelegramAdapter extends ConnectorAdapter {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Map common Telegram Bot API error messages to actionable hints for agents.
+   * Returns undefined when the error isn't a known pattern — caller should pass
+   * the raw message through unchanged.
+   */
+  private hintForTelegramError(
+    message: string,
+    ctx: { from_chat_id?: string; to_chat_id?: string; message_id?: string },
+  ): string | undefined {
+    const m = message.toLowerCase()
+    if (m.includes('chat not found')) {
+      return `Bot can't see chat_id ${ctx.to_chat_id ?? ctx.from_chat_id}. Either the bot isn't a member there, the ID is wrong, or the chat was deleted. Check connector_list for known targets.`
+    }
+    if (m.includes('message to forward not found') || m.includes('message to copy not found') || m.includes('message not found')) {
+      return `Message ${ctx.message_id} doesn't exist in chat ${ctx.from_chat_id}, or it was deleted. Verify the message_id from connector_get_events raw_payload.message.message_id.`
+    }
+    if (m.includes('forward_from_chat') || m.includes('forwarding is not allowed') || m.includes('message can\'t be forwarded') || m.includes('forward restricted')) {
+      return `The source chat has "restrict forwarding" enabled, or the message is protected. Try copy_message with hide_sender=true, or send a fresh message using connector_send + params.entities to preserve custom_emoji.`
+    }
+    if (m.includes('bot was blocked') || m.includes('user is deactivated')) {
+      return `The destination user blocked the bot or deactivated their account. Skip and move on.`
+    }
+    if (m.includes('not enough rights') || m.includes('need administrator rights') || m.includes('chat_admin_required')) {
+      return `Bot lacks permission in destination chat ${ctx.to_chat_id}. Ask the admin to promote the bot (and grant "Post Messages" if channel).`
+    }
+    if (m.includes('too many requests') || m.includes('retry after')) {
+      return `Telegram rate limit hit. The send queue already retries — if this still surfaces, throttle your send rate or batch with longer intervals.`
+    }
+    if (m.includes('message_thread_not_found') || m.includes('message thread not found')) {
+      return `The destination topic thread doesn't exist in chat ${ctx.to_chat_id}. Omit thread_id to send to the general channel, or verify the topic ID.`
+    }
+    if (m.includes('bad request: message text is empty')) {
+      return `Source message has no text body — probably a media-only message. Use copy_message with a caption override, or fetch the media via fetch_media first.`
+    }
+    return undefined
+  }
 
   private guessExt(mime: string | undefined, type: string | undefined): string {
     if (mime) {
@@ -1168,14 +1307,30 @@ class TelegramAdapter extends ConnectorAdapter {
     try {
       await this.bot.api.close()
     } catch (err) {
-      // 429 too-early is normal if the bot was never polled yet — ignore.
-      if (!String(err).includes('429')) {
+      // Two expected/harmless outcomes we intentionally swallow:
+      //   429 — bot was never polled in the last 10 min, Telegram refuses close().
+      //   400 "already been closed" — grammy's `bot.stop()` in a recent deactivate
+      //   already issued close() on our behalf; re-closing is a no-op.
+      const s = String(err)
+      const benign = s.includes('429') || s.includes('already been closed')
+      if (!benign) {
         console.warn('[telegram] bot.api.close() before polling failed:', err)
       }
     }
 
-    // If this connector was deactivated recently, wait out Telegram's ~30s
-    // poll-slot reservation so the first getUpdates doesn't come back 409.
+    // Pre-polling wait. Two separate cases:
+    //
+    //   (a) Reactivation inside the same process (Stop+Start / Restart button /
+    //       connector settings save). `lastDeactivateByConnector` has an entry,
+    //       wait out the remainder of Telegram's ~30s slot reservation.
+    //
+    //   (b) Fresh boot — no entry in the map. Under zero-downtime deploys the
+    //       new container is up and healthy BEFORE the old container is told
+    //       to terminate. During that overlap both containers poll the same
+    //       bot token and the new one loses with 409. Add a boot delay so the
+    //       old container has time to shut down and release its long-poll slot
+    //       before we attempt `getUpdates`. Configurable via
+    //       TELEGRAM_BOOT_POLL_DELAY_MS (default 10s). Set to 0 in dev to skip.
     if (this.connectorId) {
       const lastDeact = lastDeactivateByConnector.get(this.connectorId)
       if (lastDeact) {
@@ -1184,6 +1339,12 @@ class TelegramAdapter extends ConnectorAdapter {
         if (remain > 0) {
           console.log(`[telegram] waiting ${Math.ceil(remain / 1000)}s for Telegram poll-slot release before starting`)
           await new Promise<void>(r => setTimeout(r, remain))
+        }
+      } else {
+        const bootDelayMs = Number(process.env['TELEGRAM_BOOT_POLL_DELAY_MS'] ?? 10_000)
+        if (bootDelayMs > 0) {
+          console.log(`[telegram] fresh-boot wait ${Math.ceil(bootDelayMs / 1000)}s before polling (lets old zero-downtime container release its slot)`)
+          await new Promise<void>(r => setTimeout(r, bootDelayMs))
         }
       }
     }
@@ -1307,7 +1468,380 @@ class TelegramAdapter extends ConnectorAdapter {
     if (threadId) commonOpts.message_thread_id = Number(threadId)
     if (replyToId) commonOpts.reply_parameters = { message_id: Number(replyToId) }
 
+    // Plan 27 — merge platform-specific extras into commonOpts so Telegram
+    // Bot API receives them. Agent-facing keys are documented via getParamSchema().
+    if (content.params) {
+      for (const [k, v] of Object.entries(content.params)) {
+        if (v === undefined || v === null) continue
+        if (k === 'reply_to_message_id') {
+          // Translate to modern reply_parameters shape.
+          commonOpts.reply_parameters = { message_id: Number(v) }
+        } else if (k === 'message_thread_id') {
+          commonOpts.message_thread_id = Number(v)
+        } else {
+          commonOpts[k] = v
+        }
+      }
+    }
+
     return enqueueForChat(chatId, () => this.sendMessageInner(chatId!, content, commonOpts))
+  }
+
+  /** Plan 27 — Telegram send param schema surfaced to agents via connector_list. */
+  override getParamSchema() {
+    return [
+      {
+        name: 'reply_to_message_id',
+        type: 'number' as const,
+        description: 'Make this message a reply to an existing Telegram message_id in the same chat. Prefer using connector_send\'s `reply_to_ref_keys` when you already have a message_id — use this param when you only know the numeric id (e.g. from connector_get_event.raw_payload).',
+        example: 1042,
+      },
+      {
+        name: 'parse_mode',
+        type: 'enum' as const,
+        enum_values: ['MarkdownV2', 'HTML'],
+        description: 'Override the default parse mode. The top-level `markdown:true` field already handles MarkdownV2 escape; set this to "HTML" when you need to send raw HTML. MUTUALLY EXCLUSIVE with `entities` — if both are supplied, `entities` wins and parse_mode is ignored.',
+        example: 'HTML',
+      },
+      {
+        name: 'entities',
+        type: 'array' as const,
+        description: 'Raw Telegram MessageEntity[] for precise formatting control. Required for `custom_emoji` (animated premium) and `text_mention` by user_id — these cannot be expressed via markdown/HTML. When supplied: (a) `parse_mode` and top-level `markdown` are auto-ignored, (b) `text` must be raw (no markdown syntax), (c) entity `offset`/`length` are in UTF-16 code units (use string `.length`), (d) only applies to the first chunk if the message is split. Forwarding a received message verbatim? Prefer the `forward_message` or `copy_message` action — Telegram preserves all entities natively without you having to rebuild them.',
+        example: [{ type: 'bold', offset: 0, length: 5 }, { type: 'custom_emoji', offset: 6, length: 2, custom_emoji_id: '5370870691140737817' }],
+      },
+      {
+        name: 'disable_web_page_preview',
+        type: 'boolean' as const,
+        description: 'Suppress link previews in the message.',
+        example: true,
+      },
+      {
+        name: 'message_thread_id',
+        type: 'number' as const,
+        description: 'Forum topic thread_id. Usually inferred from target.ref_keys.thread_id — pass explicitly when the thread differs from the target context.',
+        example: 42,
+      },
+      {
+        name: 'protect_content',
+        type: 'boolean' as const,
+        description: 'Prevent Telegram clients from forwarding/saving the message.',
+        example: true,
+      },
+      {
+        name: 'disable_notification',
+        type: 'boolean' as const,
+        description: 'Send the message silently — no notification sound for recipients.',
+        example: true,
+      },
+      {
+        name: 'allow_sending_without_reply',
+        type: 'boolean' as const,
+        description: 'If the reply target is missing/deleted, send anyway (default: false).',
+        example: true,
+      },
+    ]
+  }
+
+  /**
+   * Plan 28 — Real-time streaming outbound for resolved inbound events.
+   *
+   * Event-router hands off here after binding + identity + conversation are
+   * resolved. We own:
+   *   1. Sending the initial "⌛" placeholder as a reply to the user's message.
+   *   2. Consuming the agent stream natively — edit placeholder on each batch
+   *      of text-delta chunks (debounced 700ms to respect Telegram's edit rate).
+   *   3. Rendering tool-call chunks as `[🔧] tool_name` in a header block above
+   *      the response; flipping to `[☑️]` on tool result, `[❌]` on error.
+   *   4. Splitting at Telegram's 4000-char cap — finalize current message, open
+   *      a fresh "⌛" placeholder, continue there.
+   *   5. Final edit applies MarkdownV2 escaping; falls back to plain on parse fail.
+   *   6. Logging outbound message + event + usage via the ctx callables, so the
+   *      Messages UI / Usage dashboard stay in parity with the HTTP /chat path.
+   *   7. Tee a branch of the stream back to the host for SSE observers (chat web).
+   */
+  override async handleResolvedEvent(ctx: ResolvedEventContext): Promise<void> {
+    if (!this.bot) return
+
+    const chatId = ctx.event.ref_keys['chat_id']
+    if (!chatId) return
+    const threadId = ctx.event.ref_keys['thread_id']
+    const replyToMsgId = ctx.event.ref_keys['message_id']
+
+    const replyTarget: Record<string, unknown> = {}
+    if (threadId) replyTarget['message_thread_id'] = Number(threadId)
+    if (replyToMsgId) replyTarget['reply_parameters'] = { message_id: Number(replyToMsgId) }
+
+    // 1. Initial placeholder.
+    let currentMsgId: number
+    try {
+      const sent = await withTelegramRetry(
+        () => this.bot!.api.sendMessage(chatId, '⌛', replyTarget as any),
+        'telegram:stream:placeholder',
+      )
+      currentMsgId = sent.message_id
+    } catch (err) {
+      console.warn('[telegram] handleResolvedEvent: placeholder send failed', err)
+      return
+    }
+
+    // 2. Start run + tee stream.
+    const run = await ctx.startRun()
+    const [selfStream, observerStream] = run.stream.tee()
+    const observer = ctx.registerObserverStream(observerStream)
+
+    // 3. Streaming render state.
+    // Plan 28 revision — interleaved segment model. Text and tool groups render
+    // in chronological order, separated by `---` dividers so users see the
+    // narrative: "bot said X → called tool Y → said Z". Consecutive tools merge
+    // into one group; consecutive text deltas append to the same text segment.
+    type ToolItem = { id: string; name: string; status: 'running' | 'done' | 'error' }
+    type Segment = { type: 'text'; content: string } | { type: 'tools'; items: ToolItem[] }
+    const segments: Segment[] = []
+    const toolIndex = new Map<string, { groupIdx: number; itemIdx: number }>()
+
+    const appendText = (delta: string): void => {
+      if (!delta) return
+      const last = segments[segments.length - 1]
+      if (last && last.type === 'text') last.content += delta
+      else segments.push({ type: 'text', content: delta })
+    }
+
+    const pushTool = (id: string, name: string): void => {
+      if (toolIndex.has(id)) return
+      const last = segments[segments.length - 1]
+      if (last && last.type === 'tools') {
+        last.items.push({ id, name, status: 'running' })
+        toolIndex.set(id, { groupIdx: segments.length - 1, itemIdx: last.items.length - 1 })
+      } else {
+        segments.push({ type: 'tools', items: [{ id, name, status: 'running' }] })
+        toolIndex.set(id, { groupIdx: segments.length - 1, itemIdx: 0 })
+      }
+    }
+
+    const updateToolStatus = (id: string | undefined, status: 'done' | 'error'): void => {
+      const pos = id ? toolIndex.get(id) : undefined
+      if (pos) {
+        const group = segments[pos.groupIdx]
+        if (group?.type === 'tools') {
+          const item = group.items[pos.itemIdx]
+          if (item) item.status = status
+        }
+        return
+      }
+      // Fallback — flip the newest still-running tool anywhere in segments.
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const s = segments[i]
+        if (s?.type !== 'tools') continue
+        for (let j = s.items.length - 1; j >= 0; j--) {
+          if (s.items[j]!.status === 'running') { s.items[j]!.status = status; return }
+        }
+      }
+    }
+
+    const iconFor = (s: 'running' | 'done' | 'error'): string =>
+      s === 'done' ? '[☑️]' : s === 'error' ? '[❌]' : '[🔧]'
+
+    const allTools = (): ToolItem[] => {
+      const out: ToolItem[] = []
+      for (const seg of segments) if (seg.type === 'tools') out.push(...seg.items)
+      return out
+    }
+
+    let usageInput = 0
+    let usageOutput = 0
+    let providerId: string | null = null
+    let modelId: string | null = null
+    let runSnapshot: { system_prompt?: string; messages?: unknown[]; response?: string; tools?: string[]; adapter?: string } | null = null
+
+    const DEBOUNCE_MS = 700
+    let editChain: Promise<void> = Promise.resolve()
+    let pendingTimer: NodeJS.Timeout | null = null
+    let finalizing = false
+
+    const renderInterim = (): string => {
+      if (segments.length === 0) return '⌛'
+      const parts = segments.map(seg => {
+        if (seg.type === 'text') return seg.content
+        return seg.items.map(t => `${iconFor(t.status)} ${t.name}`).join('\n')
+      })
+      return parts.join('\n---\n')
+    }
+
+    const overflow = (): boolean => renderInterim().length > TELEGRAM_MAX_LENGTH - 200
+
+    const flushEdit = () => {
+      pendingTimer = null
+      if (finalizing) return
+      editChain = editChain.then(async () => {
+        if (finalizing) return
+        if (overflow()) {
+          // Finalize what we have; open a fresh placeholder for continuation.
+          const finalPart = renderInterim()
+          await this.bot!.api.editMessageText(chatId, currentMsgId, finalPart).catch(() => {})
+          try {
+            const sent = await withTelegramRetry(
+              () => this.bot!.api.sendMessage(chatId, '⌛', replyTarget as any),
+              'telegram:stream:continuation',
+            )
+            currentMsgId = sent.message_id
+          } catch { return }
+          segments.length = 0
+          toolIndex.clear()
+        }
+        const text = renderInterim()
+        try {
+          await this.bot!.api.editMessageText(chatId, currentMsgId, text)
+        } catch {
+          // Swallow — transient rate-limit / no-change. Next tick retries.
+        }
+      })
+    }
+
+    const scheduleEdit = () => {
+      if (pendingTimer || finalizing) return
+      pendingTimer = setTimeout(flushEdit, DEBOUNCE_MS)
+    }
+
+    // 4. Consume stream.
+    const reader = selfStream.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const v = value as {
+          type: string
+          delta?: string
+          textDelta?: string
+          data?: { input_tokens?: number; output_tokens?: number; provider_id?: string; model_id?: string; system_prompt?: string; messages?: unknown[]; response?: string; tools?: string[]; adapter?: string }
+          toolCallId?: string
+          toolName?: string
+        }
+
+        if (v.type === 'text-delta' || v.type === 'text' || v.type === 'text-start') {
+          const delta = v.delta ?? v.textDelta ?? ''
+          appendText(delta)
+          if (delta) scheduleEdit()
+        } else if (
+          v.type === 'tool-call' ||
+          v.type === 'tool-input-start' ||
+          v.type === 'tool-input-available' ||
+          v.type === 'data-jiku-tool-start'
+        ) {
+          const id = v.toolCallId ?? `tool-${toolIndex.size}`
+          const name = v.toolName ?? (v.data as { tool_id?: string } | undefined)?.tool_id ?? 'tool'
+          pushTool(id, name)
+          scheduleEdit()
+        } else if (
+          v.type === 'tool-result' ||
+          v.type === 'tool-output-available' ||
+          v.type === 'data-jiku-tool-end'
+        ) {
+          updateToolStatus(v.toolCallId ?? (v.data as { tool_call_id?: string } | undefined)?.tool_call_id, 'done')
+          scheduleEdit()
+        } else if (v.type === 'tool-error' || v.type === 'data-jiku-tool-error') {
+          updateToolStatus(v.toolCallId, 'error')
+          scheduleEdit()
+        } else if (v.type === 'data-jiku-usage') {
+          usageInput = v.data?.input_tokens ?? 0
+          usageOutput = v.data?.output_tokens ?? 0
+        } else if (v.type === 'data-jiku-meta') {
+          providerId = v.data?.provider_id ?? providerId
+          modelId = v.data?.model_id ?? modelId
+        } else if (v.type === 'data-jiku-run-snapshot') {
+          runSnapshot = v.data as NonNullable<typeof runSnapshot>
+        }
+      }
+    } finally {
+      reader.releaseLock()
+      observer.done()
+    }
+
+    // 5. Final edit — wait for any pending debounced edit, then do the clean
+    // MarkdownV2 render.
+    finalizing = true
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+    await editChain
+
+    // Assemble final text: empty → "(no response)"; else render segments with
+    // MarkdownV2, italic-wrap tool lines, escaped `---` separators between
+    // segments.
+    const hasContent = segments.some(s => (s.type === 'text' && s.content.trim() !== '') || (s.type === 'tools' && s.items.length > 0))
+    const escapeMdV2 = (s: string): string => s.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1')
+    const finalBody = hasContent
+      ? segments.map(seg => {
+          if (seg.type === 'text') return telegramifyMarkdown(seg.content, 'escape')
+          // Italic tool lines — _[icon] name_ (MarkdownV2). Tool names often have
+          // underscores so escape them before wrapping.
+          return seg.items
+            .map(t => `_${escapeMdV2(iconFor(t.status))} ${escapeMdV2(t.name)}_`)
+            .join('\n')
+        }).join('\n\\-\\-\\-\n')
+      : escapeMdV2('(no response)')
+
+    // "message is not modified" means the interim edit already landed the exact
+    // same content — that's a success condition, not a failure. Happens when a
+    // response has no MarkdownV2-escapable characters (so escaped === plain) and
+    // the last debounced edit already rendered the full text.
+    const isNotModifiedError = (err: unknown): boolean => {
+      const desc = (err as { description?: string; error_code?: number } | null)?.description ?? ''
+      return desc.includes('message is not modified')
+    }
+
+    try {
+      await withTelegramRetry(
+        () => this.bot!.api.editMessageText(chatId, currentMsgId, finalBody, { parse_mode: 'MarkdownV2' }),
+        'telegram:stream:final',
+      )
+    } catch (err) {
+      if (isNotModifiedError(err)) {
+        // No-op success — content already on screen. Move on.
+      } else {
+        console.warn('[telegram] stream final edit (markdown) failed, falling back to plain:', err)
+        // Plain fallback: render interim form (no markdown, plain `---`).
+        await this.bot!.api.editMessageText(chatId, currentMsgId, renderInterim()).catch(plainErr => {
+          if (!isNotModifiedError(plainErr)) {
+            console.warn('[telegram] stream final plain fallback also failed:', plainErr)
+          }
+        })
+      }
+    }
+
+    // 6. Log outbound + record usage.
+    const sendResult: ConnectorSendResult = {
+      success: true,
+      ref_keys: { message_id: String(currentMsgId), chat_id: chatId },
+      raw_payload: { streamed: true, message_id: currentMsgId },
+    }
+    // Snapshot for outbound log / usage — use the plain interim form for
+    // `content_snapshot` so DB rows stay human-readable without MarkdownV2 escapes.
+    const plainSnapshot = renderInterim()
+    await ctx.logOutboundMessage({
+      ref_keys: sendResult.ref_keys!,
+      content_snapshot: plainSnapshot,
+      raw_payload: sendResult,
+      status: 'sent',
+    }).catch(() => null)
+    await ctx.logOutboundEvent({
+      event_type: 'send_message',
+      ref_keys: sendResult.ref_keys!,
+      payload: { text: plainSnapshot, markdown: true, source: 'resolved_event_stream', tools: allTools().map(s => ({ name: s.name, status: s.status })) },
+      raw_payload: sendResult,
+      status: 'routed',
+    }).catch(() => null)
+
+    if (usageInput > 0 || usageOutput > 0) {
+      ctx.recordUsage({
+        input_tokens: usageInput,
+        output_tokens: usageOutput,
+        provider: providerId,
+        model: modelId,
+        raw_system_prompt: runSnapshot?.system_prompt ?? null,
+        raw_messages: runSnapshot?.messages ?? null,
+        raw_response: runSnapshot?.response ?? plainSnapshot,
+        active_tools: runSnapshot?.tools ?? null,
+        agent_adapter: runSnapshot?.adapter ?? null,
+      })
+    }
   }
 
   private async sendMessageInner(
@@ -1328,21 +1862,34 @@ class TelegramAdapter extends ConnectorAdapter {
       // Text
       const rawText = content.text ?? ''
 
+      // Mutual exclusion: Telegram Bot API doesn't allow `parse_mode` and
+      // `entities` in the same request. When the agent supplies `params.entities`
+      // explicitly (needed for custom_emoji / text_mention which markdown can't
+      // express), we bypass the markdown escaping path entirely. The
+      // user-provided entities take precedence.
+      const hasExplicitEntities = Array.isArray((commonOpts as { entities?: unknown }).entities)
+      const useMarkdown = content.markdown === true && !hasExplicitEntities
+
       // Plan 22 revision — typing simulation: send placeholder, reveal progressively
       // by editing every ~3s. Only for single-message text (skip when text overflows
       // Telegram's 4000-char limit — falls back to chunked send below).
       if (content.simulate_typing && rawText.length > 0 && rawText.length <= TELEGRAM_MAX_LENGTH) {
-        return await this.sendWithTypingSimulation(chatId, rawText, content.markdown === true, commonOpts)
+        return await this.sendWithTypingSimulation(chatId, rawText, useMarkdown, commonOpts)
       }
 
-      const text = content.markdown ? telegramifyMarkdown(rawText, 'escape') : rawText
+      const text = useMarkdown ? telegramifyMarkdown(rawText, 'escape') : rawText
       const chunks = splitMessage(text)
       let lastSent: { message_id: number; chat: { id: number } } | null = null
 
       for (let i = 0; i < chunks.length; i++) {
         const opts: Record<string, unknown> = { ...commonOpts }
-        if (content.markdown) opts.parse_mode = 'MarkdownV2'
-        if (i > 0) delete (opts as any).reply_parameters
+        if (useMarkdown) opts.parse_mode = 'MarkdownV2'
+        // When entities is supplied, it only applies to the first chunk (offset
+        // base is the start of the message). Subsequent chunks send raw.
+        if (i > 0) {
+          delete (opts as any).reply_parameters
+          delete (opts as any).entities
+        }
         lastSent = await withTelegramRetry(
           () => this.bot!.api.sendMessage(chatId, chunks[i] || '-', opts as any),
           'telegram:sendMessage',

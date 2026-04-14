@@ -2,6 +2,8 @@ import { createTaskConversation, updateConversation, getConversationById, getMes
 import { runtimeManager } from '../runtime/manager.ts'
 import { buildProgressTool } from './progress-tool.ts'
 import { recordLLMUsage } from '../usage/tracker.ts'
+import { dispatchSlashCommand } from '../commands/dispatcher.ts'
+import { scanReferences } from '../references/hint.ts'
 import type { CallerContext } from '@jiku/types'
 
 /** Build a system CallerContext (no real user) for task/heartbeat runs */
@@ -65,11 +67,24 @@ export async function runTaskConversation(
     // Plan 15.8: Inject progress tool for task mode
     const progressTool = buildProgressTool(conversationId)
 
+    // Plan 24 — dispatcher: allow cron/heartbeat/task prompts to invoke `/slug`.
+    const surface: 'cron' | 'heartbeat' | 'task' = opts.triggeredByCron ? 'cron' : 'task'
+    const cmd = await dispatchSlashCommand({
+      projectId, agentId, input: goal, surface, userId: callerId,
+    }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
+    const afterDispatch = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
+
+    // Plan 25 — @file reference hint
+    const refScan = await scanReferences({
+      projectId, text: afterDispatch, userId: callerId, surface,
+    }).catch(() => ({ hintBlock: null } as const))
+    const resolvedGoal = refScan.hintBlock ? `${refScan.hintBlock}\n\n${afterDispatch}` : afterDispatch
+
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
       caller,
       mode: 'task',
-      input: goal,
+      input: resolvedGoal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
       // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:

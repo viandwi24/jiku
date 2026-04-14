@@ -4,12 +4,19 @@ import React, { useState, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { FilesystemEntry, FilesystemFileEntry } from '@/lib/api'
-import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@jiku/ui'
+import {
+  Button,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+  Badge,
+} from '@jiku/ui'
 import { toast } from 'sonner'
 import {
   Folder, FileText, ChevronRight, Upload, Plus,
   RefreshCw, Loader2, Search, Copy, X, Save, Eye,
   MoreHorizontal, Pencil, FolderOpen, Trash2, FolderPlus,
+  Lock, Shield, Check,
 } from 'lucide-react'
 import { FileDetailPanel } from './file-detail-panel'
 
@@ -30,9 +37,11 @@ interface EntryDropdownProps {
   onCopyPath: () => void
   onDelete: () => void
   onOpen?: () => void
+  onSetPermission: (permission: 'read' | 'read+write' | null) => void
 }
 
-export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen }: EntryDropdownProps) {
+export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, onSetPermission }: EntryDropdownProps) {
+  const current = entry.tool_permission ?? null
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild onClick={e => e.stopPropagation()}>
@@ -43,7 +52,7 @@ export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen }:
           <MoreHorizontal className="w-3.5 h-3.5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-35" onClick={e => e.stopPropagation()}>
+      <DropdownMenuContent align="end" className="min-w-40" onClick={e => e.stopPropagation()}>
         {onOpen && (
           <DropdownMenuItem onClick={onOpen} className="text-xs gap-2">
             {entry.type === 'folder' ? <FolderOpen className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -59,12 +68,79 @@ export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen }:
           Copy path
         </DropdownMenuItem>
         <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="text-xs gap-2">
+            <Shield className="w-3.5 h-3.5" />
+            Tool permission
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="min-w-52">
+            <div className="px-2 py-1.5 text-[10px] text-muted-foreground">
+              Controls agent filesystem tools (fs_write, fs_edit, fs_delete, etc.). UI edits are never gated.
+            </div>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => onSetPermission('read+write')} className="text-xs gap-2">
+              {current === 'read+write' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+              Read + Write
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSetPermission('read')} className="text-xs gap-2">
+              {current === 'read' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+              Read only
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSetPermission(null)} className="text-xs gap-2">
+              {current === null ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+              Inherit from parent
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-red-500 focus:text-red-500">
           <Trash2 className="w-3.5 h-3.5" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+interface PermissionBadgeProps {
+  projectId: string
+  entry: FilesystemEntry
+}
+
+export function ToolPermissionBadge({ projectId, entry }: PermissionBadgeProps) {
+  const { data } = useQuery({
+    queryKey: ['file-permission', projectId, entry.path],
+    queryFn: () => api.filesystem.getPermission(projectId, entry.path),
+    enabled: !!projectId && !!entry.path,
+    staleTime: 10_000,
+  })
+  if (!data) {
+    // Fast-path: if entry has explicit read, show lock immediately.
+    if (entry.tool_permission === 'read') {
+      return (
+        <Lock className="w-3 h-3 text-amber-500 shrink-0" />
+      )
+    }
+    return null
+  }
+  if (data.effective === 'read+write') return null
+  const tooltip =
+    data.source === 'self'
+      ? 'Read-only (set on this item)'
+      : data.source === 'inherited'
+        ? `Read-only (inherited from ${data.source_path ?? 'parent'})`
+        : 'Read-only (default)'
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="shrink-0 inline-flex items-center">
+            <Lock className={`w-3 h-3 ${data.source === 'self' ? 'text-amber-500' : 'text-muted-foreground'}`} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">{tooltip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
@@ -150,6 +226,18 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
       toast.success('Renamed')
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Rename failed'),
+  })
+
+  const setPermissionMutation = useMutation({
+    mutationFn: ({ path, type, permission }: { path: string; type: 'file' | 'folder'; permission: 'read' | 'read+write' | null }) =>
+      api.filesystem.setPermission(projectId, { path, type, permission }),
+    onSuccess: (_res, vars) => {
+      qc.invalidateQueries({ queryKey: ['files', projectId] })
+      qc.invalidateQueries({ queryKey: ['file-permission', projectId] })
+      const label = vars.permission === null ? 'inherit from parent' : vars.permission
+      toast.success(`Tool permission set: ${label}`)
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to update permission'),
   })
 
   const createFolderMutation = useMutation({
@@ -374,6 +462,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
                   >
                     {getEntryIcon(entry)}
                     <span className="flex-1 truncate">{entry.name}</span>
+                    <ToolPermissionBadge projectId={projectId} entry={entry} />
                     {entry.type === 'file' && (
                       <span className="text-muted-foreground shrink-0 mr-1">{formatSize(entry.size_bytes)}</span>
                     )}
@@ -387,6 +476,9 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
                       onOpen={() => handleNavigate(entry)}
                       onRename={() => { setRenamingEntry(entry); setRenameValue(entry.name) }}
                       onCopyPath={() => { navigator.clipboard.writeText(entry.path); toast.success('Path copied') }}
+                      onSetPermission={(permission) =>
+                        setPermissionMutation.mutate({ path: entry.path, type: entry.type, permission })
+                      }
                       onDelete={() => {
                         if (!confirm(`Delete ${entry.type === 'folder' ? 'folder and all contents' : 'file'} "${entry.name}"?`)) return
                         if (entry.type === 'folder') deleteFolderMutation.mutate(entry.path)

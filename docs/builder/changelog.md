@@ -1,5 +1,116 @@
 # Changelog
 
+## 2026-04-14 — Plan 28 revisions: segment render + `message is not modified` guard
+
+**Changed:** Two post-ship refinements to the Telegram streaming adapter.
+
+1. **Render model refactor** — from fixed-header (all tools pinned at top) to interleaved `segments[]` so rendering follows chronological narrative:
+   ```
+   text part 1
+   ---
+   [☑️] fs_read
+   [☑️] connector_list
+   ---
+   text part 2
+   ---
+   [☑️] connector_send
+   ---
+   closing text
+   ```
+   Consecutive text-delta chunks append to the current text segment; consecutive tool-call chunks merge into the current tool group; transition between types inserts `---`. Final MarkdownV2 render wraps tool lines in italic (`_[icon] name_`) with MarkdownV2-escaped tool names, and escapes `\-\-\-` for the separator. Interim edits stay plain (no parse_mode, literal `---`) to avoid MarkdownV2 parse errors on incomplete content.
+
+2. **"message is not modified" guard** — Telegram rejects editMessageText with `400: Bad Request: message is not modified` when the rendered output matches the existing message. Happens when the response has no MarkdownV2-escapable chars and the last debounced interim edit already landed the full text. Now treated as a no-op success (content is already on screen) rather than a warning + plain fallback. Plain fallback path also checks the same error to avoid log spam.
+
+3. **`ConnectorParamSpec` widening** — `type` now accepts `'array' | 'object'`; `example` allows arrays and records (linter-applied user change in `packages/kit/src/index.ts`).
+
+**Files touched:** `plugins/jiku.telegram/src/index.ts`, `packages/kit/src/index.ts`, `docs/builder/{current,changelog,decisions,memory}.md`, `docs/feats/connectors.md`.
+
+## 2026-04-14 — Plan 28: streaming outbound via adapter handoff (`handleResolvedEvent`)
+
+**Changed:** Connector event-router no longer drains the agent stream to completion before sending to the platform. Added `handleResolvedEvent?(ctx: ResolvedEventContext)` to `ConnectorAdapter` in `@jiku/kit`. When an adapter implements it, the event-router resolves binding/identity/conversation, builds the context block + @file hint, then hands off a `ResolvedEventContext` with injected service callables (`startRun`, `registerObserverStream`, `logOutboundMessage`, `logOutboundEvent`, `recordUsage`). Adapter owns queueing + stream consumption + outbound send + logging from there.
+
+Telegram adapter implementation:
+- Sends `⌛` placeholder immediately as a reply to the user's message.
+- Consumes the agent stream natively; debounced 700ms edits from `text-delta` chunks.
+- Renders tool-call chunks as `[🔧] tool_name` header block; flips to `[☑️]` on result, `[❌]` on error.
+- Splits at 4000-char Telegram cap by finalizing current message + opening fresh `⌛` continuation.
+- Final edit applies MarkdownV2 escape with plain-text fallback.
+- Tees stream back to host via `registerObserverStream` so chat web SSE observers keep receiving chunks in parallel.
+
+User-visible: streaming now appears concurrent between web UI and Telegram (no more "stream finishes then Telegram starts"); tool invocations visible during processing; queue-position notice ("⏳ posisi #N") added to `queue_mode='ack_queue'` ack message.
+
+Backward compat: adapters without `handleResolvedEvent` fall through to the legacy accumulate-then-sendMessage path.
+
+**Files touched:**
+- `packages/types/src/index.ts` — `ResolvedEventContext` interface.
+- `packages/kit/src/index.ts` — `handleResolvedEvent?` method + re-export.
+- `apps/studio/server/src/connectors/event-router.ts` — build ResolvedEventContext + hand off; queue-position notice tweak.
+- `plugins/jiku.telegram/src/index.ts` — `handleResolvedEvent` override with streaming render engine.
+- `docs/builder/decisions.md` — ADR-087.
+
+## 2026-04-14 — Scenario 1 foundations: Commands, @file hint, FS tool permission, Connector params
+
+Landed four high-priority features from `docs/scenarios/1-manage-a-channel-with-agent.md` §9 so the scenario runs clean in production.
+
+**Plan 24 — Commands system (user-triggered `/slash`, FS + plugin, mirrors Skills).**
+- Migration `0030_plan24_commands.sql` — `project_commands`, `agent_commands`, `agents.command_access_mode` (`manual` | `all`).
+- Schema + queries in db package; exports added to `@jiku-studio/db`.
+- Core: `parseCommandDoc`, `resolveCommandEntrypoint`, `CommandRegistry` (mirror of Skills), types `CommandManifest`, `CommandSource`, `CommandEntry`, `CommandArgSpec`, `PluginCommandSpec`, `CommandDispatchResult`, `CommandAccessMode`.
+- Studio: `CommandLoader` (`/commands/<slug>/COMMAND.md` folder OR `/commands/<slug>.md` single file) + `dispatchSlashCommand()` that detects `/slug ...` prefix on FIRST user text, resolves body, parses args, composes `body + <command_args>` and returns a rewritten input. Dispatcher is called in chat route, task/cron/heartbeat runner.
+- Runtime manager auto-syncs the `/commands` folder on project init.
+- Routes: `/projects/:pid/commands` CRUD, `/refresh`, `/agents/:aid/commands` allow-list, `/command-access-mode`.
+- Audit: `command.invoke`, `command.assignment_changed`, `command.source_changed`.
+- UI: project Commands page + per-agent allow-list page, sidebar link, API client `api.commands.*`.
+
+**Plan 25 — Reference hint provider (`@file`).**
+- `src/references/hint.ts` — scans input for `@path/to/file` mentions (workspace-root default, rejects `..`, rejects `./` in MVP, ignores `@alice` non-path-like), stats each match via `getFileByPath`, injects a `<user_references>` block listing ok + not_found entries with size + mtime + `LARGE` tag for files > 1 MB. Cap 20 per invocation.
+- Wired into chat route (after command dispatch), task runner (cron/heartbeat/task), and connector inbound (`src/connectors/event-router.ts`).
+- Agent still reads content on-demand via `fs_read` — zero eager expansion.
+- Audit: `reference.scan` with `{ surface, total, ok, missing }`.
+
+**Plan 26 — FS tool permission via metadata.**
+- Migration `0031_plan26_fs_tool_permission.sql` — `tool_permission` column on `project_files` + `project_folders` (`'read+write' | 'read' | NULL` for inherit).
+- Resolver `resolveFsToolPermission(projectId, path)` — walks parent folder chain; self → ancestors → default `read+write`. Returns `{ effective, source, source_path }`.
+- Enforcement gate in `fs_write`, `fs_edit`, `fs_append`, `fs_move` (both from + to), `fs_delete`. Returns `FS_TOOL_READONLY` with a hint pointing to the source of the restriction. Read operations (`fs_read`, `fs_list`, `fs_search`) are never gated — "shared open" semantics.
+- Routes: `GET /projects/:pid/files/permission?path=` + `PATCH /projects/:pid/files/permission`.
+- Audit: `fs.permission_set`, `fs.permission_denied`.
+- UI: file explorer context menu (delegated, in progress).
+
+**Plan 27 — Connector custom params + hint injection.**
+- Added `ConnectorParamSpec` type + optional `getParamSchema()` on `ConnectorAdapter` in `@jiku/kit`.
+- Added `params?: Record<string, unknown>` on `ConnectorContent` in `@jiku/types`.
+- `connector_send` + `connector_send_to_target` tools accept `params`, validate against the adapter's declared schema (unknown keys → `INVALID_PARAMS` error with valid_params list).
+- `connector_list` tool emits per-connector `param_schema` so agents discover valid keys context-aware.
+- Telegram adapter declares 7 params: `reply_to_message_id`, `parse_mode` (HTML override), `disable_web_page_preview`, `message_thread_id`, `protect_content`, `disable_notification`, `allow_sending_without_reply`. `sendMessage` merges these into the Telegram Bot API `commonOpts` (translating `reply_to_message_id` → modern `reply_parameters`).
+
+**Migrations to apply before deploy:**
+- `0030_plan24_commands.sql`
+- `0031_plan26_fs_tool_permission.sql`
+
+**Files:**
+- DB: `apps/studio/db/src/migrations/0030_*.sql`, `0031_*.sql`, `schema/commands.ts`, `schema/filesystem.ts`, `schema/filesystem-folders.ts`, `queries/commands.ts`, `queries/filesystem-permission.ts`, `schema/index.ts`, `index.ts`.
+- Core + types: `packages/core/src/commands/{manifest,registry}.ts`, `packages/core/src/index.ts`, `packages/types/src/index.ts`, `packages/kit/src/index.ts`.
+- Studio server: `src/commands/{loader,dispatcher}.ts`, `src/references/hint.ts`, `src/filesystem/tools.ts`, `src/routes/{commands,chat,filesystem}.ts`, `src/task/runner.ts`, `src/connectors/{event-router,tools}.ts`, `src/runtime/manager.ts`, `src/audit/logger.ts`, `src/index.ts`.
+- Telegram plugin: `plugins/jiku.telegram/src/index.ts`.
+- Web UI: `app/(app)/studio/companies/[company]/projects/[project]/commands/page.tsx`, `.../agents/[agent]/commands/page.tsx`, `lib/api.ts`, sidebar + agent layout.
+
+## 2026-04-14 — telegram: fresh-boot poll delay for zero-downtime deploys
+
+- **Changed:** `onActivate` now distinguishes two wait scenarios. (a) Reactivation within the same process keeps the existing 30s `lastDeactivateByConnector` guard. (b) Fresh boot (no entry in the map) waits `TELEGRAM_BOOT_POLL_DELAY_MS` (default 10 s, set 0 to disable) before calling `bot.start()`. Rationale: zero-downtime deploys start the new container + pass health check BEFORE sending SIGTERM to the old container. During that overlap both containers try to poll the same bot token; the new one loses with 409 Conflict until the old one releases its slot. The boot delay gives the old container time to shut down and `bot.stop()` its session.
+- **Tombol Restart is not affected** — Restart uses the same-process path (map has an entry), so it only applies the 30s guard, not the extra 10s.
+- **Files touched:** `plugins/jiku.telegram/src/index.ts`.
+
+## 2026-04-14 — telegram: silence harmless 400 "already been closed" on activate
+
+- **Changed:** The pre-polling `bot.api.close()` guard in `onActivate` now treats `400 Bad Request: the bot has already been closed` as benign, same as the existing 429 early-call exemption. `bot.stop()` in `onDeactivate` triggers grammy's internal close, so on reactivate our explicit close finds the slot already released — that's the success path, not a failure. Previously it was logged as a warning with a grammy stack trace, misleading operators into thinking activation failed (it didn't; `[connector] activated` still fires after).
+- **Files touched:** `plugins/jiku.telegram/src/index.ts`.
+
+## 2026-04-14 — ops: reset-password CLI script
+
+- **Changed:** New ops script `apps/studio/server/scripts/reset-password.ts`. Interactive flow: prompts for email on stdin, looks up the user via `getUserByEmail`, shows name/email/id + asks `y/N` confirmation, generates an 8-character random password (letters + digits + symbols via `crypto.getRandomValues` for cryptographic randomness), hashes with `bcryptjs` at 10 rounds (matches the register flow at `src/routes/auth.ts:19`), updates `users.password`, prints the plaintext to stdout.
+- **Run:** `cd apps/studio/server && bun --env-file=.env run scripts/reset-password.ts` (needs `.env` so `DATABASE_URL` is loaded).
+- **Files touched:** `apps/studio/server/scripts/reset-password.ts` (new).
+
 ## 2026-04-14 — channels: restart button, health indicator, polling resilience, orphaned-identity reset
 
 - **Orphaned identity auto-reset** (`event-router.ts` Path B, DM scope): when the next inbound message arrives after a binding was deleted, the existing identity — now with `binding_id=NULL` and `status='approved'` — used to fall through silently with `drop_reason=no_binding`, producing zero bot reply and zero pairing request in the admin UI. Fix: detect this orphaned shape, UPDATE the identity to `status='pending'`, and send the `👋 access request sent` notification the same as if it were a brand-new DM. Admin now sees the pairing request reappear in the UI.

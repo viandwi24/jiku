@@ -53,6 +53,15 @@ export type AuditEventType =
   | 'skill.import'
   | 'skill.source_changed'
   | 'skill.assignment_changed'
+  // Plan 24 — commands
+  | 'command.invoke'
+  | 'command.assignment_changed'
+  | 'command.source_changed'
+  // Plan 25 — @file reference hint
+  | 'reference.scan'
+  // Plan 26 — FS tool permission
+  | 'fs.permission_set'
+  | 'fs.permission_denied'
 
 interface WriteEntry extends AuditContext {
   event_type: AuditEventType
@@ -189,4 +198,28 @@ export const audit = {
 
   skillAssignmentChanged: (ctx: AuditContext, agentId: string, meta: Record<string, unknown>) =>
     write({ ...ctx, event_type: 'skill.assignment_changed', resource_type: 'agent', resource_id: agentId, metadata: meta }),
+
+  // Plan 24 — commands
+  commandInvoke: (ctx: AuditContext, slug: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'command.invoke', resource_type: 'command', resource_name: slug, metadata: meta }),
+
+  commandAssignmentChanged: (ctx: AuditContext, agentId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'command.assignment_changed', resource_type: 'agent', resource_id: agentId, metadata: meta }),
+
+  commandSourceChanged: (ctx: AuditContext, pluginId: string, action: 'add' | 'remove', meta?: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'command.source_changed', resource_type: 'plugin', resource_id: pluginId, metadata: { action, ...meta } }),
+
+  // Plan 25 — @file hint
+  referenceScan: (ctx: AuditContext, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'reference.scan', resource_type: 'reference', metadata: meta }),
+
+  // Plan 26 — FS tool permission
+  fsPermissionSet: (ctx: AuditContext, path: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'fs.permission_set', resource_type: 'file', resource_name: path, metadata: meta }),
+
+  fsPermissionDenied: (ctx: AuditContext, path: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'fs.permission_denied', resource_type: 'file', resource_name: path, metadata: meta }),
+
+  // Generic passthrough: some callers (dispatcher) assemble the entry themselves.
+  write: (entry: WriteEntry) => write(entry),
 }

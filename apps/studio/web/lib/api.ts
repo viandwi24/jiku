@@ -71,6 +71,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    get: (agentId: string) =>
+      request<{ agent: Agent }>(`/api/agents/${agentId}`),
     update: (agentId: string, body: Partial<Agent>) =>
       request<{ agent: Agent }>(`/api/agents/${agentId}`, {
         method: 'PATCH',
@@ -621,6 +623,18 @@ export const api = {
       const qs = new URLSearchParams({ path: filePath, mode })
       return `${BASE_URL}/api/projects/${projectId}/files/proxy?${qs}`
     },
+    getPermission: (projectId: string, path: string) =>
+      request<{ effective: 'read+write' | 'read'; source: 'default' | 'self' | 'inherited'; source_path: string | null }>(
+        `/api/projects/${projectId}/files/permission?path=${encodeURIComponent(path)}`
+      ),
+    setPermission: (
+      projectId: string,
+      body: { path: string; type: 'file' | 'folder'; permission: 'read' | 'read+write' | null },
+    ) =>
+      request<{ ok: boolean; resolved: { effective: 'read+write' | 'read'; source: 'default' | 'self' | 'inherited'; source_path: string | null } }>(
+        `/api/projects/${projectId}/files/permission`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      ),
     upload: async (projectId: string, folderPath: string, files: File[]) => {
       const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
       const form = new FormData()
@@ -879,6 +893,33 @@ export const api = {
       }),
   },
 
+  commands: {
+    // Project commands (files are stored on the filesystem under /commands/{slug}/)
+    list: (projectId: string) =>
+      request<{ commands: CommandItem[] }>(`/api/projects/${projectId}/commands`),
+    create: (projectId: string, body: { name: string; slug?: string; description?: string }) =>
+      request<{ command: CommandItem }>(`/api/projects/${projectId}/commands`, { method: 'POST', body: JSON.stringify(body) }),
+    get: (commandId: string) =>
+      request<{ command: CommandItem }>(`/api/commands/${commandId}`),
+    delete: (commandId: string) =>
+      request<{ ok: boolean }>(`/api/commands/${commandId}`, { method: 'DELETE' }),
+    refresh: (projectId: string) =>
+      request<{ ok: true; count: number }>(`/api/projects/${projectId}/commands/refresh`, { method: 'POST' }),
+
+    // Agent command assignments
+    listAgentCommands: (agentId: string) =>
+      request<{ assignments: AgentCommandAssignment[] }>(`/api/agents/${agentId}/commands`),
+    assignCommand: (agentId: string, body: { command_id: string; pinned?: boolean }) =>
+      request<{ assignment: AgentCommandAssignment }>(`/api/agents/${agentId}/commands`, { method: 'POST', body: JSON.stringify(body) }),
+    removeCommand: (agentId: string, commandId: string) =>
+      request<{ ok: boolean }>(`/api/agents/${agentId}/commands/${commandId}`, { method: 'DELETE' }),
+    setCommandAccessMode: (agentId: string, mode: 'manual' | 'all') =>
+      request<{ ok: true; mode: string }>(`/api/agents/${agentId}/command-access-mode`, {
+        method: 'PATCH',
+        body: JSON.stringify({ mode }),
+      }),
+  },
+
   mcpServers: {
     list: (projectId: string) =>
       request<{ servers: McpServerItem[] }>(`/api/projects/${projectId}/mcp-servers`),
@@ -992,6 +1033,7 @@ export interface FilesystemFolderEntry {
   type: 'folder'
   path: string
   name: string
+  tool_permission?: 'read' | 'read+write' | null
 }
 
 export interface FilesystemFileEntry {
@@ -1010,6 +1052,7 @@ export interface FilesystemFileEntry {
   updated_by: string | null
   created_at: string
   updated_at: string
+  tool_permission?: 'read' | 'read+write' | null
 }
 
 export type FilesystemEntry = FilesystemFolderEntry | FilesystemFileEntry
@@ -1184,6 +1227,8 @@ export interface Agent {
   availability_schedule?: AvailabilitySchedule | null
   /** Plan 19 — skill access resolution mode */
   skill_access_mode?: 'manual' | 'all_on_demand' | null
+  /** Plan 24 — command access resolution mode */
+  command_access_mode?: 'manual' | 'all' | null
   /** Plan 21 — per-mode adapter selection + config. */
   mode_configs?: Record<string, { adapter: string; config?: Record<string, unknown> }> | null
   created_at: string | null
@@ -1904,6 +1949,35 @@ export interface AgentSkillAssignment {
   mode: 'always' | 'on_demand'
   created_at: string
   skill: SkillItem
+}
+
+export interface CommandItem {
+  id: string
+  project_id: string
+  slug: string
+  name: string
+  description: string | null
+  tags: string[]
+  entrypoint: string
+  args_schema?: unknown
+  manifest?: { metadata?: { jiku?: { emoji?: string } } } | unknown
+  manifest_hash?: string | null
+  source: string           // 'fs' | `plugin:<id>`
+  plugin_id?: string | null
+  enabled: boolean
+  active: boolean
+  last_synced_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentCommandAssignment {
+  id: string
+  agent_id: string
+  command_id: string
+  pinned: boolean
+  created_at: string
+  command: CommandItem
 }
 
 export interface McpServerItem {

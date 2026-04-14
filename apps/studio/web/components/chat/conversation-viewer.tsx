@@ -14,7 +14,8 @@ import { useLiveConversation } from '@/hooks/use-live-conversation'
 import { Badge, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@jiku/ui/components/ai-elements/conversation.tsx'
 import { Message, MessageContent, MessageResponse } from '@jiku/ui/components/ai-elements/message.tsx'
-import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
+import { PromptInput, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSubmit, PromptInputTextarea, usePromptInputAttachments } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
+import { SlashCommandAutocomplete } from './slash-command-autocomplete'
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from '@jiku/ui/components/ai-elements/attachments.tsx'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/components/ai-elements/tool.tsx'
 import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip, Pencil, RefreshCw } from 'lucide-react'
@@ -887,18 +888,23 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
       {/* Footer: input bar (edit) or context bar only (readonly) */}
       <div className="border-t px-4 py-3 shrink-0">
         <div className="max-w-3xl mx-auto">
-          {mode === 'edit' && (
-            <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
-              <AttachmentPreviews />
-              <PromptInputTextarea
-                autoFocus
-                placeholder="Type a message… (Enter to send, paste image)"
-              />
-              <PromptInputFooter>
-                <AttachFileButton />
-                <PromptInputSubmit status={status} onStop={() => {}} />
-              </PromptInputFooter>
-            </PromptInput>
+          {mode === 'edit' && conversation && (
+            <PromptInputProvider>
+              <div className="relative">
+                <SlashCommandAutocomplete agentId={conversation.agent.id} />
+                <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
+                  <AttachmentPreviews />
+                  <PromptInputTextarea
+                    autoFocus
+                    placeholder="Type a message… (/ for commands, Enter to send, paste image)"
+                  />
+                  <PromptInputFooter>
+                    <AttachFileButton />
+                    <PromptInputSubmit status={status} onStop={() => {}} />
+                  </PromptInputFooter>
+                </PromptInput>
+              </div>
+            </PromptInputProvider>
           )}
 
           {conversation && (

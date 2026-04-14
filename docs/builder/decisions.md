@@ -1,5 +1,157 @@
 # Decisions
 
+## ADR-087 — Adapter owns streaming outbound, event-router handoff via `handleResolvedEvent`
+
+**Context:** Before Plan 28, the connector event-router did end-to-end handling: parseEvent → logArrival → resolve binding + identity → `runtimeManager.run()` → accumulate the full stream into `responseText` → `adapter.sendMessage({ text: fullText, simulate_typing: true })`. The adapter then did a *fake* progressive reveal (3 slice × 2s edits) on a message that was already final. Observable symptom: in the web runs viewer the stream completed first, THEN Telegram's `⌛` placeholder appeared and typing simulation began — sequential, not concurrent. Tool invocations (fs_read, connector_send, etc.) were invisible on Telegram entirely. Root cause was structural: the router drained the stream-to-completion before touching the adapter.
+
+**Decision:** Split responsibilities cleanly.
+
+- **Event-router** stays as first-contact + matchmaker: log arrival, resolve binding/identity/scope, create conversation, build connector_context block, scan `@file` refs, check auto-reply + queue_mode. It now also builds a `ResolvedEventContext` with injected callables (`startRun`, `registerObserverStream`, `logOutboundMessage`, `logOutboundEvent`, `recordUsage`) and hands off via a new optional adapter method:
+
+  ```ts
+  handleResolvedEvent?(ctx: ResolvedEventContext): Promise<void>
+  ```
+
+- **Adapter** (Telegram first) owns from there: send the initial `⌛` placeholder as a reply to the user's message; consume the agent stream chunk-by-chunk; debounce text-delta edits at 700ms; render tool-call chunks as `[🔧] tool_name` above the response text and flip to `[☑️]` / `[❌]` on result/error; split at 4000 chars by finalizing the current message and opening a fresh `⌛`; apply MarkdownV2 escape at final edit with plain-text fallback; log outbound + record usage via ctx callables; tee a branch back to the host via `registerObserverStream` so SSE subscribers (chat web) keep getting real-time chunks.
+
+- **Backward compat:** if an adapter doesn't override `handleResolvedEvent`, router falls back to the legacy accumulate-then-sendMessage path. No other plugin needs to change on day one.
+
+**Consequences:**
+- Real streaming on Telegram — `⌛` appears immediately, text fills in as agent speaks, tool usage visible.
+- No more placebo typing-sim ~6s after the agent already finished.
+- Adapters get platform-aware control (Discord's 2000-char cap, WhatsApp's no-edit model, etc. — each implements their own `handleResolvedEvent` when ready).
+- `@jiku/kit` and the Telegram plugin stay decoupled from `@jiku-studio/server`: studio-side services flow through the `ResolvedEventContext` callables, not direct imports.
+- Trade-off: event-router now has two paths (handoff vs fallback) — a small maintenance burden. Acceptable because the fallback is short (the existing legacy block) and we can retire it once all adapters implement the hook.
+- Queue drain path (`drainConnectorQueue`, for messages enqueued by `queue_mode='ack_queue'` while a prior run is in-flight) still uses the legacy fake simulate_typing for subsequent queued messages — documented follow-up in `tasks.md`. First-message UX (the 95% case) is fixed.
+
+## ADR-086 — Connector param schema surfaced via tool output, not prompt injection
+
+**Context:** Scenario 1 §9.D rencana awal adalah meng-inject `<connector_params connector="telegram">` block ke system prompt saat binding aktif menyentuh connector tersebut — context-aware, tapi butuh runner menginspeksi binding + connector set tiap run, plus cara buka `connector_params` berebut tempat dengan skill hint, memory section, persona, dll. Setiap tambah segment = tambah complexity di `resolver/prompt.ts` dan tambah token footprint default setiap run.
+
+**Decision:** Skip prompt injection. Extend existing `connector_list` tool output untuk emit `param_schema` per connector. Agent sudah punya disiplin "call `connector_list` fresh every iteration before using any connector_* tool" (sudah di description tool). Karena schema datang lewat tool result, token cost dibayar **hanya** kalau agent sebenar-benarnya akan panggil `connector_send` di turn itu — zero prompt-bloat untuk run yang tidak menyentuh connector sama sekali.
+
+**Consequences:**
+- Implementasi satu titik: tambah `param_schema` ke return value di `connector_list` execute handler. Tidak ada perubahan di `resolver/prompt.ts`, tidak ada segment baru.
+- Context-aware "secara alami" — agent yang tidak perlu kirim tidak lihat schema.
+- Trade-off: agent yang skip `connector_list` (disiplin gagal) tidak tahu ada param. Mitigasi: tool description `connector_send` dan `connector_send_to_target` eksplisit minta cek `connector_list > param_schema`.
+- Pola ini bisa direplikasi untuk action-schema (`connector_list_actions` sudah mirip). Jadi convention: "discover-via-list-tool, bukan "inject-ke-prompt" untuk metadata per-connector.
+
+## ADR-085 — Commands dispatcher: chat/cron/task/heartbeat only, skip connector inbound
+
+**Context:** Scenario 1 §6.1 menyebut connector-inbound message sebagai scope trigger untuk `/slash` dispatcher, dengan catatan "gated permission supaya member eksternal tidak sembarangan invoke `/deploy-prod`". Untuk MVP Plan 24, wiring dispatcher ke event-router inbound berarti:
+- Keputusan desain permission model per-binding (flag `allow_slash_commands`? allow-list per identity status? role-based?).
+- Trust boundary berubah — saat ini connector inbound adalah untrusted text; dispatcher = semi-executor yang bisa resolve body kaya yang jalan sebagai system-caller.
+- Bisa bikin skenario surface attack vector sebelum ada review keamanan.
+
+**Decision:** Ship dispatcher hanya di empat surface internal: chat route, cron scheduler (via task runner), heartbeat (via task runner), manual task spawn (via task runner). Skenario marketing Flow B jalan clean lewat cron → task runner, yang sudah tercover. Connector inbound `/slash` masuk backlog sebagai item terpisah dengan permission design yang proper.
+
+**Consequences:**
+- User hanya bisa fire `/command` lewat chat UI atau cron/task — aman dari serangan external "Telegram member spam `/deploy-prod`".
+- Flow B skenario (cron `0 15 * * *` → `/marketing-channel-execute "jam 15.00"`) tetap jalan end-to-end karena path-nya cron → task runner.
+- Untuk masa depan, desain permission: kemungkinan flag `connector_bindings.allow_slash_commands` default false + explicit allow-list slugs per binding. Ditunda sampai ada use case konkret.
+
+## ADR-084 — @file reference hint: stat-only, exact paths, no glob / relative in MVP
+
+**Context:** Saat mendesain Plan 25, dua pilihan obvious:
+1. **Eager expand** — ambil konten file langsung di pre-prompt stage, inject ke context. Zero agent effort, tapi blow up token untuk file besar/banyak.
+2. **Hint-only (stat)** — cuma validasi file exists + emit notice "file X tersedia, fs_read-lah", agent decide kapan/berapa baca.
+
+Plus pertanyaan scope: support `@./relative`, `@../parent`, `@glob/*.md`, `@folder/` summarisation?
+
+**Decision:**
+- **Stat-only hint** — konsisten dengan pola progressive disclosure yang sudah dipakai Skills (Plan 19). Token cost cuma metadata ringkas; agent kontrol berapa detail yang dibaca via `fs_read` offset/limit.
+- **Workspace-root only** untuk MVP — `@x/y` → `/x/y`, `@/abs` → `/abs`. `@./rel`, `@../esc`, `@glob/*` semua di-drop silent. `@alice` non-path-like diabaikan (treated as username mention).
+- **Cap 20 matches** per invocation — di atas itu jadi noise dan kemungkinan prompt injection attempt.
+
+**Consequences:**
+- Implementasi ringan — regex scan + `getFileByPath` per match. Bisa jalan di sub-millisecond untuk typical input.
+- Agent yang "terbiasa" dengan Skills pattern langsung paham flow (hint → on-demand read).
+- Trade-off: user yang mengetik `@./file-di-folder-saya` di command body tidak dapat hint. Edukasi: selalu pakai absolute workspace path. Deteksi + warn di UI command editor bisa ditambah nanti.
+- Glob + directory summarisation masuk backlog — waktunya datang kalau ada skenario spesifik yang butuh (misal "@reports/*" di marketing review).
+
+## ADR-083 — FS tool permission: two tiers only, enforce at tool-layer not at-rest
+
+**Context:** Plan 26 butuh keputusan granularity dan enforcement location:
+- Berapa tier? `read+write`, `read`, `none`, atau tier khusus per-tool?
+- Enforce di FS service (block semua writes termasuk dari HTTP UI)? Atau hanya di agent tool layer?
+
+**Decision:**
+- **Dua tier: `read+write` (default) dan `read`.** Tier `none` ditunda — belum ada use case; agent read-only dari `/reports/` = skenario utama, dan agent butuh bisa BACA untuk self-improve loop. Tier `none` bisa ditambah nanti tanpa breaking change.
+- **Enforcement di FS tool layer saja** (`fs_write`, `fs_edit`, `fs_append`, `fs_move`, `fs_delete`). File explorer manual user **TIDAK** kena gate — user adalah sumber otoritas yang set flag; menggate mereka = menggate diri sendiri. Route HTTP `PATCH /files` untuk user edit manual juga tidak kena gate (UI dipakai untuk edit sekalian).
+- **Read operasi selalu boleh** — konsisten dengan semantics "shared open between members, restriction cuma untuk mutasi."
+
+**Consequences:**
+- Admin bisa set `/reports/` → `read` tapi masih bisa edit laporan dari UI kalau perlu manual koreksi. Jelas siapa "tuannya" — user.
+- Agent yang coba `fs_write` ke path gated dapat error `FS_TOOL_READONLY` dengan source info → bisa self-correct.
+- Implementasi resolver: walk self → ancestor chain. Biaya: O(depth) queries. Diasumsikan file tree tidak terlalu dalam (< 20 levels); cache tidak perlu di MVP.
+- Gate dipanggil inline di tiap mutasi tool — duplikasi kecil (5 tool × 2 baris setup) tapi explicit. Lebih mudah debug daripada decorator pattern.
+
+## ADR-082 — Orphan identity auto-reset on next inbound
+
+**Context:** When an admin deletes a `connector_bindings` row, the FK cascade on `connector_identities.binding_id` sets the column to NULL but leaves `status` unchanged — usually `'approved'`. The next inbound DM from that user hit the "no matching binding" branch in `event-router.ts`, found the existing approved-but-orphan identity via `findIdentityByExternalId`, skipped the `!identity` create-pending path, fell through to `logEv(status='pending_approval', drop_reason='no_binding')`. The user received no bot reply, and the admin UI showed nothing because `getPairingRequestsForConnector` filters `status='pending'`. From the operator's viewpoint the system had silently broken itself in response to an explicitly requested delete.
+
+**Decision:** In the Path B DM branch of `routeConnectorEvent`, when an existing identity is found with `binding_id IS NULL AND status='approved'`, treat it as orphan-by-delete: UPDATE `status='pending'`, set the local `identity.status='pending'`, and run the same `👋 access request sent` notification the fresh-identity path uses. Admin UI then surfaces the pairing request again and admin can re-approve.
+
+We chose "reset on next inbound message" rather than "reset on DELETE binding" because the DELETE route doesn't know which DB identities were owned by that binding before cascade (the FK SET NULL happens atomically with the DELETE and the pre-image is lost to the app layer). Handling it at inbound time is self-healing and requires no `routes/connectors.ts` change, at the cost of the user seeing one dropped message before the reset takes effect — acceptable since binding-delete is rare and the system sends the approval-request notification on the second message onwards.
+
+**Consequences:**
+- Orphan identities self-heal on user activity; no explicit cleanup job needed.
+- One message post-delete reaches the user as silence before the reset fires. Documented as known edge case; a future "Force re-pair" admin action (in tasks.md) would close it for cases where that single-message gap matters.
+- Only applies to Path B (DM / no-scope). Group scope already recreates a draft binding lazily, so no parallel fix needed.
+
+## ADR-081 — Telegram polling resilience: auto-reconnect + post-deactivate guard
+
+**Context:** Production hit a stuck state where the process was alive, logs showed `[telegram] bot started (polling)`, but zero inbound events for 30+ minutes — even across forced restarts. Diagnosis revealed three compounding bugs in the activation path:
+
+1. `bot.start()` returns a long-lived promise that resolves only when polling terminates. Prior code fire-and-forgot with `.catch(log)`: a single rejection (409 Conflict if another instance still holds the slot, 401 if the token changed, network drop, etc.) produced **permanent silent polling death** while the process kept running and appeared healthy.
+2. Telegram server-side reserves a bot's long-poll slot for ~30s after any `close()` or connection drop. A rapid deactivate→reactivate — common when admin clicks Stop then Start, or the new Restart button — races against this window and the first `getUpdates` returns 409.
+3. Exceptions inside async update handlers (a DB blip, an unhandled throw in event-router) surfaced as unhandled promise rejections that could terminate the grammy polling task without our `.catch` noticing.
+
+Prior belief was "restart fixes it" — it doesn't, because the slot reservation and grammy rejection pattern reproduce on every boot within the same 30s window.
+
+**Decision:**
+
+1. `onActivate` wraps `bot.start()` in a backoff loop (1s → 60s max) inside a detached async IIFE. On any error we log + back off + retry. On 409 Conflict we additionally call `bot.api.close()` between retries to request slot release. The loop exits cleanly when `onDeactivate` sets `this.pollingStopRequested = true` or when `this.bot` is replaced.
+2. Module-level `lastDeactivateByConnector: Map<connectorUuid, number>`. `onDeactivate` writes `Date.now()` keyed by connectorId. `onActivate` awaits the remainder of a 30s window since the last deactivate before calling `bot.start()`. 30s chosen to match Telegram's documented slot-reservation window.
+3. `bot.catch((err) => console.error(...))` installed before starting — grammy's middleware-level error handler so update-handler exceptions are logged instead of escaping as unhandled rejections.
+
+**Consequences:**
+- Polling self-heals from all transient failure modes. Permanent misconfigurations (invalid token = repeated 401) still loop forever but are log-loud.
+- Admin-triggered Restart button reliably works without 409 because the 30s guard enforces the wait. The UX shows "Restarting..." up to ~30s in the worst case (previous deactivate was just now) or instant (previous deactivate >30s ago).
+- Backoff is capped at 60s rather than growing unbounded; we trade a bit more Telegram API traffic during pathological failures for faster recovery when the underlying issue clears.
+- The 30s guard assumes `onActivate` and `onDeactivate` run in the same process. In a multi-process deploy this is moot — Telegram's slot reservation applies server-side and our local map just over-waits harmlessly; we don't race with our own other replicas because a 409 path would still retry with backoff.
+
+## ADR-080 — Arrival log is non-blocking and lives outside any routing queue
+
+**Context:** Inbound Telegram updates were being routed through a single `ctx.onEvent(event)` call that internally wrote to `connector_events` / `connector_messages` AND drove the agent runner AND sent outbound replies. When we introduced a batched FIFO inbound queue (ADR-079) to control concurrency, all of that logic moved behind the queue — including the DB write. A stalled queue (bug, DB deadlock, long agent run) meant zero rows hit `connector_events` even though Telegram was delivering updates. Operators lost the ability to distinguish "bot is offline" from "bot is overloaded" by looking at DB state.
+
+**Decision:** Every inbound update the adapter receives is recorded in `connector_events` with `status='received'` **before** the routing queue is ever touched. The write is done via a dedicated `logArrivalImmediate(connectorId, event)` helper in the plugin, calling `logConnectorEvent()` directly from `@jiku-studio/db`. Errors are swallowed and logged — a DB failure must not block polling or drop the update. The adapter caches `ctx.connectorId` on activation so this call doesn't need a hop through `ConnectorContext.onEvent`.
+
+Downstream routing (bindings, agents, outbound sends) still flows through the batch queue, and still writes its own rows for status transitions (`pending_approval`, `handled`, `dropped`, …). Short-term this produces 2+ rows per event (one arrival + one outcome); documented as known follow-up in tasks.md.
+
+**Consequences:**
+- Operators can diagnose "Telegram nyampe atau nggak" with a single `SELECT count(*) FROM connector_events WHERE created_at > now() - interval '5 min'` regardless of router health.
+- Multiple rows per event is not a bug, it's two distinct observability signals. Event id uniqueness in logs still holds — rows are distinct DB rows.
+- Future refactor to UPDATE-in-place requires threading the arrival event id through `routeConnectorEvent` all the way to every `logEv` call site. Non-trivial refactor.
+
+## ADR-079 — Telegram send queue is per-chat; inbound queue is batched FIFO
+
+**Context:** A production 429 (`retry_after: 38`) in `sendWithTypingSimulation`'s final `editMessageText` caused the connector to crash the event handler (ADR-081's bug 3), cascading into "bot ga nerima pesan" even after hard restart. Two orthogonal concurrency gaps contributed:
+
+1. **Outbound send races to the same chat.** `simulate_typing` fires 4 Telegram API calls per message (placeholder send + 2 interim edits + final edit). Two overlapping `sendMessage()` calls to the same chat produce 8 concurrent API calls over a few seconds — deep into Telegram's per-chat rate limit.
+2. **Inbound updates run agent runs concurrently with no ceiling.** A burst of 30 messages in one second fanned out 30 parallel agent runs, thrashing the DB and compounding outbound pressure.
+
+**Decision:** Two queues with different shapes.
+
+1. **Per-chat outbound queue.** Module-level `chatSendQueues: Map<chatId, Promise<unknown>>` — each `sendMessage` call appends its task to that chat's promise chain. Two sends to the same chat serialize; sends to different chats run in parallel. Combined with `withTelegramRetry(fn)` which respects `err.parameters.retry_after` on 429 (capped at 45s — beyond that the helper throws and callers degrade). Scoped per-chat because Telegram's rate limits are primarily per-chat, not global.
+2. **Global inbound batch queue.** `enqueueInboundEvent(task)` pushes into a single module-level array. `drainInboundQueue` takes up to `INBOUND_BATCH_SIZE=5` tasks, runs them via `Promise.allSettled`, waits for the full batch to drain, then processes the next 5. FIFO across batches. `allSettled` — not `all` — so one failing event doesn't poison the batch.
+
+**Consequences:**
+- `simulate_typing` can no longer overlap itself on the same chat. Visible UX: if two messages arrive simultaneously, the second starts typing only after the first's final edit lands. Correct and desirable given we can't cheat the rate limit.
+- Agent concurrency is capped at 5 per process. A heavier workload requires lifting the constant or sharding across processes; for current usage 5 comfortably absorbs bursts.
+- Batch semantics (wait for all 5 to complete before starting the next 5) chosen over rolling concurrency because the user explicitly requested this shape — "ambil 5, tungguin kelar, ambil 5 lagi". Simpler reasoning; edge case: one slow event in a batch delays four fast ones. Accepted; average throughput still high.
+- A bug that causes `drainInboundQueue` to throw at a bad moment could leave `inboundDraining=true` and stall forever. Mitigation: try/finally around the whole drain; `allSettled` inside so individual task errors never escape. Must preserve this invariant in future edits.
+
 ## ADR-078 — Trigger mode detection is adapter-authoritative; customization via per-binding text arrays
 
 **Context:** Original `matchesTrigger` implementation had weak / buggy mode detection:

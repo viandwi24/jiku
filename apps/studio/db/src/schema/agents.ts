@@ -49,6 +49,12 @@ export const agents = pgTable('agents', {
    */
   skill_access_mode:    varchar('skill_access_mode', { length: 20 }).notNull().default('manual'),
   /**
+   * Plan 24 — how this agent consumes user-triggered commands.
+   *   'manual' = allow-list via agent_commands (default)
+   *   'all'    = any active project command is invokable
+   */
+  command_access_mode:  varchar('command_access_mode', { length: 20 }).notNull().default('manual'),
+  /**
    * Queue mode for handling messages while agent is busy.
    * 'off'       = reject/drop (current behavior)
    * 'queue'     = buffer silently, process FIFO

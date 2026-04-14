@@ -30,3 +30,7 @@ export { parseSkillDoc, hashManifestSource, resolveEntrypoint } from './skills/m
 export type { ParsedSkillDoc } from './skills/manifest.ts'
 export { checkSkillEligibility } from './skills/eligibility.ts'
 export { SkillRegistry } from './skills/registry.ts'
+// Plan 24 — Commands
+export { parseCommandDoc, resolveCommandEntrypoint } from './commands/manifest.ts'
+export type { ParsedCommandDoc } from './commands/manifest.ts'
+export { CommandRegistry } from './commands/registry.ts'

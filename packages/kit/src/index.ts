@@ -19,6 +19,7 @@ import type {
   ConnectorSendResult,
   ConnectorContext,
   ConnectorAction,
+  ResolvedEventContext,
   PluginUIDefinition,
 } from '@jiku/types'
 
@@ -39,6 +40,7 @@ export type {
   ConnectorSendResult,
   ConnectorContext,
   ConnectorAction,
+  ResolvedEventContext,
   PluginUIDefinition,
 }
 
@@ -234,4 +236,39 @@ export abstract class ConnectorAdapter {
    * Used by event-router / tools to route outbound messages to the correct scope.
    */
   targetFromScopeKey?(scopeKey: string): ConnectorTarget | null
+
+  /**
+   * Plan 27 — Declare the platform-specific parameters this adapter accepts via
+   * `ConnectorContent.params`. Exposed to agents through `connector_list` so the
+   * model knows, per-connector, what extras are available (e.g. Telegram's
+   * `reply_to_message_id`, `parse_mode`, `message_thread_id`).
+   *
+   * Return [] if no extras are supported. Default returns [].
+   */
+  getParamSchema?(): ConnectorParamSpec[]
+
+  /**
+   * Plan 28 — Handle a resolved inbound event end-to-end. When defined, the
+   * event-router hands off after resolving binding + identity + conversation +
+   * inbound context string, and the adapter takes ownership of queueing,
+   * runtimeManager.run invocation, stream consumption, outbound send, and usage
+   * logging. This is the path that lets adapters render streaming typing,
+   * per-tool status chips, and platform-specific queue UX without the router
+   * blocking on full-stream accumulation.
+   *
+   * If this method is not overridden, the router falls back to the legacy
+   * "accumulate then sendMessage" path.
+   */
+  handleResolvedEvent?(ctx: ResolvedEventContext): Promise<void>
+}
+
+/**
+ * Plan 27 — Schema entry for a platform-specific send param.
+ */
+export interface ConnectorParamSpec {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'enum' | 'array' | 'object'
+  enum_values?: string[]
+  description: string
+  example?: string | number | boolean | unknown[] | Record<string, unknown>
 }

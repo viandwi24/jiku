@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Puzzle,
   Settings,
+  Terminal,
   Webhook,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -67,6 +68,7 @@ const NAV_ITEMS: Array<{
   { href: '/memory',   label: 'Memory',    icon: Brain,           permission: 'memory:read' },
   { href: '/channels', label: 'Channels',  icon: Webhook,         permission: 'channels:read' },
   { href: '/skills',      label: 'Skills',      icon: BookOpen,  permission: 'agents:read' },
+  { href: '/commands',    label: 'Commands',    icon: Terminal,  permission: 'agents:read' },
   { href: '/cron-tasks',  label: 'Cron Tasks',  icon: Clock,     permission: 'cron_tasks:read' },
   { href: '/browser',     label: 'Browser',     icon: Globe,     permission: 'agents:read' },
   { href: '/disk',     label: 'Disk',      icon: FolderOpen,      permission: 'agents:read' },

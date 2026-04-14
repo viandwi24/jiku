@@ -6,7 +6,7 @@ let client: QdrantClient | null = null
 
 function getClient(): QdrantClient {
   if (!client) {
-    client = new QdrantClient({ url: QDRANT_URL })
+    client = new QdrantClient({ url: QDRANT_URL, checkCompatibility: false })
   }
   return client
 }

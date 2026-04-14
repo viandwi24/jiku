@@ -263,7 +263,12 @@ export default definePlugin({
           const format = input.format ?? defaults.default_format
           const stripImages = input.strip_images ?? defaults.strip_images
           const fetchOpts = resolveFetchOpts(defaults)
-          const projectId = toolCtx.runtime.caller.user_data.project_id as string | undefined
+          // Runner injects project_id directly into RuntimeContext. The older
+          // `caller.user_data.project_id` path was never populated by
+          // `resolveCaller` — always undefined → history never written for
+          // tool-invoked runs (only the playground/HTTP path worked because
+          // it reads projectId from the plugin ctx closure, not the tool).
+          const projectId = toolCtx.runtime['project_id'] as string | undefined
           const started = Date.now()
           try {
             const { output, article, metadata } = await runRead(input.url, format, fetchOpts, stripImages)

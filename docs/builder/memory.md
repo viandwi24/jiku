@@ -1,5 +1,61 @@
 # Memory
 
+## Telegram `editMessageText` "message is not modified" is a SUCCESS, not an error
+
+Telegram compares the **rendered** output against the current message content. If your new text (after applying `parse_mode`) renders identical to what's already on screen, `editMessageText` returns `400: Bad Request: message is not modified`. This bit us in Plan 28's streaming adapter: the final MarkdownV2 edit identity-matches the last interim plain edit when the body has no MarkdownV2-escapable chars (so `telegramifyMarkdown(x, 'escape') === x`). Treat `err.description.includes('message is not modified')` as a no-op success path — content is already on screen, nothing to do. The same guard should wrap any plain-text fallback edit. Don't warn-log it; spam drowns real errors. If you add new edit sites, copy the `isNotModifiedError` helper pattern.
+
+## Telegram streaming adapter renders narrative-ordered, not header-pinned
+
+`handleResolvedEvent` in `plugins/jiku.telegram/src/index.ts` keeps a `segments: ({ type:'text',content } | { type:'tools',items })[]` array, not a parallel `text + toolList` pair. Consecutive text-delta chunks grow the current text segment; consecutive tool-call chunks stack in the current tool group; transition between types inserts a `---` separator. This matches the agent's actual narrative ("said X, did Y, said Z") instead of pinning all tools above everything. If you're tempted to re-flatten for "simplicity", don't — the `---` separators + segment ordering is a UX decision (ADR-087 revision), not a code-style call. Final MarkdownV2 escaping is per-segment: text via `telegramifyMarkdown`, tool lines as `_[icon] <escaped_name>_`, separators as literal `\-\-\-`. Tool names often have underscores (`fs_read`, `connector_send_to_target`) — always escape before italic-wrapping, otherwise MarkdownV2 parse fails mid-name.
+
+## Interim edits stay plain; MarkdownV2 only at final
+
+During streaming, the adapter edits with no `parse_mode` — MarkdownV2 on partial content risks "unclosed" errors mid-stream (half of `*bold*` or unterminated code fence). Final edit after `reader done` is where we escape + apply parse_mode. Anyone adding new interim rendering paths: resist the urge to "make it look nice live with bold/italic" — you'll earn a parade of `can't parse entities` errors. Italic/bold go at finalize, not during.
+
+## Skills / Commands share a pattern — factor carefully, don't rewrite
+
+Skills (Plan 19) dan Commands (Plan 24) keduanya: FS scan `/<root>/<slug>/<MANIFEST>.md` OR single-file `/<root>/<slug>.md`, parse frontmatter + body, cache di `project_<thing>s`, plugin contributions via `registerPlugin<Thing>()`, project-level registry + per-agent assignment table. Kalau nanti fitur ketiga dengan shape sama muncul (mis. "Docs" FS-first) pertimbangkan factoring `ManifestLoader<T>` generic — tapi BUKAN refactor wajib. Plan 24 sengaja copy ~70% dari SkillLoader struktur supaya cepat ship + mudah dibandingkan saat debug. Konsistensi baris-per-baris (tabel columns, audit event naming `<thing>.assignment_changed`, route layout) lebih penting daripada DRY. Kalau muncul plan ketiga, sebaiknya bareng-bareng dengan refactor generic, bukan sambil memperkenalkan fitur baru.
+
+## `@file` hint itu PRE-prompt, bukan system prompt
+
+`scanReferences` dipanggil di route/runner BEFORE `runtimeManager.run()`, dan hasil `hintBlock` di-prepend langsung ke `input` string. Ini bukan segment `resolver/prompt.ts` — menghindari perlu berebut slot dengan skill_section, memory_section, persona, dll. Prepend ke input juga natural karena hint memang berkaitan dengan DARI USER teks saat itu, bukan state agent. Kalau nanti butuh "hint untuk setiap turn automatically", pertimbangkan jadi segment; kalau cuma ad-hoc per message, tetap pre-prompt.
+
+## FS tool permission gate TIDAK kena `fs_mkdir` karena `fs_mkdir` tidak ada
+
+Saat mengerjakan Plan 26 sempat hampir nambah gate untuk `fs_mkdir` mengikuti scenario doc, tapi `fs_mkdir` sebagai tool terpisah memang tidak ada di `filesystem/tools.ts` — folder dibuat otomatis saat file pertama ditulis ke path baru (via `upsertFile` + folder backfill). Kalau nanti `fs_mkdir` benar-benar ditambah sebagai tool, wire-kan `checkToolPermGate(projectId, path, 'mkdir', ...)` di executor-nya — sudah ada precedent di 5 tool existing.
+
+## `audit.write` passthrough was added on purpose — pakai untuk event ad-hoc
+
+`audit/logger.ts` punya `write(entry)` passthrough di object `audit` (di ujung `commandInvoke`). Dipakai oleh dispatcher karena event bawa actor info yang tidak cocok dengan helper-helper `commandInvoke(ctx, slug, meta)` (dispatcher tidak punya Express `req`, rakit `AuditContext` manual). Jangan hapus — ini keran safety-valve untuk event yang actor-nya system atau agent_id-driven tanpa req context.
+
+## `connector_list` adalah kontrak "tool yang wajib fresh tiap iteration"
+
+Tool description sudah eksplisit minta agent panggil `connector_list` fresh tiap iterasi yang akan pakai `connector_*`. Pattern ini dimanfaatkan Plan 27 untuk surface `param_schema` per connector — tidak perlu prompt injection karena agent sudah wajib call tool ini. Kalau nanti tambah field baru di `connector_list` output (action schema, rate-limit hint, maintenance status), ikut pattern yang sama: tambah ke return value, tool description tetap "call fresh every iteration". Zero prompt-bloat.
+
+## Telegram: `bot started (polling)` log is a lie on its own
+
+The `console.log('[telegram] bot started (polling)')` line in `onActivate` fires synchronously after dispatching `bot.start()` — NOT when polling is actually working. `bot.start()` is a long-lived promise that sits pending for the lifetime of the polling loop. Seeing that log line only means the call was made. Proof that polling is working is inbound updates hitting `connector_events` (now recorded via `logArrivalImmediate` before the routing queue — ADR-080). If you're debugging "bot seems dead", the two definitive checks are (1) any new rows in `connector_events` with `status='received'` in the last N seconds, (2) `curl api.telegram.org/bot<TOKEN>/getUpdates?timeout=0` — 409 Conflict means another instance holds the slot.
+
+## Telegram: 30s poll-slot reservation is real, not theoretical
+
+After any `bot.stop()` / process death / network drop, Telegram reserves the bot's long-poll slot for ~30s. Reactivating inside that window returns 409 Conflict on `getUpdates`. The adapter now enforces this via module-level `lastDeactivateByConnector` map + wait at top of `onActivate` (ADR-081). Don't remove that wait. Don't try to shortcut by calling `bot.api.close()` and assuming it releases instantly — `close()` itself returns 429 in the first 10min after a fresh launch and is swallowed. The nuclear option, documented in `docs/feats/connectors.md`, is `POST /bot<TOKEN>/logOut` which force-kicks all sessions server-side.
+
+## Orphan `connector_identities` after binding delete
+
+`connector_bindings` deletion cascades `connector_identities.binding_id` to NULL via `ON DELETE SET NULL`. Identity `status` is unchanged — usually stays `'approved'`. Next inbound from that user will find the orphan via `findIdentityByExternalId` and, prior to ADR-082, silently drop with `no_binding` because the "create pending identity" branch is guarded by `if (!identity)`. Event-router's Path B now detects `binding_id IS NULL AND status='approved'`, resets to `pending`, and re-sends the approval notification. If you ever add new branches that early-return on identity existence, repeat the orphan check there too.
+
+## Every inbound update MUST land in DB before the routing queue
+
+`logArrivalImmediate(connectorId, event)` in the Telegram plugin writes `connector_events` with `status='received'` BEFORE `enqueueInboundEvent(...)` runs. This is load-bearing: it's the only way ops can tell "is Telegram delivering updates at all" from a DB query alone. A future refactor that moves logging back into the routing pipeline re-introduces the stuck-queue-silent-DB failure mode that took production down once. If you introduce a new inbound path / event type, it MUST call `logArrivalImmediate` before queueing. Keep logging errors swallowed so a DB hiccup can't kill polling.
+
+## Two-level queues in the Telegram plugin — don't collapse them
+
+Outbound sends serialize per-chat via `chatSendQueues: Map<chatId, Promise>`. Inbound updates batch-drain globally via `inboundQueue` + `INBOUND_BATCH_SIZE=5`. These solve different problems (ADR-079): per-chat send serialization is about Telegram's rate limits; global batch drain is about capping agent/DB concurrency. Don't refactor into a single queue — the constraints are orthogonal and the shapes (per-chat promise chain vs global FIFO batch) reflect that.
+
+## `drainInboundQueue` must always reset `inboundDraining=false`
+
+The in-flight flag is the only thing preventing re-entrant drains. If a throw escapes the try block before the `finally`, the flag stays true and no future arrivals ever get processed — the exact silent failure ADR-080 exists to prevent. Keep the try/finally invariant. Individual task errors never escape because we use `Promise.allSettled`, not `Promise.all`.
+
 ## Chat messages form a tree (Plan 23) — never assume linear
 
 `messages.parent_message_id` (self-FK, ON DELETE CASCADE) + `messages.branch_index` make every chat conversation a tree. `conversations.active_tip_message_id` points at the leaf of the currently selected branch. To render or send to model, walk root → tip via `getActivePath(convId)` (recursive CTE in `apps/studio/db/src/queries/conversation.ts`). **Don't `SELECT * FROM messages WHERE conversation_id = ?` for chat history** — that mixes siblings from other branches into model context. New writes must go through `addBranchedMessage()` so `branch_index` and `active_tip_message_id` stay consistent — never insert into `messages` directly from new code paths. Branching is implicit (ADR-070): supplying any `parent_message_id` that already has children automatically creates a sibling.

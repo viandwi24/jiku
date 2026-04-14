@@ -201,6 +201,14 @@ export class JikuRuntimeManager {
       console.warn(`[skills] FS sync failed for project "${projectId}":`, err)
     }
 
+    // Plan 24 — sync FS-sourced commands for this project (scan /commands/, upsert cache)
+    try {
+      const { getCommandLoader } = await import('../commands/loader.ts')
+      await getCommandLoader(projectId).syncFilesystem()
+    } catch (err) {
+      console.warn(`[commands] FS sync failed for project "${projectId}":`, err)
+    }
+
     // Dynamic provider: resolves the model from modelCache at run-time
     const dynamicProviderDef = createProviderDef(DYNAMIC_PROVIDER_ID, {
       languageModel: (model_id: string) => {

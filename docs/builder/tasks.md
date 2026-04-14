@@ -1,8 +1,33 @@
 ## Backlog
 
+### Plan 28 follow-ups (post-ship)
+- [ ] Queue drain path (`queue_mode='ack_queue'` dequeue in `drainConnectorQueue`) still uses legacy fake simulate_typing. Wire it through `handleResolvedEvent` so subsequent queued messages also stream.
+- [ ] Verify tool chunk type names match the actual AI SDK emit names. Current switch matches `tool-call`, `tool-input-start`, `tool-input-available`, `tool-output-available`, `tool-result`, `tool-error`, `data-jiku-tool-start`, `data-jiku-tool-end`, `data-jiku-tool-error` — if the runner emits different names, chips silently won't render. Log a sample run's chunk types to confirm.
+- [ ] Port `handleResolvedEvent` pattern to Discord / WhatsApp adapters when they land (each with their own rate-limit + edit-semantics profile).
+- [ ] Tool name escape for MarkdownV2 currently uses inline regex. Factor to a shared util if another adapter needs the same escape later.
+- [ ] Consider per-tool hint (e.g. args preview) next to the tool line — right now only name is shown.
+
+### Plan 24/25/26/27 follow-ups (post-ship)
+- [ ] FS permission file-explorer context-menu UI — delegated to subagent 2026-04-14; follow up on completion, verify badge/indicator + bulk-set flow.
+- [ ] Commands: connector inbound dispatcher — currently only chat/task/cron/heartbeat surfaces route `/slug`. Gated opt-in per-binding so external members can't invoke `/deploy-prod`.
+- [ ] Commands: args schema editor UI — users can currently only write args via YAML frontmatter. Nice-to-have form builder.
+- [ ] @file hint: support `@./relative` and `@folder/` (directory summarisation). Currently exact workspace paths only.
+- [ ] @file hint: inline `@path:L10-20` for line-range hint.
+- [ ] FS permission: deny read (`none` tier) — deferred; only `read` vs `read+write` today per scenario doc MVP.
+- [ ] Connector params: type/enum validation against the schema (parse_mode:"foo" should error before hitting Telegram).
+- [ ] Connector params: mirror schema in Discord / WhatsApp adapters when they land.
+- [ ] Agent-commands page: when `command_access_mode='all'`, UI should surface "all project commands available" instead of the allow-list.
+- [ ] Chat UI: surface "Command Invoked: /slug" chip when dispatcher matches so users see which command fired.
+
 ### Connector follow-ups
+- [ ] Arrival row unification — downstream `event-router.ts` still INSERTs additional rows as status transitions (`pending_approval`, `handled`, `dropped`, `rate_limited`). Short term each inbound event produces `received` row + outcome row. Longer term those should be UPDATEs against the arrival row. Requires threading arrival event id into `routeConnectorEvent()`.
 - [ ] Flip `drop_pending_updates: false` in Telegram adapter's `deleteWebhook` + `bot.start` — currently pending messages during the activation window get triple-dropped (diagnosis ran 2026-04-14). Trade-off: crash-restart replays backlog. Decide + ship.
 - [ ] Per-binding "Reset all pairings" button — set all identities under a binding to `status='pending'` so admin can re-trigger approval flow after a settings change without deleting the whole connector.
+- [ ] Propagate `getHealth()` to other adapters (WhatsApp / Discord / Slack when they land) so HealthBadge renders uniformly across platforms.
+- [ ] Force re-pair action on orphaned identities (DM UI) — for cases where the automatic reset on next message isn't acceptable (e.g. bulk migration). Currently orphan reset only triggers on inbound; an explicit "reset now" button would let admin prepare the state without waiting for the user to chat.
+- [ ] Auto-release stuck `runningConversations` in `event-router.ts` — module-level Set is not cleared on boot; if a process crashed with entries in the Set, a restart resets it (fresh module), but a handler that errors mid-run may leave stale IDs. Consider periodic sweep or `finally`-guard audit.
+- [ ] `POST /connectors/:id/logout` admin action — calls Telegram's `logOut` API (force-release all sessions server-side). Nuclear option for when even deactivate+30s wait can't clear the slot. Expose as "Force logout" button behind a confirm dialog.
+- [ ] Stuck-poll-slot detection heuristic: if `getUpdates` returns 409 >3 times in a row despite `close()`, log a strong warning + surface in HealthBadge. Currently this loops silently with exponential backoff.
 - [ ] Migration helper for legacy loose bindings (`source_type='any'` with null `source_ref_keys` + null `scope_key_pattern`) — either auto-narrow on first match or surface a banner on the connector detail page.
 - [ ] Scope binding-match by connector UUID (defensive): currently filter uses `connector.plugin_id === event.connector_id`; if two connectors share a plugin_id in one project, they can cross-match. Switch to `connector.id === connectorUuid`.
 
@@ -73,6 +98,10 @@
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
+
+- [x] Connector recovery + queue resilience + polling reconnect — per-chat outbound send queue + `withTelegramRetry` 429 handling (honors `retry_after` capped at 45s), global inbound FIFO batch queue (size 5, `Promise.allSettled`), non-blocking arrival log via `logArrivalImmediate()` (ops can see raw arrivals in `connector_events` independent of router health), `bot.start()` auto-reconnect loop (1s→60s backoff, `bot.api.close()` between 409 retries), 30s post-deactivate guard via module-level `lastDeactivateByConnector` map, `bot.catch()` middleware error handler, orphan identity auto-reset in event-router Path B (DM), admin UI Restart button + HealthBadge polling 15s, new `POST /connectors/:id/restart` + `GET /connectors/:id/health` endpoints, `getHealth()` adapter method on Telegram. ADRs ADR-079…082 — completed 2026-04-14.
+
+- [x] `scripts/reset-password.ts` ops script — email prompt → user lookup → confirm → generate 8-char random password (letters+digits+symbols via `crypto.getRandomValues`) → bcrypt hash (10 rounds, matches register flow) → DB update → plaintext printed to stdout. Runnable via `bun --env-file=.env run scripts/reset-password.ts` from `apps/studio/server`. — completed 2026-04-14.
 
 - [x] Trigger modes + auto-register topics + group pairing UX — proper `mention`/`reply` detection (Telegram entity scan + bot id cache), customizable trigger_mode (`trigger_mention_tokens`, `trigger_commands`, `trigger_keywords_regex`) via migration `0029`, topic-aware group pairing `display_name` ("Chat → Topic") + violet topic badge in UI, forum topic auto-register as `connector_target`, scope_key format consistency fix (`chat:<id>` → `group:<id>` in `my_chat_member` auto-register). ADR-078 — completed 2026-04-14.
 

@@ -10,7 +10,10 @@ import {
   getAllProjectFiles,
   deleteAllProjectFiles,
   updateFilesystemStats,
+  resolveFsToolPermission,
+  setFsToolPermission,
 } from '@jiku-studio/db'
+import { audit, auditContext } from '../audit/logger.ts'
 import {
   getFilesystemService,
   testFilesystemConnection,
@@ -21,7 +24,14 @@ import {
 } from '../filesystem/service.ts'
 import { invalidateFilesystemCache } from '../filesystem/factory.ts'
 import { runtimeManager } from '../runtime/manager.ts'
-import { normalizePath, isAllowedFile, getMimeType } from '../filesystem/utils.ts'
+import {
+  normalizePath,
+  isAllowedFile,
+  getMimeType,
+  isBinaryExtension,
+  getMaxSizeForExtension,
+  MAX_UPLOAD_BYTES,
+} from '../filesystem/utils.ts'
 import { uploadRateLimit } from '../middleware/rate-limit.ts'
 
 const router = Router()
@@ -331,13 +341,14 @@ router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('a
   getFilesystemService(projectId).then(fs => {
     if (!fs) return done(503, { error: 'Filesystem not configured' })
 
-    const bb = busboy({ headers: req.headers, limits: { fileSize: 5 * 1024 * 1024 + 1 } })
+    const bb = busboy({ headers: req.headers, limits: { fileSize: MAX_UPLOAD_BYTES + 1 } })
     const uploads: Array<Promise<{ file: import('@jiku-studio/db').ProjectFile }>> = []
 
     bb.on('file', (_fieldname, fileStream, info) => {
       const filename = nodePath.basename(info.filename)
       const ext = nodePath.extname(filename).toLowerCase()
       const filePath = folderPath === '/' ? `/${filename}` : `${folderPath}/${filename}`
+      const maxBytes = getMaxSizeForExtension(ext)
 
       const chunks: Buffer[] = []
       let size = 0
@@ -345,21 +356,24 @@ router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('a
 
       fileStream.on('data', (chunk: Buffer) => {
         size += chunk.length
-        if (size > 5 * 1024 * 1024) { tooBig = true; fileStream.resume(); return }
+        if (size > maxBytes) { tooBig = true; fileStream.resume(); return }
         chunks.push(chunk)
       })
 
       uploads.push(new Promise((resolve, reject) => {
         fileStream.on('end', async () => {
-          if (tooBig) return reject(new ValidationError('File exceeds 5 MB limit'))
+          if (tooBig) {
+            const capMb = Math.round(maxBytes / (1024 * 1024))
+            return reject(new ValidationError(`File exceeds ${capMb} MB limit for "${ext}" files`))
+          }
           const content = Buffer.concat(chunks)
           const check = isAllowedFile(filename, content.length)
           if (!check.allowed) return reject(new ValidationError(check.reason!))
           try {
-            // Binary formats are stored base64-encoded so they can be faithfully
-            // retrieved later (e.g. xlsx parsing). Text files are stored as-is.
-            const BINARY_EXTS = new Set(['.xlsx', '.xls', '.ods', '.docx', '.doc', '.pptx', '.ppt', '.odp', '.odt', '.pdf'])
-            const textContent = BINARY_EXTS.has(ext)
+            // Binary formats (images, video, audio, office docs, pdf, zip) are
+            // stored base64-encoded so they survive the text-oriented write
+            // pipeline. Text / script files go through as UTF-8.
+            const textContent = isBinaryExtension(ext)
               ? `__b64__:${content.toString('base64')}`
               : content.toString('utf-8')
             const file = await fs.write(filePath, textContent)
@@ -472,6 +486,37 @@ router.get('/projects/:pid/filesystem/migrate/:id', requirePermission('settings:
   } catch (err) {
     return handleFsError(res, err)
   }
+})
+
+// ─── Plan 26 — FS tool permission ─────────────────────────────────────────────
+
+// GET /projects/:pid/files/permission?path=/plans
+router.get('/projects/:pid/files/permission', requirePermission('agents:read'), async (req, res) => {
+  const projectId = req.params['pid']!
+  const p = req.query['path'] as string
+  if (!p) return res.status(400).json({ error: 'path query param required' })
+  const resolved = await resolveFsToolPermission(projectId, p)
+  return res.json(resolved)
+})
+
+// PATCH /projects/:pid/files/permission  body: { path, type: 'file'|'folder', permission: 'read'|'read+write'|null }
+router.patch('/projects/:pid/files/permission', requirePermission('agents:write'), async (req, res) => {
+  const projectId = req.params['pid']!
+  const body = req.body as { path?: string; type?: 'file' | 'folder'; permission?: 'read' | 'read+write' | null }
+  if (!body.path) return res.status(400).json({ error: 'path required' })
+  if (body.type !== 'file' && body.type !== 'folder') return res.status(400).json({ error: "type must be 'file' or 'folder'" })
+  const perm = body.permission === null ? null : body.permission
+  if (perm !== null && perm !== 'read' && perm !== 'read+write') {
+    return res.status(400).json({ error: "permission must be 'read', 'read+write', or null" })
+  }
+  await setFsToolPermission(projectId, body.path, perm, body.type)
+  audit.fsPermissionSet(
+    { ...auditContext(req), project_id: projectId },
+    body.path,
+    { type: body.type, permission: perm },
+  )
+  const resolved = await resolveFsToolPermission(projectId, body.path)
+  return res.json({ ok: true, resolved })
 })
 
 export { router as filesystemRouter }

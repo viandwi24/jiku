@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import type { ToolDefinition, ToolStreamChunk, ToolContext } from '@jiku/types'
 import { getFilesystemService } from './factory.ts'
-import { recordFsRead, getFsRead, forgetFsRead, getFileByPath } from '@jiku-studio/db'
+import { recordFsRead, getFsRead, forgetFsRead, getFileByPath, resolveFsToolPermission } from '@jiku-studio/db'
+import { audit } from '../audit/logger.ts'
 
 /**
  * Build filesystem tools for a project.
@@ -42,6 +43,36 @@ const FS_WRITE_HINT =
  * Key: lowercase extension without dot (e.g. "xlsx"). Value: human-readable hint.
  */
 export type BinaryFileHints = Map<string, string>
+
+/**
+ * Plan 26 — FS tool permission gate. Returns null if OK, else an error payload
+ * the tool should return verbatim to the model. Applies only to mutating ops
+ * (write / edit / append / move / delete). Read ops are always allowed.
+ */
+async function checkToolPermGate(
+  projectId: string,
+  path: string,
+  operation: 'write' | 'edit' | 'append' | 'move' | 'delete',
+  caller?: { user_id?: string | null; agent_id?: string | null },
+): Promise<{ error: string; code: 'FS_TOOL_READONLY'; hint: string } | null> {
+  const resolved = await resolveFsToolPermission(projectId, path)
+  if (resolved.effective === 'read+write') return null
+  const sourceDesc = resolved.source === 'self'
+    ? `this path is marked read-only for tools`
+    : `inherited read-only from "${resolved.source_path ?? '/'}"`
+  audit.fsPermissionDenied(
+    { actor_id: caller?.user_id ?? null, actor_type: caller?.agent_id ? 'agent' : 'system', project_id: projectId },
+    path,
+    { operation, effective_permission: resolved.effective, source_path: resolved.source_path, agent_id: caller?.agent_id ?? null },
+  )
+  return {
+    error: `Access denied: ${path} — ${sourceDesc}. fs_${operation} is blocked.`,
+    code: 'FS_TOOL_READONLY',
+    hint: resolved.source === 'inherited'
+      ? `The read-only flag is set on "${resolved.source_path}". Write elsewhere, or ask the user to flip the permission in the Disk explorer.`
+      : 'Write to a path under a read+write folder, or ask the user to change this file\'s tool permission.',
+  }
+}
 
 /**
  * Claude-Code-style read-before-write gate.
@@ -277,6 +308,9 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
 
+        const permGate = await checkToolPermGate(projectId, path, 'write', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGate) return permGate
+
         const gate = await checkReadGate(projectId, conversationId, path, { allowMissingRead: true })
         if (gate) return gate
 
@@ -344,6 +378,9 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         if (old_string === new_string) {
           return { error: 'old_string and new_string are identical — nothing to change.' }
         }
+
+        const permGate = await checkToolPermGate(projectId, path, 'edit', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGate) return permGate
 
         const gate = await checkReadGate(projectId, conversationId, path, { allowMissingRead: false })
         if (gate) return gate
@@ -430,6 +467,10 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        const permGate = await checkToolPermGate(projectId, path, 'append', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGate) return permGate
+
         try {
           let combined: string
           let previousSize = 0
@@ -488,6 +529,12 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        const permGateFrom = await checkToolPermGate(projectId, from, 'move', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGateFrom) return permGateFrom
+        const permGateTo = await checkToolPermGate(projectId, to, 'move', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGateTo) return permGateTo
+
         try {
           await fs.move(from, to)
           // Tracker rows are keyed by path — drop the old path, the agent can
@@ -518,6 +565,10 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        const permGate = await checkToolPermGate(projectId, path, 'delete', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGate) return permGate
+
         try {
           await fs.delete(path)
           if (conversationId) await forgetFsRead(conversationId, path)

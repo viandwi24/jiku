@@ -1200,6 +1200,16 @@ export interface ConnectorContent {
    * proactive notifications/broadcasts skip the effect.
    */
   simulate_typing?: boolean
+
+  /**
+   * Plan 27 — Platform-specific send parameters. Adapter declares the accepted
+   * keys via `getParamSchema()` (surfaced to agents via `connector_list`).
+   * Adapter is responsible for passing these through to the platform API.
+   *
+   * Examples — Telegram: `reply_to_message_id`, `parse_mode`, `disable_web_page_preview`,
+   * `message_thread_id`, `protect_content`, `allow_sending_without_reply`.
+   */
+  params?: Record<string, unknown>
 }
 
 export interface ConnectorSendResult {
@@ -1219,6 +1229,80 @@ export interface ConnectorContext {
   metadata: Record<string, string>
   /** Emit a parsed ConnectorEvent into the routing pipeline */
   onEvent(event: ConnectorEvent): Promise<void>
+}
+
+/**
+ * Plan 28 — Resolved binding context passed to `ConnectorAdapter.handleResolvedEvent()`.
+ *
+ * The event-router does first-contact work (log, resolve binding + identity + scope,
+ * create conversation, build connector_context block) then hands off to the adapter.
+ * The adapter owns queueing + streaming + outbound send + usage logging from this
+ * point on, because rate-limits and typing UX differ per platform.
+ *
+ * All platform- and studio-internal services the adapter needs are injected as
+ * callables so the plugin stays decoupled from `@jiku-studio/server`.
+ */
+export interface ResolvedEventContext {
+  event: ConnectorEvent
+  binding: { id: string; agent_id: string; source_type: string; [k: string]: unknown }
+  identity: { id: string; external_id: string; [k: string]: unknown } | null
+  conversationId: string
+  agentId: string
+  projectId: string
+  connectorId: string
+  connectorDisplayName: string | null
+  /** Internal DB id for the inbound `connector_events` row. */
+  eventId: string | null
+  /** Internal DB id for the inbound `connector_messages` row. */
+  inboundMessageId: string | null
+  /** The `<connector_context>…</connector_context>` block already built by the router. */
+  contextString: string
+  /**
+   * The full prompt that should be fed to the runner — context block + wrapped
+   * user_message + optional @file reference hint block. Adapter passes this as
+   * `input` when calling `startRun`.
+   */
+  inputText: string
+
+  /** Start an agent run for this conversation. Returns the full run stream. */
+  startRun(): Promise<{ stream: ReadableStream<unknown> }>
+
+  /**
+   * Hand a tee'd branch of the stream to the host so SSE observers (chat web UI)
+   * keep receiving real-time updates. Host drains + broadcasts + buffers. Adapter
+   * must keep draining its own branch independently.
+   */
+  registerObserverStream(stream: ReadableStream<unknown>): { done(): void }
+
+  /** Log an outbound `connector_messages` row. */
+  logOutboundMessage(row: {
+    ref_keys: Record<string, string>
+    content_snapshot?: string
+    raw_payload?: unknown
+    status: string
+  }): Promise<{ id: string } | null>
+
+  /** Log an outbound `connector_events` row. */
+  logOutboundEvent(row: {
+    event_type: string
+    ref_keys: Record<string, string>
+    payload?: unknown
+    raw_payload?: unknown
+    status: string
+  }): Promise<{ id: string } | null>
+
+  /** Record LLM usage for billing + observability. */
+  recordUsage(row: {
+    input_tokens: number
+    output_tokens: number
+    provider: string | null
+    model: string | null
+    raw_system_prompt?: string | null
+    raw_messages?: unknown
+    raw_response?: string | null
+    active_tools?: string[] | null
+    agent_adapter?: string | null
+  }): void
 }
 
 /**
@@ -1617,5 +1701,92 @@ export interface SkillEntry {
   manifest_hash: string
   active: boolean
   last_synced_at: Date | null
+}
+
+// ============================================================
+// COMMANDS (Plan 24)
+// ============================================================
+
+/**
+ * Argument spec declared in command frontmatter.
+ * Simple positional schema; runtime parses the raw string after `/slug ` into
+ * these fields. Unknown / unscheduled arg text lands in `raw`.
+ */
+export interface CommandArgSpec {
+  name: string
+  description?: string
+  type?: 'string' | 'number' | 'boolean'
+  required?: boolean
+}
+
+/** COMMAND.md frontmatter schema. Mirrors SkillManifest shape, adds `args`. */
+export interface CommandManifest {
+  name: string
+  description: string
+  tags?: string[]
+  args?: CommandArgSpec[]
+  metadata?: {
+    jiku?: {
+      emoji?: string
+      os?: NodeJS.Platform[]
+      requires?: {
+        bins?: string[]
+        env?: string[]
+        permissions?: string[]
+        config?: string[]
+      }
+      entrypoint?: string
+    }
+    [k: string]: unknown
+  }
+}
+
+export type CommandSource = 'fs' | `plugin:${string}`
+
+/** How an agent consumes commands. 'manual' = allow-list, 'all' = any active command. */
+export type CommandAccessMode = 'manual' | 'all'
+
+export interface CommandEntry {
+  slug: string
+  source: CommandSource
+  plugin_id: string | null
+  manifest: CommandManifest
+  manifest_hash: string
+  active: boolean
+  last_synced_at: Date | null
+}
+
+export interface CommandFileTree {
+  entrypoint: { path: string; content: string }
+  files: Array<{
+    path: string
+    category: SkillFileCategory
+    size_bytes: number
+  }>
+}
+
+export type PluginCommandSpec =
+  | {
+      slug: string
+      source: 'folder'
+      path: string
+    }
+  | {
+      slug: string
+      source: 'inline'
+      manifest: CommandManifest
+      files: Record<string, string>
+    }
+
+/** Result returned by the dispatcher when a `/slug` prefix is detected. */
+export interface CommandDispatchResult {
+  matched: boolean
+  slug?: string
+  source?: CommandSource
+  /** Full resolved input text (body + appended args as reference). */
+  resolvedInput?: string
+  /** Parsed args keyed by arg spec name; `raw` holds remaining string. */
+  args?: Record<string, string | number | boolean>
+  error?: string
 }
 

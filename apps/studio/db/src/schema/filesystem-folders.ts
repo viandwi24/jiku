@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, timestamp, integer, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { projects } from './projects.ts'
 
 /**
@@ -15,6 +15,8 @@ export const project_folders = pgTable('project_folders', {
   path:        text('path').notNull(),         // e.g. '/src/components'
   parent_path: text('parent_path'),            // null for root-level folders (parent = '/')
   depth:       integer('depth').notNull().default(0),
+  // Plan 26 — FS tool permission (null = inherit, 'read+write' | 'read')
+  tool_permission: varchar('tool_permission', { length: 20 }),
   created_at:  timestamp('created_at').defaultNow().notNull(),
 }, t => [
   uniqueIndex('uq_pfolders_project_path').on(t.project_id, t.path),

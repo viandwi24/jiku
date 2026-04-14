@@ -10,6 +10,8 @@ import { resolveAgentModel } from '../credentials/service.ts'
 import { getFilesystemService } from '../filesystem/service.ts'
 import { signProxyToken } from './attachments.ts'
 import { evaluateAutoReply } from '../auto-reply/evaluator.ts'
+import { dispatchSlashCommand } from '../commands/dispatcher.ts'
+import { scanReferences } from '../references/hint.ts'
 import { pipeUIMessageStreamToResponse } from 'ai'
 import type { UIMessage } from 'ai'
 import type { ChatAttachment, ChatFilePart, AutoReplyRule, AvailabilitySchedule, AgentQueueMode } from '@jiku/types'
@@ -44,8 +46,28 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
 
   const lastUser = [...messages].reverse().find(m => m.role === 'user')
   const lastPart = lastUser?.parts.find(p => p.type === 'text')
-  const input = lastPart?.type === 'text' ? lastPart.text : ''
-  if (!input) { res.status(400).json({ error: 'No input message found' }); return }
+  const rawInput = lastPart?.type === 'text' ? lastPart.text : ''
+  if (!rawInput) { res.status(400).json({ error: 'No input message found' }); return }
+
+  // Plan 24 — slash command dispatcher: detect `/slug ...` prefix and rewrite input.
+  const cmd = await dispatchSlashCommand({
+    projectId: agent.project_id,
+    agentId: agent.id,
+    input: rawInput,
+    surface: 'chat',
+    userId,
+  }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
+  const resolvedInput = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : rawInput
+
+  // Plan 25 — scan for @file references and prepend a hint block so the agent
+  // knows the file exists and can fs_read it on-demand.
+  const refScan = await scanReferences({
+    projectId: agent.project_id,
+    text: resolvedInput,
+    userId,
+    surface: 'chat',
+  }).catch(() => ({ hintBlock: null } as const))
+  const input = refScan.hintBlock ? `${refScan.hintBlock}\n\n${resolvedInput}` : resolvedInput
 
   // --- Auto-reply intercept: check rules before LLM invocation ---
   const autoReplyRules = (agent.auto_replies ?? []) as AutoReplyRule[]

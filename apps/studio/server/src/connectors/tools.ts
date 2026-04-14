@@ -76,12 +76,19 @@ export function buildConnectorTools(projectId: string) {
         const allConnectors = await getConnectors(projectId)
         const filtered = status ? allConnectors.filter(c => c.status === status) : allConnectors
         return {
-          connectors: filtered.map(c => ({
-            id: c.id,
-            plugin_id: c.plugin_id,
-            display_name: c.display_name,
-            status: c.status,
-          })),
+          connectors: filtered.map(c => {
+            const adapter = connectorRegistry.getAdapterForConnector(c.id)
+            // Plan 27 — surface platform-specific send params so agents know
+            // what `params:{}` keys are valid on connector_send to this connector.
+            const param_schema = adapter?.getParamSchema ? adapter.getParamSchema() : []
+            return {
+              id: c.id,
+              plugin_id: c.plugin_id,
+              display_name: c.display_name,
+              status: c.status,
+              param_schema,
+            }
+          }),
         }
       },
     }),
@@ -312,21 +319,41 @@ export function buildConnectorTools(projectId: string) {
         reply_to_ref_keys: z.record(z.string()).optional(),
         markdown: z.boolean().default(true),
         simulate_typing: z.boolean().default(false).describe('When true, the adapter shows a "typing" effect by sending a placeholder and progressively editing it. Use for chat replies where the user is waiting; leave false for proactive notifications/broadcasts.'),
+        params: z.record(z.unknown()).optional().describe('Plan 27 — platform-specific extras (e.g. Telegram: reply_to_message_id, parse_mode, message_thread_id, protect_content, disable_web_page_preview). Check `connector_list` > param_schema per connector for valid keys.'),
       }),
       execute: async (args) => {
-        const { connector_id, target_ref_keys, text, reply_to_ref_keys, markdown, simulate_typing } = args as {
+        const { connector_id, target_ref_keys, text, reply_to_ref_keys, markdown, simulate_typing, params } = args as {
           connector_id: string
           target_ref_keys: Record<string, string>
           text: string
           reply_to_ref_keys?: Record<string, string>
           markdown: boolean
           simulate_typing: boolean
+          params?: Record<string, unknown>
         }
         const adapter = connectorRegistry.getAdapterForConnector(connector_id)
         if (!adapter) return { success: false, error: 'Connector not active' }
+
+        // Plan 27 — validate params against adapter schema (if declared). Unknown
+        // keys produce an informative error so the agent fixes the call, not
+        // silently passes bogus fields to the platform.
+        if (params && adapter.getParamSchema) {
+          const schema = adapter.getParamSchema()
+          const valid = new Set(schema.map(s => s.name))
+          const unknown = Object.keys(params).filter(k => !valid.has(k))
+          if (unknown.length > 0) {
+            return {
+              success: false,
+              code: 'INVALID_PARAMS',
+              error: `Unknown params for ${adapter.id}: ${unknown.join(', ')}. Check connector_list > param_schema for valid keys.`,
+              valid_params: [...valid],
+            }
+          }
+        }
+
         const sendResult = await adapter.sendMessage(
           { ref_keys: target_ref_keys, reply_to_ref_keys },
-          { text, markdown, simulate_typing },
+          { text, markdown, simulate_typing, params },
         )
         // Log outbound message + outbound event for inspection in channels UI
         const msgRow = await logConnectorMessage({
@@ -613,10 +640,12 @@ export function buildConnectorTools(projectId: string) {
         connector_id: z.string().optional().describe('Connector ID. Required only when target name is ambiguous across connectors.'),
         markdown: z.boolean().default(true),
         simulate_typing: z.boolean().default(false).describe('When true, the adapter shows a "typing" effect by editing a placeholder. Off for notifications/broadcasts.'),
+        params: z.record(z.unknown()).optional().describe('Plan 27 — platform-specific extras. See connector_list > param_schema for valid keys per connector.'),
       }),
       execute: async (args) => {
-        const { target_name, text, connector_id, markdown, simulate_typing } = args as {
+        const { target_name, text, connector_id, markdown, simulate_typing, params } = args as {
           target_name: string; text: string; connector_id?: string; markdown: boolean; simulate_typing: boolean
+          params?: Record<string, unknown>
         }
 
         const matches = await getConnectorTargetsByName(projectId, target_name, connector_id)
@@ -660,7 +689,20 @@ export function buildConnectorTools(projectId: string) {
           ref_keys: target.ref_keys as Record<string, string>,
           scope_key: target.scope_key ?? undefined,
         }
-        return adapter.sendMessage(sendTarget, { text, markdown, simulate_typing })
+        if (params && adapter.getParamSchema) {
+          const schema = adapter.getParamSchema()
+          const valid = new Set(schema.map(s => s.name))
+          const unknown = Object.keys(params).filter(k => !valid.has(k))
+          if (unknown.length > 0) {
+            return {
+              success: false,
+              code: 'INVALID_PARAMS',
+              error: `Unknown params for ${adapter.id}: ${unknown.join(', ')}. Check connector_list > param_schema for valid keys.`,
+              valid_params: [...valid],
+            }
+          }
+        }
+        return adapter.sendMessage(sendTarget, { text, markdown, simulate_typing, params })
       },
     }),
 

@@ -919,9 +919,10 @@ async function executeConversationAdapter(
     }
 
     if (queueMode === 'ack_queue') {
+      const position = conversationQueue.queueLength(conversationId) + 1
       connectorAdapter?.sendMessage(
         { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-        { text: '⏳ Your message has been queued and will be processed shortly.' },
+        { text: `⏳ Pesan kamu di antrian (posisi #${position}). Tunggu bot selesai menjawab pesan sebelumnya — aku akan balas begitu giliran.` },
       ).catch(() => {})
     }
 
@@ -1001,14 +1002,121 @@ async function executeConversationAdapter(
     })
     const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
 
-    const inputText = event.type === 'message'
+    const rawInputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
-    // Wrap the raw user text in an explicit tag so the model can't confuse it
-    // with the connector_context metadata (prompt-injection defence).
-    const wrappedInput = `<user_message>\n${inputText}\n</user_message>`
-    const input = contextString ? `${contextString}\n\n${wrappedInput}` : wrappedInput
 
+    // Plan 24 — slash command dispatcher for connector inbound. Surface
+    // 'connector' means the dispatcher enforces the per-agent allow-list when
+    // the agent's command_access_mode is 'manual' (default) — so external chat
+    // members can only invoke commands the admin explicitly assigned. Set
+    // `command_access_mode='all'` on the agent to lift that gate per binding.
+    const { dispatchSlashCommand } = await import('../commands/dispatcher.ts')
+    const cmdDispatch = await dispatchSlashCommand({
+      projectId, agentId, input: rawInputText, surface: 'connector',
+      userId: identity?.external_id ?? null,
+    }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
+    const inputText = (cmdDispatch.matched && cmdDispatch.resolvedInput)
+      ? cmdDispatch.resolvedInput
+      : rawInputText
+
+    // Wrap the (possibly resolved) text in an explicit tag so the model can't
+    // confuse it with the connector_context metadata (prompt-injection defence).
+    const wrappedInput = `<user_message>\n${inputText}\n</user_message>`
+
+    // Plan 25 — @file reference hint. Scan the resolved text (if a command
+    // dispatched, its body may itself reference @files).
+    const { scanReferences } = await import('../references/hint.ts')
+    const refScan = await scanReferences({
+      projectId, text: inputText, surface: 'connector', userId: null,
+    }).catch(() => ({ hintBlock: null } as const))
+    const refBlock = refScan.hintBlock ? `\n\n${refScan.hintBlock}` : ''
+    const input = (contextString ? `${contextString}\n\n${wrappedInput}` : wrappedInput) + refBlock
+
+    // Plan 28 — If the adapter implements handleResolvedEvent, hand off full
+    // ownership of queueing + stream consumption + outbound send. This lets
+    // platform adapters (Telegram first) render true real-time streaming typing
+    // with tool-call chips instead of a retroactive placebo after agent finish.
+    if (connectorAdapter && typeof connectorAdapter.handleResolvedEvent === 'function') {
+      // Stop the polling typing indicator — adapter controls its own UX now.
+      if (typingInterval) clearInterval(typingInterval)
+      const { recordLLMUsage } = await import('../usage/tracker.ts')
+
+      await connectorAdapter.handleResolvedEvent({
+        event,
+        binding: binding as unknown as { id: string; agent_id: string; source_type: string } & Record<string, unknown>,
+        identity: identity as unknown as { id: string; external_id: string } & Record<string, unknown>,
+        conversationId,
+        agentId,
+        projectId,
+        connectorId,
+        connectorDisplayName: connectorDisplayName ?? null,
+        eventId,
+        inboundMessageId: inboundRow?.id ?? null,
+        contextString: contextString ?? '',
+        inputText: input,
+        startRun: () => runtimeManager.run(projectId, {
+          agent_id: agentId,
+          conversation_id: conversationId,
+          caller,
+          mode: 'chat',
+          input,
+        }),
+        registerObserverStream: (obsStream: ReadableStream<unknown>) => {
+          const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
+          ;(async () => {
+            try {
+              const r = (obsStream as ReadableStream<Record<string, unknown>>).getReader()
+              while (true) {
+                const { done, value } = await r.read()
+                if (done) break
+                bufferChunk(value)
+                broadcast(`data: ${JSON.stringify(value)}\n\n`)
+              }
+            } finally { registryDone() }
+          })()
+          return { done: registryDone }
+        },
+        logOutboundMessage: (row) => logMsg(projectId, {
+          connector_id: connectorId,
+          conversation_id: conversationId,
+          direction: 'outbound',
+          ref_keys: row.ref_keys,
+          content_snapshot: row.content_snapshot,
+          raw_payload: row.raw_payload,
+          status: row.status,
+        }),
+        logOutboundEvent: (row) => logEv(projectId, {
+          connector_id: connectorId,
+          event_type: row.event_type,
+          direction: 'outbound',
+          ref_keys: row.ref_keys,
+          target_ref_keys: event.ref_keys,
+          payload: row.payload,
+          raw_payload: row.raw_payload,
+          status: row.status,
+        }),
+        recordUsage: (row) => recordLLMUsage({
+          source: 'chat',
+          mode: 'chat',
+          project_id: projectId,
+          agent_id: agentId,
+          conversation_id: conversationId,
+          provider: row.provider,
+          model: row.model,
+          input_tokens: row.input_tokens,
+          output_tokens: row.output_tokens,
+          raw_system_prompt: row.raw_system_prompt ?? null,
+          raw_messages: row.raw_messages ?? null,
+          raw_response: row.raw_response ?? null,
+          active_tools: row.active_tools ?? null,
+          agent_adapter: row.agent_adapter ?? null,
+        }),
+      })
+      return
+    }
+
+    // ── Fallback path: adapter does not implement handleResolvedEvent ─────────
     const runResult = await runtimeManager.run(projectId, {
       agent_id: agentId,
       conversation_id: conversationId,

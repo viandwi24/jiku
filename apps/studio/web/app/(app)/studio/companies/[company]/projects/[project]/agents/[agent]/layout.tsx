@@ -17,6 +17,7 @@ import {
   Paperclip,
   Shield,
   Sparkles,
+  Terminal,
   ListTodo,
   Wrench,
 } from 'lucide-react'
@@ -42,6 +43,7 @@ export default function AgentLayout({ children, params }: LayoutProps) {
     { value: 'tools', label: 'tools', icon: Wrench, href: `${base}/tools` },
     { value: 'task', label: 'task', icon: ListTodo, href: `${base}/task` },
     { value: 'skills', label: 'skills', icon: BookOpen, href: `${base}/skills` },
+    { value: 'commands', label: 'commands', icon: Terminal, href: `${base}/commands` },
     { value: 'memory', label: 'memory', icon: Brain, href: `${base}/memory` },
     { value: 'files', label: 'files', icon: Paperclip, href: `${base}/files` },
     { value: 'auto-reply', label: 'auto-reply', icon: MessageCircleReply, href: `${base}/auto-reply` },

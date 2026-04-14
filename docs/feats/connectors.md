@@ -28,6 +28,41 @@ Adapter populates `metadata.bot_mentioned` / `metadata.bot_replied_to` on inboun
 
 Plus lazy binding-draft creation in event-router when a group/topic message arrives with no matching binding. All idempotent — check-before-create.
 
+## Reliability & recovery (2026-04-14, ADR-079…082)
+
+### Admin UI controls (channels connector detail page)
+
+| Control | Endpoint | What it does |
+|---|---|---|
+| **Restart** button | `POST /connectors/:id/restart` | `deactivateConnector` → `activateConnector`. Adapter enforces its own post-deactivate wait inside `onActivate` (Telegram: 30s). Visible when `status='active'`. Button icon `RefreshCw` spins while pending. |
+| **HealthBadge** | `GET /connectors/:id/health` (polled every 15s while active) | Renders the adapter's `getHealth()` snapshot. Telegram returns `{ polling, last_event_at, bot_user_id }`. Labels: green (event <5min), amber stale (>5min), amber "belum ada event", red "polling offline". |
+| **Stop** / **Start** | existing deactivate/activate | Unchanged. Stop + manual Start now safe because of the 30s guard. |
+
+### Queues (Telegram adapter, module-level)
+
+- **Per-chat outbound**: `chatSendQueues: Map<chatId, Promise<unknown>>` — all `sendMessage()` calls to a given `chat_id` serialize. `withTelegramRetry(fn)` respects `err.parameters.retry_after` on 429, capped at 45s.
+- **Global inbound FIFO batch**: `enqueueInboundEvent(task)` + `drainInboundQueue()` — batch size 5, `Promise.allSettled`, FIFO across batches. All five `ctx.onEvent(event)` call sites (message / reaction / unreaction / edit / delete / my_chat_member) flow through it.
+- **Arrival log is UNqueued**: `logArrivalImmediate(connectorId, event)` writes `connector_events.status='received'` synchronously before the inbound queue. Ops-critical invariant (ADR-080) — do not move this into the queue.
+
+### Polling resilience
+
+- `bot.start()` runs inside a backoff loop (1s → 60s max). On 409 Conflict, `bot.api.close()` is called between retries to release the poll slot. Loop exits when `pollingStopRequested=true`.
+- `onDeactivate` writes a timestamp into module-level `lastDeactivateByConnector`; `onActivate` waits out the remainder of a 30s window before starting polling (Telegram reserves the slot for that long server-side).
+- `bot.catch((err) => console.error(...))` installed so grammy-level handler exceptions don't escape as unhandled rejections.
+
+### Orphan identity self-healing
+
+When a binding is deleted, its `connector_identities` rows have `binding_id` set to NULL (cascade) but retain `status='approved'`. On the next inbound DM, `event-router.ts` Path B detects the orphan shape and resets `status='pending'` + re-sends the `👋 access request sent` notification. One message from the user gets dropped silently before the reset takes effect; subsequent messages produce the pairing request in the admin UI. See ADR-082.
+
+### Diagnostic escape hatches
+
+From outside the app (e.g. `curl` with the bot token):
+- `GET /bot<TOKEN>/getUpdates?timeout=0` — 409 Conflict means another instance holds the poll slot.
+- `GET /bot<TOKEN>/getWebhookInfo` — non-empty `url` means webhook is set and `getUpdates` is blocked.
+- `POST /bot<TOKEN>/logOut` — nuclear: force-release all sessions server-side. Wait 10s, then restart the connector.
+
+---
+
 ## Context block + agent observation tools (2026-04-14, ADR-077)
 
 ### Input composition
@@ -243,6 +278,117 @@ No `agent_id` at root — always inside `output_config`.
 - `channels/[connector]/bindings/[binding]/page.tsx` — binding settings + identity approval
 - `channels/[connector]/events/page.tsx` — event log + SSE live stream
 - `channels/[connector]/messages/page.tsx` — inbound/outbound message log
+
+## Streaming Outbound via `handleResolvedEvent` (Plan 28)
+
+Optional adapter hook that takes full ownership of stream consumption + outbound send after the event-router has resolved binding/identity/conversation.
+
+### Adapter contract
+
+```typescript
+// @jiku/kit — ConnectorAdapter
+handleResolvedEvent?(ctx: ResolvedEventContext): Promise<void>
+
+// @jiku/types
+interface ResolvedEventContext {
+  event, binding, identity, conversationId, agentId, projectId,
+  connectorId, connectorDisplayName, eventId, inboundMessageId,
+  contextString, inputText,
+  startRun(): Promise<{ stream: ReadableStream<unknown> }>
+  registerObserverStream(stream): { done(): void }
+  logOutboundMessage(row): Promise<...>
+  logOutboundEvent(row): Promise<...>
+  recordUsage(row): void
+}
+```
+
+When defined, event-router hands off after building context. Adapter owns queueing, stream consumption, outbound send, logging. When undefined, router falls back to legacy accumulate-then-sendMessage.
+
+### Telegram implementation
+
+- **Placeholder `⌛`** sent immediately as reply to user's message.
+- **Stream tee** — own branch for render, one to `registerObserverStream` so chat-web SSE keeps getting chunks in parallel.
+- **Segment-based render** — interleaved `{type:'text'|'tools'}[]` with `---` separator between adjacent segments. Consecutive text-delta chunks extend the last text segment; consecutive tool-calls merge into the last tool group.
+- **Debounced edits 700ms** — each edit awaits the previous via Promise chain for ordering + rate-limit safety.
+- **Interim plain, final MarkdownV2** — tool lines as `_[icon] name_` (italic, escaped), text via `telegramifyMarkdown`, separators as `\-\-\-`. Plain fallback on parse failure.
+- **Overflow at 4000 chars** — finalize current, open new `⌛` continuation, reset segments, resume there.
+- **Outbound log + usage** via ctx callables at finalize; `content_snapshot` plain for DB readability.
+- **`message is not modified`** treated as no-op success.
+
+### Tool chunk visual
+
+```
+oke, gue cek dulu
+---
+[🔧] fs_read
+[☑️] fs_read
+---
+udah ketemu, ini ringkasannya:
+...
+---
+[🔧] connector_send
+[☑️] connector_send
+---
+sudah kekirim.
+```
+
+At finalize, tool lines italic-wrap; `---` separators render literally.
+
+### Known limitations
+
+- Queue drain path (`queue_mode='ack_queue'` dequeue) still uses legacy simulate_typing — first burst message gets streaming UX, subsequent queued in same window fall back. Backlog follow-up.
+- Tool chunk type names are best-effort matching. If a runner emits different names, chips silently won't render.
+
+### Related ADRs
+- **ADR-087** — adapter-owned streaming; event-router as matchmaker only.
+
+## Platform-Specific Params (Plan 27)
+
+Adapter declares platform-specific send params via `getParamSchema()`; surfaced to agents via `connector_list` output per-connector (ADR-086, not prompt injection).
+
+### Adapter contract
+
+```typescript
+// @jiku/kit
+export interface ConnectorParamSpec {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'enum' | 'array' | 'object'
+  enum_values?: string[]
+  description: string
+  example?: string | number | boolean | unknown[] | Record<string, unknown>
+}
+
+class MyAdapter extends ConnectorAdapter {
+  getParamSchema(): ConnectorParamSpec[] { /* ... */ }
+}
+```
+
+### ConnectorContent
+
+```typescript
+interface ConnectorContent {
+  params?: Record<string, unknown>  // Plan 27
+  // ... existing fields
+}
+```
+
+### Tool surface
+
+- `connector_list` returns each connector with `param_schema: ConnectorParamSpec[]`.
+- `connector_send` + `connector_send_to_target` accept optional `params`. Unknown keys → `INVALID_PARAMS` error with `valid_params` list.
+
+### Telegram schema
+
+- `reply_to_message_id` (number) — translated to modern `reply_parameters`.
+- `parse_mode` (enum: MarkdownV2, HTML).
+- `disable_web_page_preview` (boolean).
+- `message_thread_id` (number) — override target.ref_keys.thread_id.
+- `protect_content` (boolean).
+- `disable_notification` (boolean).
+- `allow_sending_without_reply` (boolean).
+
+### Related ADRs
+- **ADR-086** — discover-via-list-tool, not inject-ke-prompt.
 
 ## Related Files
 

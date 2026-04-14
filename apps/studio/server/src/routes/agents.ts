@@ -53,6 +53,13 @@ router.post('/projects/:pid/agents', requirePermission('agents:create'), async (
   res.status(201).json({ agent })
 })
 
+router.get('/agents/:aid', requirePermission('agents:read'), async (req, res) => {
+  const agentId = req.params['aid']!
+  const agent = await getAgentById(agentId)
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+  res.json({ agent })
+})
+
 router.patch('/agents/:aid', requirePermission('agents:write'), async (req, res) => {
   const agentId = req.params['aid']!
   const body = req.body as Partial<{

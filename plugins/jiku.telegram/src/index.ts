@@ -7,7 +7,7 @@ import type {
 import telegramifyMarkdown from 'telegramify-markdown'
 import { StudioPlugin } from '@jiku-plugin/studio'
 import type { Bot } from 'grammy'
-import { getFileByPath, getConnectorEventById } from '@jiku-studio/db'
+import { getFileByPath, getConnectorEventById, logConnectorEvent } from '@jiku-studio/db'
 
 const TELEGRAM_MAX_LENGTH = 4000
 
@@ -203,6 +203,46 @@ function enqueueInboundEvent(run: () => Promise<void>): Promise<void> {
   })
 }
 
+/**
+ * Non-blocking arrival log.
+ *
+ * Why: the processing queue (enqueueInboundEvent) can stall under rate-limit /
+ * bug scenarios. When that happens, the old code also lost observability —
+ * nothing hit `connector_events` because logging lived inside the queued task.
+ * Per ops requirement: every inbound event MUST land in the DB the moment it
+ * arrives, regardless of whether the router/agent ever gets to process it.
+ * Downstream handlers UPDATE the status (`handled`, `dropped`, …); this only
+ * INSERTs with `status='received'`.
+ *
+ * This helper awaits the insert so FIFO ordering of arrival rows matches the
+ * wire order, but any error is swallowed — a logging failure must never drop
+ * the event or crash the polling loop.
+ */
+async function logArrivalImmediate(
+  connectorId: string | null,
+  event: ConnectorEvent,
+): Promise<void> {
+  if (!connectorId) return
+  try {
+    await logConnectorEvent({
+      connector_id: connectorId,
+      event_type: event.type,
+      direction: 'inbound',
+      ref_keys: event.ref_keys,
+      payload: {
+        sender: event.sender,
+        content: event.content,
+        scope_key: event.scope_key,
+      },
+      raw_payload: event.raw_payload,
+      metadata: event.metadata,
+      status: 'received',
+    })
+  } catch (err) {
+    console.error('[telegram] logArrivalImmediate failed:', err)
+  }
+}
+
 function enqueueForChat<T>(chatId: string, task: () => Promise<T>): Promise<T> {
   const prev = chatSendQueues.get(chatId) ?? Promise.resolve()
   const next = prev.then(task, task)
@@ -228,6 +268,7 @@ class TelegramAdapter extends ConnectorAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private bot: Bot | null = null
   private projectId: string | null = null
+  private connectorId: string | null = null  // UUID — needed for non-blocking raw event logging
   private botUsername: string | null = null  // cached @username (lowercased, no '@') for mention detection
   private botUserId: number | null = null    // cached numeric id for text_mention + reply-to-bot detection
 
@@ -690,6 +731,7 @@ class TelegramAdapter extends ConnectorAdapter {
     if (!token) throw new Error('[telegram] bot_token missing in credentials')
 
     this.projectId = ctx.projectId
+    this.connectorId = ctx.connectorId
     this.bot = new Bot(token)
 
     this.bot.on('message', async (gramCtx: any) => {
@@ -789,6 +831,11 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
+      //    see inbound traffic in connector_events even if the routing queue
+      //    stalls. Downstream handlers log subsequent status rows.
+      await logArrivalImmediate(this.connectorId, event)
+      // 2) Route through the queue (batched concurrency) for agent processing.
       await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
         console.error('[telegram] inbound event handler error:', err)
       }))
@@ -850,6 +897,11 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
+      //    see inbound traffic in connector_events even if the routing queue
+      //    stalls. Downstream handlers log subsequent status rows.
+      await logArrivalImmediate(this.connectorId, event)
+      // 2) Route through the queue (batched concurrency) for agent processing.
       await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
         console.error('[telegram] inbound event handler error:', err)
       }))
@@ -875,6 +927,11 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date((msg.edit_date ?? msg.date) * 1000),
         raw_payload: gramCtx.update,
       }
+      // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
+      //    see inbound traffic in connector_events even if the routing queue
+      //    stalls. Downstream handlers log subsequent status rows.
+      await logArrivalImmediate(this.connectorId, event)
+      // 2) Route through the queue (batched concurrency) for agent processing.
       await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
         console.error('[telegram] inbound event handler error:', err)
       }))
@@ -912,6 +969,11 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
+      //    see inbound traffic in connector_events even if the routing queue
+      //    stalls. Downstream handlers log subsequent status rows.
+      await logArrivalImmediate(this.connectorId, event)
+      // 2) Route through the queue (batched concurrency) for agent processing.
       await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
         console.error('[telegram] inbound event handler error:', err)
       }))
@@ -1031,6 +1093,11 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
+      //    see inbound traffic in connector_events even if the routing queue
+      //    stalls. Downstream handlers log subsequent status rows.
+      await logArrivalImmediate(this.connectorId, event)
+      // 2) Route through the queue (batched concurrency) for agent processing.
       await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
         console.error('[telegram] inbound event handler error:', err)
       }))
@@ -1094,6 +1161,7 @@ class TelegramAdapter extends ConnectorAdapter {
       await this.bot.stop().catch(() => {})
       this.bot = null
       this.projectId = null
+      this.connectorId = null
       this.botUsername = null
       this.botUserId = null
       console.log('[telegram] bot stopped')

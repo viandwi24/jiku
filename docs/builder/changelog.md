@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-14 — telegram: arrival log outside the queue, typing tick tuning
+
+- **Non-blocking arrival log**: new `logArrivalImmediate()` helper inserts a `connector_events` row with `status='received'` the moment an update arrives from grammy, BEFORE entering the inbound FIFO batch queue. Rationale: the processing queue can stall (rate-limit pressure, handler bug, DB deadlock), and when that happens operators lost all visibility — no rows in `connector_events` / `connector_messages` even though Telegram was delivering updates. Arrival is now observable independent of routing health.
+- **`ctx.connectorId` cached** on adapter instance so the plugin can call `logConnectorEvent` directly with the correct UUID. Reset in `onDeactivate` alongside the other identity fields.
+- **Known follow-up** (not in this change): downstream event-router still INSERTs additional rows as status transitions (`pending_approval`, `handled`, …). Short-term that means each inbound event produces a `received` row + one outcome row. Longer term those should be UPDATEs against the arrival row (requires threading the arrival event id into `routeConnectorEvent`).
+- **Typing tick 1s → 2s**: same reasoning as before, fewer edits per message.
+
 ## 2026-04-14 — telegram: inbound FIFO batch queue, typing tick 2s, handler error isolation
 
 - **Inbound event queue**: all `ctx.onEvent(event)` call sites (5 of them — message, reaction, unreaction, edit, delete, my_chat_member) now route through `enqueueInboundEvent`. Global FIFO with `INBOUND_BATCH_SIZE = 5`: take 5 events, run via `Promise.allSettled`, wait for the batch to drain, then take the next 5. Prevents a burst of 30 messages from spinning up 30 concurrent agent runs and thrashing the DB / outbound rate limit.

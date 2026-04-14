@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-14 — telegram: inbound FIFO batch queue, typing tick 2s, handler error isolation
+
+- **Inbound event queue**: all `ctx.onEvent(event)` call sites (5 of them — message, reaction, unreaction, edit, delete, my_chat_member) now route through `enqueueInboundEvent`. Global FIFO with `INBOUND_BATCH_SIZE = 5`: take 5 events, run via `Promise.allSettled`, wait for the batch to drain, then take the next 5. Prevents a burst of 30 messages from spinning up 30 concurrent agent runs and thrashing the DB / outbound rate limit.
+- **Handler error isolation**: wrapped `ctx.onEvent` with `.catch(log)`. Before, an unhandled rejection from the event-router (e.g. a 429 propagating out of `sendMessage`) could crash the grammy polling handler, leave the bot in a bad state, and — combined with stale in-memory `runningConversations` entries in event-router — cause "chat tidak berfungsi lagi meski server di-restart" because the same crash would recur on the next inbound update. `Promise.allSettled` also isolates failures within a batch.
+- **Typing tick 1s → 2s**: `TICK_MS` in `sendWithTypingSimulation` doubled. Fewer interim edits per message → less per-chat rate-limit pressure (placeholder + 2 edits + final now spread over ~6s instead of ~3s).
+
+## 2026-04-14 — telegram: per-chat send queue + 429 retry_after handling
+
+- **Per-chat send queue**: `sendMessage` now enqueues per `chat_id` via a promise chain (`chatSendQueues` map), so typing-simulation edits and subsequent sends to the same chat never race. Busy groups with `simulate_typing` (placeholder + 2 interim edits + final edit per message) were hitting Telegram's per-chat rate limit and losing the final edit.
+- **429 retry**: new `withTelegramRetry` helper reads `err.parameters.retry_after` on GrammyError 429, waits that many seconds (+250ms buffer), retries once. Cap `MAX_RETRY_WAIT_MS = 45s` — beyond that we give up and let the caller degrade (prevents a pathological retry_after from stalling the whole queue). Applied to: placeholder send, final markdown edit, plain-text fallback edit, and the chunked text-send path. Interim "typing" edits stay best-effort (decorative, and serialization should prevent most 429s there).
+- File: `plugins/jiku.telegram/src/index.ts`.
+
 ## 2026-04-14 — telegram: auto-register forum topics as connector targets + scope_key consistency
 
 - **Topic target auto-register**: on first message in a forum topic that has a known topic title, Telegram adapter upserts a `connector_target` row with `name=<chat-slug>__<topic-slug>`, `display_name="<chat> → <topic>"`, `ref_keys={chat_id, thread_id}`, `scope_key=group:<chat_id>:topic:<thread_id>`. Agents can now address specific topics by name via `connector_send_to_target`. Idempotent — checks `getConnectorTargetByName` before creating.

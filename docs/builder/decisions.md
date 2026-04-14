@@ -1,5 +1,34 @@
 # Decisions
 
+## ADR-078 — Trigger mode detection is adapter-authoritative; customization via per-binding text arrays
+
+**Context:** Original `matchesTrigger` implementation had weak / buggy mode detection:
+- `mention` was `text.includes('@')` — matched any `@` (emails, unrelated user mentions).
+- `reply` had no case in the switch — fell through to default → always passed.
+- `command` / `keyword` had no whitelist / regex support.
+
+Platform signals needed for correct detection (Telegram entities, bot's own username/id, reply-to-message chain) aren't naturally available in the shared event-router — they're adapter-private knowledge. Meanwhile admin may want custom "trigger words" beyond the platform's formal mention feature (internal nicknames like "halo bro", alternate handles, etc.).
+
+**Decision:** Two-layer model.
+
+1. **Adapter populates boolean flags in `event.metadata`** for platform-authoritative detection:
+   - `metadata.bot_mentioned` — true when THIS bot was explicitly mentioned via platform mechanisms (Telegram: `entities.type='mention'` matching `@<botUsername>` OR `type='text_mention'` with `user.id===botUserId`, scanned across both `text` + `caption` entities).
+   - `metadata.bot_replied_to` — true when the user used the platform's reply feature to reply to one of this bot's own messages (Telegram: `reply_to_message.from.id===botUserId` and NOT the synthetic forum-topic-created pointer).
+
+   The adapter caches bot identity (`botUsername`, `botUserId` from `getMe()`) at activation and clears on deactivation.
+
+2. **`matchesTrigger` consults flags PLUS per-binding overrides**:
+   - `mention`: in DM → implicit pass. In group → if `trigger_mention_tokens` list is set, any substring match wins; else fall back to `metadata.bot_mentioned`.
+   - `reply`: in DM → implicit pass. In group → require `metadata.bot_replied_to`.
+   - `command`: require `/` prefix. If `trigger_commands` list is set (e.g. `['help','ask']`), the command name (split on `[\s@]` to handle Telegram `/cmd@bot` format) must match.
+   - `keyword`: require one of `trigger_keywords` to hit. If `trigger_keywords_regex=true`, each entry is compiled as case-insensitive regex; otherwise substring.
+
+Migration `0029_binding_trigger_custom.sql` adds `trigger_mention_tokens text[]`, `trigger_commands text[]`, `trigger_keywords_regex boolean DEFAULT false`. UI binding detail surfaces the relevant field conditionally based on `trigger_mode`.
+
+**Consequences:** Platforms with different mention/reply semantics (Discord, Slack, WhatsApp) plug in by populating the same two boolean flags during their own `parseEvent` equivalent — matchesTrigger logic stays unchanged. Admins get flexible config (internal nicknames, command whitelist, regex keywords) without exposing platform API complexity in the schema. DM messages intentionally bypass the mention/reply gate because "the whole message is addressed to the bot" — modelling groups and DMs identically would force admins to pass tokens even for direct conversations.
+
+---
+
 ## ADR-077 — Connector input composition + agent tool contract (platform-agnostic)
 
 **Context:** The `[Connector Context]` block was originally plain text separated from the user message by a blank line — a crafted message could inject a fake `[Connector Context]` header and the model would read it as trusted metadata. The block also only included the platform + connector UUID (not display name), the raw `chat_id` (not chat_title), and the Telegram `message_id` (not our internal row ids — so agents couldn't fetch the full DB row later). Agent query tools (`connector_get_events`, `connector_get_thread`) had minimal filters (only `direction` + `event_type` + `limit`); no way to discover chat_ids or user_ids; no pagination. This made multi-tenant / multi-platform observation unsafe and inefficient. And the whole stack had creeping Telegram assumptions that would block WhatsApp/Discord/Slack adapters.

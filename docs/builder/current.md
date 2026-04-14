@@ -1,3 +1,31 @@
+## Phase (2026-04-14) — Trigger modes + auto-register topics + group pairing UX — SHIPPED
+
+Follow-ups to the connector binding + observability work:
+
+1. **Proper `mention` + `reply` detection** — Telegram adapter caches `bot.api.getMe()` on activate. Message handler scans `msg.entities` + `msg.caption_entities` for `type='mention'` matching `@<botUsername>` and `type='text_mention'` with `user.id === botUserId`. Reply-to-bot check ignores synthetic forum-topic pointer. Flags exposed as `event.metadata.bot_mentioned` / `event.metadata.bot_replied_to`. `matchesTrigger` consults these; `reply` case added (was falling through). DMs implicitly pass.
+2. **Customizable trigger_mode** — migration `0029_binding_trigger_custom.sql` adds `trigger_mention_tokens text[]`, `trigger_commands text[]`, `trigger_keywords_regex boolean`. `mention` supports custom tokens (substring); `command` supports whitelist with Telegram `/cmd@bot` format; `keyword` accepts regex. UI binding detail shows conditional fields per mode with examples.
+3. **Group pairing UI — topic-aware name** — lazy group-pairing + `GroupPairingRow` now include topic label. Auto-generated `display_name = "Pending group pairing: <Chat> → <Topic>"`; UI splits into chat title + violet topic badge. Approve flow preserves topic suffix in final binding name.
+4. **Forum topic auto-registration as connector_target** — first message in a forum topic with known title → adapter upserts target `name=<chat-slug>__<topic-slug>`, `display_name="<chat> → <topic>"`, `ref_keys={chat_id, thread_id}`, `scope_key=group:<id>:topic:<tid>`. Agents can now address specific topics by name via `connector_send_to_target`. Idempotent.
+5. **Scope key format consistency fix** — `my_chat_member` channel/supergroup auto-register was using `scope_key='chat:<id>'`; `computeScopeKey` and inbound events use `group:<id>`. Mismatch split inbound vs outbound into separate scope conversations. Fixed: always `group:<id>`.
+
+### Diagnosis notes (not shipped as code)
+
+- `409 Conflict` on delete+recreate connector with same bot token was previously fixed (deactivate-before-delete + `deleteWebhook` + `close` pre-flight).
+- New symptom diagnosed: if user DMs / chats during activation window, `drop_pending_updates: true` in `deleteWebhook` + `close` + `bot.start` can triple-drop the backlog → message lost, no pairing request. Proposed fix (not yet applied): set `drop_pending_updates: false`. Trade-off: on crash-restart, replays backlog. Defer to user decision.
+
+Relevant files:
+- `apps/studio/db/src/migrations/0029_binding_trigger_custom.sql`
+- `apps/studio/db/src/schema/connectors.ts` — `trigger_mention_tokens`, `trigger_commands`, `trigger_keywords_regex` columns
+- `apps/studio/db/src/queries/connector.ts` — createBinding/updateBinding signatures updated
+- `apps/studio/server/src/connectors/event-router.ts` — matchesTrigger rewrite for all 5 modes, topic-aware lazy group-pairing draft
+- `plugins/jiku.telegram/src/index.ts` — `getMe()` cache, entity-based mention detection, reply-to-bot check, topic target auto-register, `scope_key='group:<id>'` fix
+- `packages/types/src/index.ts` — `ConnectorBinding.trigger_*` fields
+- `apps/studio/web/lib/api.ts` — API type updates
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx` — GroupPairingRow splits chat/topic with violet badge
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx` — conditional fields per trigger_mode
+
+---
+
 ## Phase (2026-04-14) — Connector context + tools observability overhaul — SHIPPED
 
 Beef up the context block and agent tools so agents can observe / act on connector traffic safely across multiple platforms. Incremental stack:

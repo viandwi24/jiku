@@ -108,6 +108,111 @@ function extractTelegramMedia(msg: any): {
   return { media: undefined, mediaMetadata: {} }
 }
 
+/**
+ * Telegram rate limit handling.
+ *
+ * Why: the Bot API enforces per-chat and global limits. Busy chats — especially
+ * groups with typing simulation (send + 2 edits + final edit per message) — will
+ * hit 429 and the current code either swallows the error or lets it bubble up
+ * as a send failure. Both cost us delivered messages.
+ *
+ * Strategy:
+ *   1. Serialize API calls per chat with a promise chain — no two sends/edits
+ *      for the same chat run concurrently.
+ *   2. When a 429 is thrown, honor `parameters.retry_after` and retry once.
+ *      Cap the wait so a runaway retry_after (Telegram has returned values
+ *      like 38s, 60s+) doesn't block the whole chain forever — callers above
+ *      a threshold get the error and can degrade gracefully.
+ */
+const MAX_RETRY_WAIT_MS = 45_000
+
+function extractRetryAfterSeconds(err: unknown): number | null {
+  const e = err as { error_code?: number; parameters?: { retry_after?: number } } | undefined
+  if (!e || e.error_code !== 429) return null
+  const ra = e.parameters?.retry_after
+  return typeof ra === 'number' && ra > 0 ? ra : null
+}
+
+async function withTelegramRetry<T>(fn: () => Promise<T>, label = 'telegram'): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    const retryAfter = extractRetryAfterSeconds(err)
+    if (retryAfter === null) throw err
+    const waitMs = retryAfter * 1000
+    if (waitMs > MAX_RETRY_WAIT_MS) {
+      console.warn(`[${label}] 429 retry_after=${retryAfter}s exceeds cap, giving up`)
+      throw err
+    }
+    console.warn(`[${label}] 429, waiting ${retryAfter}s before retry`)
+    await new Promise<void>(r => setTimeout(r, waitMs + 250))
+    return await fn()
+  }
+}
+
+const chatSendQueues = new Map<string, Promise<unknown>>()
+
+/**
+ * Inbound event queue — global FIFO with batched concurrency.
+ *
+ * Why: Telegram updates (messages, reactions, edits, deletes, my_chat_member)
+ * all call `ctx.onEvent(event)` which hands the event to the event-router.
+ * That router spins up agents, hits the DB, and sends outbound replies — each
+ * event can take seconds. When a burst of ~30 messages arrives in <1s, firing
+ * them all concurrently floods the runtime, thrashes the DB, and amplifies
+ * outbound rate-limit pressure on Telegram.
+ *
+ * Strategy: take the first N pending events, run them in parallel via
+ * Promise.allSettled, and only start the next batch after the current one
+ * fully drains. FIFO order preserved across batches. Failures are isolated
+ * (allSettled) so one bad event doesn't poison the batch.
+ */
+const INBOUND_BATCH_SIZE = 5
+
+type InboundTask = {
+  run: () => Promise<void>
+  resolve: () => void
+  reject: (err: unknown) => void
+}
+
+const inboundQueue: InboundTask[] = []
+let inboundDraining = false
+
+async function drainInboundQueue(): Promise<void> {
+  if (inboundDraining) return
+  inboundDraining = true
+  try {
+    while (inboundQueue.length > 0) {
+      const batch = inboundQueue.splice(0, INBOUND_BATCH_SIZE)
+      const results = await Promise.allSettled(batch.map(t => t.run()))
+      for (let i = 0; i < batch.length; i++) {
+        const r = results[i]!
+        if (r.status === 'fulfilled') batch[i]!.resolve()
+        else batch[i]!.reject(r.reason)
+      }
+    }
+  } finally {
+    inboundDraining = false
+  }
+}
+
+function enqueueInboundEvent(run: () => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    inboundQueue.push({ run, resolve, reject })
+    void drainInboundQueue()
+  })
+}
+
+function enqueueForChat<T>(chatId: string, task: () => Promise<T>): Promise<T> {
+  const prev = chatSendQueues.get(chatId) ?? Promise.resolve()
+  const next = prev.then(task, task)
+  chatSendQueues.set(chatId, next)
+  void next.finally(() => {
+    if (chatSendQueues.get(chatId) === next) chatSendQueues.delete(chatId)
+  })
+  return next
+}
+
 class TelegramAdapter extends ConnectorAdapter {
   readonly id = 'jiku.telegram'
   readonly displayName = 'Telegram'
@@ -684,7 +789,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
-      await ctx.onEvent(event)
+      await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+        console.error('[telegram] inbound event handler error:', err)
+      }))
 
       // Auto-register forum topic as connector_target the first time we see
       // one with a known title. Target name: "<chat-slug>__<topic-slug>".
@@ -743,7 +850,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
-      await ctx.onEvent(event)
+      await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+        console.error('[telegram] inbound event handler error:', err)
+      }))
     })
 
     this.bot.on('edited_message', async (gramCtx: any) => {
@@ -766,7 +875,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date((msg.edit_date ?? msg.date) * 1000),
         raw_payload: gramCtx.update,
       }
-      await ctx.onEvent(event)
+      await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+        console.error('[telegram] inbound event handler error:', err)
+      }))
     })
 
     // ── Channel posts — treat as messages so AI can read channel content ────
@@ -801,7 +912,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
-      await ctx.onEvent(event)
+      await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+        console.error('[telegram] inbound event handler error:', err)
+      }))
     })
 
     // ── Bot membership changes — auto-register channels as named targets ────
@@ -918,7 +1031,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
-      await ctx.onEvent(event)
+      await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+        console.error('[telegram] inbound event handler error:', err)
+      }))
     })
 
     // Belt-and-braces reset:
@@ -1031,6 +1146,14 @@ class TelegramAdapter extends ConnectorAdapter {
     if (threadId) commonOpts.message_thread_id = Number(threadId)
     if (replyToId) commonOpts.reply_parameters = { message_id: Number(replyToId) }
 
+    return enqueueForChat(chatId, () => this.sendMessageInner(chatId!, content, commonOpts))
+  }
+
+  private async sendMessageInner(
+    chatId: string,
+    content: ConnectorContent,
+    commonOpts: Record<string, unknown>,
+  ): Promise<ConnectorSendResult> {
     try {
       // Media group (album)
       if (content.media_group?.length) {
@@ -1059,7 +1182,10 @@ class TelegramAdapter extends ConnectorAdapter {
         const opts: Record<string, unknown> = { ...commonOpts }
         if (content.markdown) opts.parse_mode = 'MarkdownV2'
         if (i > 0) delete (opts as any).reply_parameters
-        lastSent = await this.bot.api.sendMessage(chatId, chunks[i] || '-', opts as any)
+        lastSent = await withTelegramRetry(
+          () => this.bot!.api.sendMessage(chatId, chunks[i] || '-', opts as any),
+          'telegram:sendMessage',
+        )
       }
 
       return {
@@ -1083,8 +1209,11 @@ class TelegramAdapter extends ConnectorAdapter {
     markdown: boolean,
     commonOpts: Record<string, unknown>,
   ): Promise<ConnectorSendResult> {
-    const TICK_MS = 1000
-    const sent = await this.bot!.api.sendMessage(chatId, '⌛', commonOpts as any)
+    const TICK_MS = 2000
+    const sent = await withTelegramRetry(
+      () => this.bot!.api.sendMessage(chatId, '⌛', commonOpts as any),
+      'telegram:simulate_typing:placeholder',
+    )
     const messageId = sent.message_id
 
     // Reveal in 3 progressive slices (start, mid, full). Tweak: split by sentence-ish
@@ -1116,13 +1245,19 @@ class TelegramAdapter extends ConnectorAdapter {
     await new Promise<void>(r => setTimeout(r, TICK_MS))
     const finalText = markdown ? telegramifyMarkdown(fullText, 'escape') : fullText
     try {
-      await this.bot!.api.editMessageText(chatId, messageId, finalText, {
-        parse_mode: markdown ? 'MarkdownV2' : undefined,
-      })
+      await withTelegramRetry(
+        () => this.bot!.api.editMessageText(chatId, messageId, finalText, {
+          parse_mode: markdown ? 'MarkdownV2' : undefined,
+        }),
+        'telegram:simulate_typing:final',
+      )
     } catch (err) {
-      // Final markdown render failed — fall back to plain text
+      // Final edit failed after retry — fall back to plain text so the user still sees the message.
       console.warn('[telegram] simulate_typing final edit failed, falling back to plain:', err)
-      await this.bot!.api.editMessageText(chatId, messageId, fullText).catch(() => {})
+      await withTelegramRetry(
+        () => this.bot!.api.editMessageText(chatId, messageId, fullText),
+        'telegram:simulate_typing:fallback',
+      ).catch(() => {})
     }
 
     return {

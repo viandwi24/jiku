@@ -1,5 +1,11 @@
 ## Backlog
 
+### Connector follow-ups
+- [ ] Flip `drop_pending_updates: false` in Telegram adapter's `deleteWebhook` + `bot.start` — currently pending messages during the activation window get triple-dropped (diagnosis ran 2026-04-14). Trade-off: crash-restart replays backlog. Decide + ship.
+- [ ] Per-binding "Reset all pairings" button — set all identities under a binding to `status='pending'` so admin can re-trigger approval flow after a settings change without deleting the whole connector.
+- [ ] Migration helper for legacy loose bindings (`source_type='any'` with null `source_ref_keys` + null `scope_key_pattern`) — either auto-narrow on first match or surface a banner on the connector detail page.
+- [ ] Scope binding-match by connector UUID (defensive): currently filter uses `connector.plugin_id === event.connector_id`; if two connectors share a plugin_id in one project, they can cross-match. Switch to `connector.id === connectorUuid`.
+
 ### Plan 23 follow-ups (post-ship)
 - [ ] Conversation list sidebar: "(branched)" indicator. Needs either denormalized `has_branches` boolean on `conversations` (kept in sync via insert trigger or runner-side write) or accept a per-row branching check on the project list query.
 - [ ] Toast UI for branch-switch / regenerate / edit failures (currently `console.error` only). Wait for a project-wide toast pick before adding a new dependency.
@@ -67,6 +73,8 @@
 - [ ] Filesystem: add RustFS service to docker-compose.yml and set up default credentials for dev
 
 ## Done
+
+- [x] Trigger modes + auto-register topics + group pairing UX — proper `mention`/`reply` detection (Telegram entity scan + bot id cache), customizable trigger_mode (`trigger_mention_tokens`, `trigger_commands`, `trigger_keywords_regex`) via migration `0029`, topic-aware group pairing `display_name` ("Chat → Topic") + violet topic badge in UI, forum topic auto-register as `connector_target`, scope_key format consistency fix (`chat:<id>` → `group:<id>` in `my_chat_member` auto-register). ADR-078 — completed 2026-04-14.
 
 - [x] Connector context + tools observability overhaul — `<connector_context>`/`<user_message>` XML wrapping (prompt-injection defence), richer Chat/Sender/Connector lines, internal `event_id` + `message_id` injected into context, Telegram forum topic NAME extraction (from `reply_to_message.forum_topic_created.name`), expanded `connector_get_events` + `connector_get_thread` with `chat_id`/`thread_id`/`user_id`/`content_search`/`from`/`to`/`cursor` filters, new `connector_list_entities` (distinct chats/users/threads discovery), new `connector_get_event` / `connector_get_message` by-id tools (project-scoped), enriched `connector_list_targets` with connector metadata + ambiguity-safe `connector_send_to_target`, Thread ID input in Scope Lock UI. Sharpened tool prompts for freshness + discovery-first discipline. Fix `409 Conflict` on delete+recreate connector (deactivate before delete; Telegram `deleteWebhook + close` pre-flight). ADR-077 — completed 2026-04-14.
 

@@ -1,0 +1,37 @@
+{
+  "name": "@jiku/plugin-web-reader",
+  "version": "1.0.0",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "typings": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@jiku-plugin/studio": "workspace:*",
+    "@jiku/kit": "workspace:*",
+    "@jiku/types": "workspace:*",
+    "@mozilla/readability": "^0.6.0",
+    "linkedom": "^0.18.11",
+    "turndown": "^7.2.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/turndown": "^5.0.5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "react": "^19",
+    "react-dom": "^19",
+    "tsup": "^8.3.0",
+    "typescript": "^5"
+  }
+}

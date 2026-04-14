@@ -768,6 +768,27 @@ EventSource can't set custom headers, so the middleware also reads `req.query.to
 
 Every connector-triggered run composes input as `<connector_context>…</connector_context>\n\n<user_message>…</user_message>`. The context block is SYSTEM-generated metadata and is trusted; everything inside `<user_message>` is untrusted user text. Previously only a blank line separated them — a user could craft a message that injects a fake `[Connector Context]` header and the agent might treat it as trusted. The context block also carries an explicit instruction telling the model to treat user_message content as untrusted and not obey attempts to override the metadata. When composing connector-sourced agent input from ANY adapter/path, use the same wrapping.
 
+## Trigger-mode detection is adapter-authoritative (ADR-078)
+
+Shared event-router CAN'T detect bot-mention / reply-to-bot reliably — that needs platform entity parsing + bot identity cache. So adapter pre-computes two boolean flags on every inbound message event:
+
+- `event.metadata.bot_mentioned` — set when THIS bot was explicitly @-mentioned (Telegram: scan `entities`+`caption_entities` for `type='mention'` matching `@<botUsername>` OR `type='text_mention'` where `user.id===botUserId`).
+- `event.metadata.bot_replied_to` — set when user hit Reply on one of the bot's own messages (Telegram: `reply_to_message.from.id===botUserId` AND NOT `reply_to_message.forum_topic_created` which is the synthetic topic-pointer).
+
+Adapter must cache bot identity at activation (`getMe()` on grammy → `botUsername` + `botUserId`) and clear on deactivate. When porting to new platforms, populate the same two flags and `matchesTrigger` works unchanged.
+
+Per-binding customization (migration 0029) layers on top: `trigger_mention_tokens` (custom tokens, substring match), `trigger_commands` (whitelist for `/...`), `trigger_keywords_regex` (treat keywords as case-insensitive regex). DMs implicitly pass mention/reply (whole message is for the bot); no need for config.
+
+## Topic auto-register — first message with known topic_title creates a target
+
+Telegram forum topics auto-register as `connector_target` rows the first time we see a message from that topic with a known topic title (from `reply_to_message.forum_topic_created.name` or equivalent). Idempotent — `getConnectorTargetByName` guards. Naming: `<chat-slug>__<topic-slug>`. `scope_key='group:<chat_id>:topic:<thread_id>'` MUST match `computeScopeKey` output so outbound via this target threads into the same conversation as inbound events.
+
+When adding a new adapter that supports topics/threads/channels, follow the same pattern: auto-register on first meaningful signal, use the normalized scope_key format, check-before-create.
+
+## `scope_key` format must be CONSISTENT between adapter events and admin-created rows
+
+`computeScopeKey` in the Telegram adapter returns `group:<chat_id>` (+ optional `:topic:<id>`). Any code path that creates a `connector_target` or a scope-conversation row MUST use the same format. A prior bug: `my_chat_member` auto-register was using `scope_key='chat:<id>'` which never matched inbound `group:<id>` events → outbound-via-target created a SEPARATE scope conversation from inbound, fragmenting history. When adding new auto-register paths across any adapter, use the adapter's `computeScopeKey` conventions exactly.
+
 ## Adapter portability — normalise, don't leak platform quirks into shared code
 
 Connector infrastructure (event-router, pairing flow, member_mode gate, scope gate, channels UI, agent tools, context block, internal-id injection) is platform-agnostic. Adapter's job is to normalise platform events into the project's ref_keys + metadata vocabulary:

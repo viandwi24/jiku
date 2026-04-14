@@ -4,6 +4,30 @@
 
 Connectors allow agents to receive input from and send output to third-party platforms (Telegram, Discord, etc.) in a unified way. All runs go through `runtime.run()` — no special paths. Binding rules route incoming events to specific agents and adapter types.
 
+## Binding trigger_mode (2026-04-14, ADR-078)
+
+All 5 modes are tunable per binding. DMs implicitly pass mention/reply (the whole message is for the bot). Migration `0029_binding_trigger_custom.sql` adds columns.
+
+| Mode | Matches | Optional config |
+|---|---|---|
+| `always` | every message | — |
+| `command` | message starts with `/` | `trigger_commands: string[]` (names without slash). Telegram `/cmd@bot` parsed correctly. |
+| `keyword` | text contains any of `trigger_keywords` | `trigger_keywords_regex: boolean` — when true, each entry is case-insensitive regex |
+| `mention` | bot is @-mentioned | `trigger_mention_tokens: string[]` (substring) OR adapter flag `metadata.bot_mentioned` |
+| `reply` | user replied to bot's own message via platform reply feature | adapter flag `metadata.bot_replied_to` |
+
+Adapter populates `metadata.bot_mentioned` / `metadata.bot_replied_to` on inbound parse. Telegram: entity scan for `type='mention'` matching `@<botUsername>` (cached via `getMe()` at activation) and `text_mention` with `user.id===botUserId`; reply-to-bot check ignores synthetic forum-topic pointer. When porting to new adapter, populate the same flags.
+
+## Auto-register — three paths (Telegram)
+
+| Trigger | Result |
+|---|---|
+| Bot promoted to admin in channel/supergroup (`my_chat_member`) | `connector_target` for the chat — `scope_key='group:<id>'` |
+| Bot added to group/supergroup | Draft `connector_binding` (enabled=false, `scope_key_pattern='group:<id>'`) in Group Pairing Requests |
+| First message in forum topic with known topic title | `connector_target` for the topic — `name='<chat-slug>__<topic-slug>'`, `scope_key='group:<id>:topic:<tid>'` |
+
+Plus lazy binding-draft creation in event-router when a group/topic message arrives with no matching binding. All idempotent — check-before-create.
+
 ## Context block + agent observation tools (2026-04-14, ADR-077)
 
 ### Input composition

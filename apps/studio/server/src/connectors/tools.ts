@@ -761,6 +761,33 @@ export function buildConnectorTools(projectId: string) {
         }
         const identity = resolveConnectorIdentity(target.connector_id)
         const sendResult = await adapter.sendMessage(sendTarget, { text, markdown, simulate_typing, params })
+
+        // Log outbound to messages + events tables — same observability that
+        // `connector_send` already does. Without this, `connector_send_to_target`
+        // calls were INVISIBLE in the Channels Events/Messages UI even on
+        // success, leading to "agent says terkirim but I see nothing in logs"
+        // confusion. Status mirrors send outcome.
+        const msgRow = await logConnectorMessage({
+          connector_id: target.connector_id,
+          direction: 'outbound',
+          ref_keys: sendResult.ref_keys ?? (sendTarget.ref_keys as Record<string, string>),
+          content_snapshot: text,
+          raw_payload: sendResult,
+          status: sendResult.success ? 'sent' : 'failed',
+        }).catch(() => null)
+        if (msgRow) broadcastProjectMessage(projectId, msgRow as unknown as Record<string, unknown>)
+        const evRow = await logConnectorEvent({
+          connector_id: target.connector_id,
+          event_type: 'send_message',
+          direction: 'outbound',
+          ref_keys: sendResult.ref_keys ?? (sendTarget.ref_keys as Record<string, string>),
+          target_ref_keys: sendTarget.ref_keys as Record<string, string>,
+          payload: { text, markdown, simulate_typing, source: 'send_to_target', target_name },
+          raw_payload: sendResult,
+          status: sendResult.success ? 'routed' : 'error',
+        }).catch(() => null)
+        if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
+
         return {
           ...sendResult,
           identity,
@@ -775,6 +802,7 @@ export function buildConnectorTools(projectId: string) {
               scope_key: target.scope_key ?? null,
             },
             params_sent: params ?? null,
+            logged: { message_row_id: msgRow?.id ?? null, event_row_id: evRow?.id ?? null },
           },
         }
       },

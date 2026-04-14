@@ -1924,10 +1924,15 @@ class TelegramBotAdapter extends ConnectorAdapter {
           delete (opts as any).reply_parameters
           delete (opts as any).entities
         }
+        // Tracing: stamp every actual API call with chat_id, len, attempt index,
+        // bot identity. Lets operator grep `[telegram]` in server console and
+        // verify whether the call actually fired (vs short-circuited / cached).
+        console.log(`[telegram] sendMessage → chat_id=${chatId} bot=@${this.botUsername ?? 'unknown'} chunk=${i + 1}/${chunks.length} len=${(chunks[i] ?? '').length} parse_mode=${useMarkdown ? 'MarkdownV2' : 'none'}`)
         lastSent = await withTelegramRetry(
           () => this.bot!.api.sendMessage(chatId, chunks[i] || '-', opts as any),
           'telegram:sendMessage',
         )
+        console.log(`[telegram] sendMessage ← chat_id=${chatId} message_id=${lastSent?.message_id ?? 'n/a'} (tg returned chat_title="${(lastSent as { chat?: { title?: string } } | null)?.chat?.title ?? '?'}")`)
       }
 
       return {

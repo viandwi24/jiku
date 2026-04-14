@@ -188,40 +188,79 @@ export default function BindingDetailPage({ params }: PageProps) {
           </CardHeader>
           <CardContent className="space-y-3">
             {(binding.source_type === 'group' || binding.source_type === 'channel') && (
-              <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">Chat ID (lock to one specific {binding.source_type})</p>
-                <p className="text-[10px] text-muted-foreground">
-                  Paste the platform chat_id (e.g. Telegram <code className="bg-muted px-1 rounded">-1003890986702</code>). Leave empty to match any {binding.source_type}. Saving updates both <code className="bg-muted px-1 rounded">scope_key_pattern</code> and <code className="bg-muted px-1 rounded">source_ref_keys.chat_id</code>.
-                </p>
-                <Input
-                  className="h-8 text-xs font-mono"
-                  placeholder="-1001234567890"
-                  defaultValue={
-                    (binding.source_ref_keys as Record<string, string> | null | undefined)?.['chat_id']
-                    ?? (binding.scope_key_pattern?.startsWith('group:') && !binding.scope_key_pattern.includes('*')
-                      ? binding.scope_key_pattern.split(':')[1]
-                      : '')
-                    ?? ''
-                  }
-                  onBlur={e => {
-                    const raw = e.target.value.trim()
-                    const existingRef = (binding.source_ref_keys as Record<string, string> | null | undefined) ?? {}
-                    if (!raw) {
-                      const { chat_id: _removed, ...rest } = existingRef
-                      void _removed
-                      updateBindingMutation.mutate({
-                        scope_key_pattern: null,
-                        source_ref_keys: Object.keys(rest).length ? rest : null,
-                      })
-                    } else {
-                      updateBindingMutation.mutate({
-                        scope_key_pattern: `group:${raw}`,
-                        source_ref_keys: { ...existingRef, chat_id: raw },
-                      })
+              <>
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">Chat ID (lock to one specific {binding.source_type})</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Paste the platform chat_id (e.g. Telegram <code className="bg-muted px-1 rounded">-1003890986702</code>). Leave empty to match any {binding.source_type}. Saving updates both <code className="bg-muted px-1 rounded">scope_key_pattern</code> and <code className="bg-muted px-1 rounded">source_ref_keys.chat_id</code>.
+                  </p>
+                  <Input
+                    className="h-8 text-xs font-mono"
+                    placeholder="-1001234567890"
+                    defaultValue={
+                      (binding.source_ref_keys as Record<string, string> | null | undefined)?.['chat_id']
+                      ?? (binding.scope_key_pattern?.startsWith('group:')
+                        ? (binding.scope_key_pattern.split(':')[1]?.replace('*', '') ?? '')
+                        : '')
                     }
-                  }}
-                />
-              </div>
+                    onBlur={e => {
+                      const raw = e.target.value.trim()
+                      const existingRef = (binding.source_ref_keys as Record<string, string> | null | undefined) ?? {}
+                      const threadId = existingRef['thread_id']
+                      if (!raw) {
+                        const { chat_id: _c, thread_id: _t, ...rest } = existingRef
+                        void _c; void _t
+                        updateBindingMutation.mutate({
+                          scope_key_pattern: null,
+                          source_ref_keys: Object.keys(rest).length ? rest : null,
+                        })
+                      } else {
+                        const pattern = threadId ? `group:${raw}:topic:${threadId}` : `group:${raw}`
+                        const ref: Record<string, string> = { ...existingRef, chat_id: raw }
+                        if (threadId) ref['thread_id'] = threadId
+                        updateBindingMutation.mutate({
+                          scope_key_pattern: pattern,
+                          source_ref_keys: ref,
+                        })
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">Thread / Topic ID (optional — Telegram forum topic)</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Narrow the binding further to one forum topic. Needs Chat ID set above. Writes <code className="bg-muted px-1 rounded">scope_key_pattern=group:&lt;chat_id&gt;:topic:&lt;thread_id&gt;</code>. Leave empty to match the whole chat (or use pattern <code className="bg-muted px-1 rounded">group:&lt;chat_id&gt;:*</code> in the raw Scope Filter below to match ALL topics in a forum).
+                  </p>
+                  <Input
+                    className="h-8 text-xs font-mono"
+                    placeholder="42"
+                    defaultValue={(binding.source_ref_keys as Record<string, string> | null | undefined)?.['thread_id'] ?? ''}
+                    onBlur={e => {
+                      const raw = e.target.value.trim()
+                      const existingRef = (binding.source_ref_keys as Record<string, string> | null | undefined) ?? {}
+                      const chatId = existingRef['chat_id']
+                      if (!raw) {
+                        const { thread_id: _t, ...rest } = existingRef
+                        void _t
+                        updateBindingMutation.mutate({
+                          scope_key_pattern: chatId ? `group:${chatId}` : null,
+                          source_ref_keys: Object.keys(rest).length ? rest : null,
+                        })
+                      } else {
+                        if (!chatId) {
+                          alert('Set Chat ID first before narrowing to a specific topic.')
+                          return
+                        }
+                        updateBindingMutation.mutate({
+                          scope_key_pattern: `group:${chatId}:topic:${raw}`,
+                          source_ref_keys: { ...existingRef, thread_id: raw },
+                        })
+                      }
+                    }}
+                  />
+                </div>
+              </>
             )}
             {binding.source_type === 'private' && (
               <div className="space-y-1.5">
@@ -283,12 +322,14 @@ export default function BindingDetailPage({ params }: PageProps) {
               />
             </div>
             <div className="space-y-1.5 col-span-2">
-              <p className="text-xs font-medium text-muted-foreground">Scope Filter (Plan 22)</p>
+              <p className="text-xs font-medium text-muted-foreground">Scope Filter (raw pattern — advanced)</p>
               <p className="text-[10px] text-muted-foreground">
-                Restrict to a conversation scope: <code className="bg-muted px-1 rounded">group:*</code> (all groups),{' '}
+                Prefer the Scope Lock card above for simple cases. This raw field accepts patterns:{' '}
+                <code className="bg-muted px-1 rounded">group:*</code> (all groups),{' '}
                 <code className="bg-muted px-1 rounded">dm:*</code> (DMs only),{' '}
-                <code className="bg-muted px-1 rounded">group:-1001234</code> (specific group),{' '}
-                <code className="bg-muted px-1 rounded">group:-1001234:topic:42</code> (forum topic). Empty = match all.
+                <code className="bg-muted px-1 rounded">group:-1001234</code> (group, general chat only — no topics),{' '}
+                <code className="bg-muted px-1 rounded">group:-1001234:*</code> (group incl. ALL forum topics),{' '}
+                <code className="bg-muted px-1 rounded">group:-1001234:topic:42</code> (one forum topic). Empty = match all.
               </p>
               <Input
                 className="h-8 text-xs"

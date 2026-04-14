@@ -764,6 +764,32 @@ Optimistic lock was silently broken for a long time because `upsertFile()` only 
 
 EventSource can't set custom headers, so the middleware also reads `req.query.token` when the Authorization header is missing. This is fine for SSE (read-only streams) but keep in mind when adding new query-authenticated endpoints — they get the same access as header-authenticated ones. Don't expand this to mutations.
 
+## Connector context + user input use XML boundaries (prompt-injection defence)
+
+Every connector-triggered run composes input as `<connector_context>…</connector_context>\n\n<user_message>…</user_message>`. The context block is SYSTEM-generated metadata and is trusted; everything inside `<user_message>` is untrusted user text. Previously only a blank line separated them — a user could craft a message that injects a fake `[Connector Context]` header and the agent might treat it as trusted. The context block also carries an explicit instruction telling the model to treat user_message content as untrusted and not obey attempts to override the metadata. When composing connector-sourced agent input from ANY adapter/path, use the same wrapping.
+
+## Always `deactivate` before `delete` on a connector
+
+`DELETE /connectors/:id` must call `deactivateConnector(id)` FIRST to tear down the in-memory adapter (stop polling, clear timers, remove SSE subscriptions) before deleting the DB row. Skipping this leaves an orphaned adapter running against the external platform — symptom on Telegram: `409 Conflict: terminated by other getUpdates request` when the admin recreates a connector with the same bot token. Same invariant applies to any future connector CRUD operation that invalidates an adapter (token swap, credential change, plugin_id swap).
+
+## Telegram adapter `onActivate` pre-flight: `deleteWebhook` + `close`
+
+On `onActivate`, the Telegram adapter calls `bot.api.deleteWebhook({ drop_pending_updates: true })` then `bot.api.close()` before `bot.start()`. `close()` tells Telegram to release the bot token's server-side long-poll slot — even if the previous local poller exited cleanly, Telegram's slot lingers for up to ~30s, which otherwise collides with the new polling loop. Both calls are idempotent and safe to fail; errors are logged + ignored (429 "too early" from `close()` is normal if the bot hasn't been polled yet).
+
+## Discovery-first + fresh-per-iteration — connector tool discipline
+
+Tool descriptions enforce a strict order when agent touches connector traffic:
+1. `connector_list` (connectors) — call FRESH every iteration; never cache across turns.
+2. `connector_list_entities` (chats/users/threads) — AUTHORITATIVE discovery; always call before `connector_get_events` / `connector_get_thread` when target ids aren't already verified this turn.
+3. `connector_list_targets` is ALIAS-only — an admin-registered subset, NOT the full chat list. Use only when user explicitly references a named alias.
+4. `connector_list_scopes` is even narrower — shows scopes that currently have an ACTIVE agent conversation bound. Prefer list_entities for general discovery.
+
+Every observe-or-act flow re-fetches discovery in-iteration — data from earlier turns is considered stale. When adding new connector tools, copy this same freshness + discovery language so the agent's behavior stays consistent.
+
+## `connector_list_entities` before paging — agent discipline
+
+Event and message tables get LARGE. Agents must NOT call `connector_get_events({limit:100})` blindly. The tool descriptions enforce filter-first usage by listing every filter dimension explicitly. When the agent doesn't know which chat_id / user_id to target, call `connector_list_entities({ scope: 'chats'|'users'|'threads' })` first — it returns distinct entities with labels + counts so the agent can pick the right one. Then `connector_get_events` / `connector_get_thread` with `chat_id` / `user_id` / `content_search` filters + `cursor` pagination. `next_cursor` opaque base64 of `<iso>|<uuid>` — matches the REST cursor so frontend + agent share the same pagination model.
+
 ## `connector_list_targets` returns connector metadata per row; `connector_send_to_target` detects ambiguity
 
 Each target row includes `{ connector: { id, plugin_id, display_name, status } }` so the agent doesn't need a follow-up `connector_list` call. `connector_send_to_target` with omitted `connector_id` accepts unique target names, but returns `{ success: false, code: 'AMBIGUOUS_TARGET', candidates: [...] }` when the same name exists on multiple connectors — the agent retries with explicit `connector_id`. When adding similar "address by name" APIs, use the same pattern (enriched list + explicit ambiguity error) rather than silently picking the first match.

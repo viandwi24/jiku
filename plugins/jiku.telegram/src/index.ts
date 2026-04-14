@@ -608,6 +608,19 @@ class TelegramAdapter extends ConnectorAdapter {
         return
       }
 
+      // Forum topic name — Telegram embeds the topic name in a few places depending on the message shape.
+      //   - msg.forum_topic_created.name      → this IS the topic-creation event
+      //   - msg.forum_topic_edited.name       → topic was renamed
+      //   - msg.reply_to_message.forum_topic_created.name → regular message in a topic (Bot API
+      //     synthesises a reply-to pointer to the topic-creation service msg so bots can identify it)
+      //   - msg.is_topic_message              → flag set on ALL messages in a topic
+      // General Chat (topic_id = null in a forum supergroup) has no topic name.
+      const forumTopicName: string | undefined =
+        msg.forum_topic_created?.name
+        ?? msg.forum_topic_edited?.name
+        ?? msg.reply_to_message?.forum_topic_created?.name
+        ?? undefined
+
       const event: ConnectorEvent = {
         type,
         connector_id: this.id,
@@ -630,6 +643,8 @@ class TelegramAdapter extends ConnectorAdapter {
           client_timestamp: new Date(msg.date * 1000).toISOString(),
           chat_type: msg.chat.type,
           chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+          ...(forumTopicName ? { thread_title: forumTopicName } : {}),
+          ...(msg.is_topic_message ? { is_topic_message: true } : {}),
           ...mediaMetadata,
         },
         timestamp: new Date(msg.date * 1000),
@@ -831,6 +846,26 @@ class TelegramAdapter extends ConnectorAdapter {
       }
       await ctx.onEvent(event)
     })
+
+    // Belt-and-braces reset:
+    //  - deleteWebhook: evicts a stale webhook registration that would block polling.
+    //  - close: asks Telegram to release this bot token's current long-poll slot
+    //    (important when a previous connector was just deleted — the server-side
+    //    slot can linger for up to 30s, causing 409 on our new getUpdates).
+    // Both are idempotent and safe to fail; log and continue.
+    try {
+      await this.bot.api.deleteWebhook({ drop_pending_updates: true })
+    } catch (err) {
+      console.warn('[telegram] deleteWebhook before polling failed:', err)
+    }
+    try {
+      await this.bot.api.close()
+    } catch (err) {
+      // 429 too-early is normal if the bot was never polled yet — ignore.
+      if (!String(err).includes('429')) {
+        console.warn('[telegram] bot.api.close() before polling failed:', err)
+      }
+    }
 
     // Telegram's getUpdates omits `my_chat_member`, `channel_post`, and
     // `message_reaction` by default — must be explicitly opted in via

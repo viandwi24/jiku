@@ -308,6 +308,43 @@ export async function getConnectorEventById(id: string) {
   return rows[0] ?? null
 }
 
+export async function getConnectorMessageById(id: string) {
+  const rows = await db.select().from(connector_messages).where(eq(connector_messages.id, id)).limit(1)
+  return rows[0] ?? null
+}
+
+/** Project-scoped variants — agent tools should go through these so they can't
+ * read rows outside their project even if someone guesses a UUID. */
+export async function getProjectConnectorEventById(projectId: string, id: string) {
+  const rows = await db
+    .select({ ev: connector_events, connector: connectors })
+    .from(connector_events)
+    .innerJoin(connectors, eq(connector_events.connector_id, connectors.id))
+    .where(and(eq(connectors.project_id, projectId), eq(connector_events.id, id)))
+    .limit(1)
+  if (!rows[0]) return null
+  return {
+    ...rows[0].ev,
+    connector_name: rows[0].connector.display_name,
+    connector_plugin_id: rows[0].connector.plugin_id,
+  }
+}
+
+export async function getProjectConnectorMessageById(projectId: string, id: string) {
+  const rows = await db
+    .select({ msg: connector_messages, connector: connectors })
+    .from(connector_messages)
+    .innerJoin(connectors, eq(connector_messages.connector_id, connectors.id))
+    .where(and(eq(connectors.project_id, projectId), eq(connector_messages.id, id)))
+    .limit(1)
+  if (!rows[0]) return null
+  return {
+    ...rows[0].msg,
+    connector_name: rows[0].connector.display_name,
+    connector_plugin_id: rows[0].connector.plugin_id,
+  }
+}
+
 export async function getConnectorEvents(
   connectorId: string,
   limit = 50,
@@ -331,6 +368,10 @@ export interface ListConnectorEventsOptions {
   event_type?: string
   direction?: 'inbound' | 'outbound'
   status?: string
+  chat_id?: string
+  thread_id?: string
+  user_id?: string          // external sender id (from event.sender.external_id / payload.sender.external_id)
+  content_search?: string   // case-insensitive substring match against payload.content.text
   from?: Date
   to?: Date
   cursor?: { created_at: Date; id: string } | null
@@ -344,6 +385,12 @@ export async function listConnectorEventsForProject(opts: ListConnectorEventsOpt
   if (opts.event_type) conds.push(eq(connector_events.event_type, opts.event_type))
   if (opts.direction) conds.push(eq(connector_events.direction, opts.direction))
   if (opts.status) conds.push(eq(connector_events.status, opts.status))
+  if (opts.chat_id) conds.push(sql`${connector_events.ref_keys}->>'chat_id' = ${opts.chat_id}`)
+  if (opts.thread_id) conds.push(sql`${connector_events.ref_keys}->>'thread_id' = ${opts.thread_id}`)
+  if (opts.user_id) conds.push(sql`${connector_events.payload}->'sender'->>'external_id' = ${opts.user_id}`)
+  if (opts.content_search) {
+    conds.push(sql`${connector_events.payload}->'content'->>'text' ILIKE ${'%' + opts.content_search + '%'}`)
+  }
   if (opts.from) conds.push(gte(connector_events.created_at, opts.from))
   if (opts.to) conds.push(lte(connector_events.created_at, opts.to))
   if (opts.cursor) {
@@ -384,6 +431,104 @@ export async function listConnectorEventsForProject(opts: ListConnectorEventsOpt
   return { items, next_cursor }
 }
 
+// Distinct-entity aggregation over events — lets the agent discover which
+// chats / users / threads exist on a connector without paging through every
+// row. Each row returns the entity key, count, last_seen, and a best-effort
+// label (for chats: latest chat_title from metadata; for users: sender
+// display_name or username).
+export interface DistinctEntitiesOptions {
+  project_id: string
+  connector_id?: string
+  scope: 'chats' | 'users' | 'threads'
+  limit?: number
+}
+
+export async function listConnectorDistinctEntities(opts: DistinctEntitiesOptions) {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const connectorCond = opts.connector_id
+    ? sql`AND ${connector_events.connector_id} = ${opts.connector_id}::uuid`
+    : sql``
+
+  if (opts.scope === 'chats') {
+    const rows = await db.execute(sql`
+      SELECT
+        ${connector_events.ref_keys}->>'chat_id' AS entity_id,
+        COUNT(*)::int AS event_count,
+        MAX(${connector_events.created_at}) AS last_seen_at,
+        (array_agg(${connector_events.metadata}->>'chat_title' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.metadata}->>'chat_title' IS NOT NULL))[1] AS label,
+        (array_agg(${connector_events.metadata}->>'chat_type' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.metadata}->>'chat_type' IS NOT NULL))[1] AS chat_type
+      FROM ${connector_events}
+      INNER JOIN ${connectors} ON ${connector_events.connector_id} = ${connectors.id}
+      WHERE ${connectors.project_id} = ${opts.project_id}::uuid
+        AND ${connector_events.ref_keys}->>'chat_id' IS NOT NULL
+        ${connectorCond}
+      GROUP BY entity_id
+      ORDER BY last_seen_at DESC
+      LIMIT ${limit}
+    `)
+    return rows.map((r: Record<string, unknown>) => ({
+      entity_id: r['entity_id'] as string,
+      label: (r['label'] as string | null) ?? null,
+      chat_type: (r['chat_type'] as string | null) ?? null,
+      event_count: r['event_count'] as number,
+      last_seen_at: r['last_seen_at'] as Date,
+    }))
+  }
+
+  if (opts.scope === 'users') {
+    const rows = await db.execute(sql`
+      SELECT
+        ${connector_events.payload}->'sender'->>'external_id' AS entity_id,
+        COUNT(*)::int AS event_count,
+        MAX(${connector_events.created_at}) AS last_seen_at,
+        (array_agg(${connector_events.payload}->'sender'->>'display_name' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.payload}->'sender'->>'display_name' IS NOT NULL))[1] AS label,
+        (array_agg(${connector_events.payload}->'sender'->>'username' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.payload}->'sender'->>'username' IS NOT NULL))[1] AS username
+      FROM ${connector_events}
+      INNER JOIN ${connectors} ON ${connector_events.connector_id} = ${connectors.id}
+      WHERE ${connectors.project_id} = ${opts.project_id}::uuid
+        AND ${connector_events.payload}->'sender'->>'external_id' IS NOT NULL
+        ${connectorCond}
+      GROUP BY entity_id
+      ORDER BY last_seen_at DESC
+      LIMIT ${limit}
+    `)
+    return rows.map((r: Record<string, unknown>) => ({
+      entity_id: r['entity_id'] as string,
+      label: (r['label'] as string | null) ?? null,
+      username: (r['username'] as string | null) ?? null,
+      event_count: r['event_count'] as number,
+      last_seen_at: r['last_seen_at'] as Date,
+    }))
+  }
+
+  // scope === 'threads'
+  const rows = await db.execute(sql`
+    SELECT
+      ${connector_events.ref_keys}->>'chat_id' AS chat_id,
+      ${connector_events.ref_keys}->>'thread_id' AS thread_id,
+      COUNT(*)::int AS event_count,
+      MAX(${connector_events.created_at}) AS last_seen_at,
+      (array_agg(${connector_events.metadata}->>'chat_title' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.metadata}->>'chat_title' IS NOT NULL))[1] AS chat_label,
+      (array_agg(${connector_events.metadata}->>'thread_title' ORDER BY ${connector_events.created_at} DESC) FILTER (WHERE ${connector_events.metadata}->>'thread_title' IS NOT NULL))[1] AS thread_label
+    FROM ${connector_events}
+    INNER JOIN ${connectors} ON ${connector_events.connector_id} = ${connectors.id}
+    WHERE ${connectors.project_id} = ${opts.project_id}::uuid
+      AND ${connector_events.ref_keys}->>'thread_id' IS NOT NULL
+      ${connectorCond}
+    GROUP BY chat_id, thread_id
+    ORDER BY last_seen_at DESC
+    LIMIT ${limit}
+  `)
+  return rows.map((r: Record<string, unknown>) => ({
+    chat_id: r['chat_id'] as string,
+    thread_id: r['thread_id'] as string,
+    chat_label: (r['chat_label'] as string | null) ?? null,
+    thread_label: (r['thread_label'] as string | null) ?? null,
+    event_count: r['event_count'] as number,
+    last_seen_at: r['last_seen_at'] as Date,
+  }))
+}
+
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 export async function logConnectorMessage(data: {
@@ -422,6 +567,9 @@ export interface ListConnectorMessagesOptions {
   connector_id?: string
   direction?: 'inbound' | 'outbound'
   status?: string
+  chat_id?: string
+  thread_id?: string
+  content_search?: string   // ILIKE against content_snapshot
   from?: Date
   to?: Date
   cursor?: { created_at: Date; id: string } | null
@@ -434,6 +582,11 @@ export async function listConnectorMessagesForProject(opts: ListConnectorMessage
   if (opts.connector_id) conds.push(eq(connector_messages.connector_id, opts.connector_id))
   if (opts.direction) conds.push(eq(connector_messages.direction, opts.direction))
   if (opts.status) conds.push(eq(connector_messages.status, opts.status))
+  if (opts.chat_id) conds.push(sql`${connector_messages.ref_keys}->>'chat_id' = ${opts.chat_id}`)
+  if (opts.thread_id) conds.push(sql`${connector_messages.ref_keys}->>'thread_id' = ${opts.thread_id}`)
+  if (opts.content_search) {
+    conds.push(sql`${connector_messages.content_snapshot} ILIKE ${'%' + opts.content_search + '%'}`)
+  }
   if (opts.from) conds.push(gte(connector_messages.created_at, opts.from))
   if (opts.to) conds.push(lte(connector_messages.created_at, opts.to))
   if (opts.cursor) {

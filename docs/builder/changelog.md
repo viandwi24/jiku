@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-04-14 — connectors: inject internal event_id + message_id into context; by-id fetch tools
+
+Agents can now cross-reference the [connector_context] block against our own DB — not just Telegram's ids.
+
+- **Context block** adds two lines immediately after Connector:
+  - `Internal event_id: <uuid> (use connector_get_event to load full detail)`
+  - `Internal message_id: <uuid> (use connector_get_message to load full detail)`
+  These refer to rows in our `connector_events` / `connector_messages` tables (distinct from the platform chat_id / message_id already shown under Chat ref).
+- **Event-router** reorders the `handled` path: `logMsg` is called BEFORE `buildConnectorContextString` so the resulting `inboundRow.id` can be embedded. Queue-enqueue path also now writes its inbound `handled` row before context assembly — previously queued messages never hit `connector_messages`, now they do.
+- **Two new agent tools**:
+  - `connector_get_event({ event_id })` — project-scoped lookup, returns full `connector_events` row (parsed payload + `raw_payload` + metadata + status + connector_name + plugin_id).
+  - `connector_get_message({ message_id })` — same shape for `connector_messages` row (conversation_id, ref_keys, content_snapshot, raw_payload, connector_name).
+  Both scope check: returns null if the id doesn't belong to the current project.
+- DB queries: `getConnectorMessageById` + project-scoped `getProjectConnectorEventById` / `getProjectConnectorMessageById` (join with `connectors` for tenant isolation).
+- Files: `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/connectors/tools.ts`.
+
+## 2026-04-14 — telegram: inject forum topic NAME into context (not just thread_id)
+
+- Telegram adapter now extracts the forum topic name from whichever shape the Bot API chose to put it: `msg.forum_topic_created.name` (creation event), `msg.forum_topic_edited.name` (rename), or the synthesised `msg.reply_to_message.forum_topic_created.name` pointer that Telegram attaches to every message inside a topic. Result stored as `event.metadata.thread_title`; `is_topic_message` flag propagated too.
+- `buildConnectorContextString` renders the topic label in the Chat line when present, e.g. `Chat: "Jiku Agent Grup" (supergroup, chat_id=-514..., → topic "General Discussion" (thread_id=42))` instead of only `thread_id=42`.
+- `connector_list_entities({ scope: 'threads' })` now returns `thread_label` alongside `chat_label` so the agent can show topic names when listing forum topics without a second query.
+- Files: `plugins/jiku.telegram/src/index.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/db/src/queries/connector.ts`.
+
+## 2026-04-14 — fix: 409 Conflict when recreating a connector with the same bot token
+
+- **Bug:** `DELETE /connectors/:id` only deleted the DB row — it never called `deactivateConnector()` first. The adapter's in-memory polling loop stayed orphaned (grammy `getUpdates` kept hitting Telegram). When the admin then created a new connector with the SAME bot token and activated it, Telegram saw two concurrent long-poll consumers for the same token → `409 Conflict: terminated by other getUpdates request`.
+- **Fix A** — route: `DELETE /connectors/:id` now `await deactivateConnector(id)` before `deleteConnector(id)`. `deactivateConnector` tears down the adapter cleanly (Telegram: `await bot.stop()` resolves only after the current long-poll cycle ends).
+- **Fix B** — Telegram adapter `onActivate` pre-flight: `await bot.api.deleteWebhook({ drop_pending_updates: true })` + `await bot.api.close()` before `bot.start()`. `close()` asks Telegram to release the bot token's current long-poll slot server-side — important when a previous connector was just deleted and Telegram still thinks the old poller is active (the slot can linger for ~30s).
+- Files: `apps/studio/server/src/routes/connectors.ts`, `plugins/jiku.telegram/src/index.ts`.
+
+## 2026-04-14 — binding: Thread/Topic ID picker for forum-topic scopes
+
+Scope Lock card on binding detail now has a Thread ID input below Chat ID. When both are filled, the binding is locked to one Telegram forum topic via `scope_key_pattern='group:<chat_id>:topic:<thread_id>'` + `source_ref_keys={ chat_id, thread_id }`. Validates that Chat ID exists before allowing Thread ID.
+
+Raw "Scope Filter" hint under Routing also expanded with the full topic-pattern vocabulary:
+- `group:<id>` — general chat only (no topics)
+- `group:<id>:*` — group + ALL forum topics
+- `group:<id>:topic:<thread>` — one specific topic
+
+File: `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx`.
+
+## 2026-04-14 — connectors: sharpen tool prompts for discovery discipline + freshness
+
+Updated tool descriptions so the agent follows a consistent pattern when observing or acting on connector data:
+
+- **`connector_list`** — explicitly told to call FRESH every iteration that uses connector tools; never cache across turns because admins add/remove/reconfigure connectors dynamically.
+- **`connector_list_entities`** — now labelled the AUTHORITATIVE discovery tool for chat_ids / user_ids / thread_ids. Agent must call this before any `connector_get_events` / `connector_get_thread` when it doesn't already hold verified ids. Refresh every turn.
+- **`connector_list_targets`** — description clarified: these are ADMIN-REGISTERED ALIASES for outbound sends, NOT the authoritative list of chats. Use only when the user asks for a named alias or wants the curated list. Discovery uses list_entities.
+- **`connector_list_scopes`** — narrowed: shows only scopes with an active `connector_scope_conversations` row, not every chat.
+- **`connector_get_events` / `connector_get_thread`** — descriptions now require a discovery-first step and explicit filters (chat_id / user_id / date / content_search). "NEVER fetch without at least one filter" + "Do not reuse ids from earlier turns without re-listing".
+- **`connector_send`** — describes the pair: raw ref_keys for chat_id-addressed sends, plus a note to verify connector active via fresh `connector_list` before sending.
+
+File: `apps/studio/server/src/connectors/tools.ts`.
+
+## 2026-04-14 — connectors: richer context block, XML-wrapped user input, query tools with filters + entity discovery
+
+Ship three related improvements so the agent knows where it is + can introspect traffic safely.
+
+**Context enrichment** — `[Connector Context]` rewritten as `<connector_context>` (XML-tagged for clarity). Now includes:
+- Explicit `Connector: <display_name> (id=<uuid>)` — not just the opaque id.
+- Structured scope line — e.g. `Chat: "Jiku Agent Grup" (group, chat_id=-514…, thread_id=42)` or `Chat: Direct message (private, chat_id=…)`.
+- Sender line shows display_name + `@username` + external user_id.
+- Leading instruction frames the block as SYSTEM metadata; states the chat context; warns the model that user content is untrusted.
+
+**Prompt-injection hardening** — user message is now wrapped in `<user_message>…</user_message>`. The connector_context block explicitly tells the model everything inside `user_message` is untrusted. A malicious user can no longer craft text that spoofs a fake `[Connector Context]` header.
+
+**Agent query tools expanded** (connector `tools.ts`):
+- `connector_get_events` — new filters: `connector_id`, `chat_id`, `thread_id`, `user_id`, `direction`, `event_type`, `status`, `content_search` (ILIKE on `payload.content.text`), `from`, `to`, `cursor` (keyset pagination). Returns `{ events, next_cursor }`.
+- `connector_get_thread` — same filter dimensions for messages (`chat_id`, `thread_id`, `direction`, `status`, `content_search`, date range, cursor). Status vocab includes all new inbound values (`handled`/`unhandled`/`pending`/`dropped`/`rate_limited`).
+- **New `connector_list_entities`** — distinct-entity aggregation. `scope='chats'` → unique chat_ids with latest chat title + chat_type; `scope='users'` → unique external user_ids with display_name + username; `scope='threads'` → unique (chat_id, thread_id) pairs. Each row has `event_count` + `last_seen_at`. Agent uses this BEFORE paging events/messages when it doesn't know the target IDs.
+
+**DB queries updated** — `listConnectorEventsForProject` / `listConnectorMessagesForProject` take new filter fields (chat_id / thread_id / user_id / content_search). New `listConnectorDistinctEntities` uses raw SQL with Postgres JSONB extraction for GROUP BY on `ref_keys->>'chat_id'` / `payload->'sender'->>'external_id'`.
+
+Files: `apps/studio/server/src/connectors/{event-router.ts,tools.ts}`, `apps/studio/db/src/queries/connector.ts`.
+
 ## 2026-04-14 — connectors: normalize inbound message status vocabulary
 
 Every inbound `connector_messages` row now carries a status that tells you what happened to the message:

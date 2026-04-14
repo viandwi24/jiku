@@ -146,11 +146,24 @@ router.patch('/connectors/:id', authMiddleware, requireConnectorPermission('chan
   }
 })
 
-/** DELETE /connectors/:id */
+/** DELETE /connectors/:id
+ *
+ * IMPORTANT: must deactivate the in-memory adapter BEFORE deleting the DB row.
+ * Otherwise the bot's polling loop stays orphaned (getUpdates keeps running
+ * against Telegram) and the next connector created with the same bot token
+ * triggers a 409 Conflict ("terminated by other getUpdates request") because
+ * two long-polling loops compete.
+ */
 router.delete('/connectors/:id', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  const connectorId = req.params['id']!
   try {
     const projectId = res.locals['project_id'] as string | undefined
-    await deleteConnector(req.params['id']!)
+    // Stop the adapter first — this tears down polling / webhooks / timers.
+    // Swallow errors so a half-broken adapter doesn't block row deletion.
+    await deactivateConnector(connectorId).catch(err =>
+      console.warn(`[connector] deactivate before delete failed (${connectorId}):`, err)
+    )
+    await deleteConnector(connectorId)
     if (projectId) {
       runtimeManager.syncProjectTools(projectId).catch(err =>
         console.warn('[connector] syncProjectTools failed:', err)

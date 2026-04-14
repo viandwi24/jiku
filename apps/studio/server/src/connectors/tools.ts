@@ -4,6 +4,11 @@ import {
   getConnectors,
   getConnectorEvents,
   getConnectorMessages,
+  listConnectorEventsForProject,
+  listConnectorMessagesForProject,
+  listConnectorDistinctEntities,
+  getProjectConnectorEventById,
+  getProjectConnectorMessageById,
   updateBinding,
   getUserIdentities,
   upsertUserIdentity,
@@ -25,6 +30,21 @@ import type { ConnectorTarget } from '@jiku/types'
 import { connectorRegistry } from './registry.ts'
 import { broadcastProjectEvent, broadcastProjectMessage } from './sse-hub.ts'
 
+// Keyset pagination cursor helpers — shared with the REST routes.
+function encodeCursor(c: { created_at: Date; id: string } | null): string | null {
+  if (!c) return null
+  return Buffer.from(`${c.created_at.toISOString()}|${c.id}`).toString('base64')
+}
+function decodeCursor(v: string): { created_at: Date; id: string } | null {
+  try {
+    const [iso, id] = Buffer.from(v, 'base64').toString('utf-8').split('|')
+    if (!iso || !id) return null
+    const created_at = new Date(iso)
+    if (isNaN(created_at.getTime())) return null
+    return { created_at, id }
+  } catch { return null }
+}
+
 /**
  * Build connector built-in tools.
  * These are registered on agents when the project has active connectors.
@@ -39,7 +59,11 @@ export function buildConnectorTools(projectId: string) {
       meta: {
         id: 'connector_list',
         name: 'List Connectors',
-        description: 'List all connectors in the project. Use this to find connector IDs before calling other connector tools.',
+        description:
+          'List all connectors (bots/integrations) in this project with their id, plugin_id, display_name, and status. ' +
+          'ALWAYS call this FRESH at the start of any iteration that will use connector_* tools — the connector set is ' +
+          'dynamic (admins enable/disable/reconfigure). Never rely on a list cached from an earlier turn, and never rely ' +
+          'on a connector_id passed in runtime context — verify it still exists + is active before calling send/action tools.',
         group: 'connector',
       },
       permission: '*',
@@ -67,54 +91,201 @@ export function buildConnectorTools(projectId: string) {
     defineTool({
       meta: {
         id: 'connector_get_events',
-        name: 'Get Message Events',
-        description: 'Query events (reactions, edits, receive_message, send_message, etc.) on a connector. Supports direction + event_type filters so you can fetch only inbound (user → bot) or outbound (bot → user) activity. Raw platform payload is included so you can extract Telegram entities, emoji metadata, etc.',
+        name: 'Get Connector Events',
+        description:
+          'Search connector events (message, reaction, edit, send_message, custom actions, etc.) across the project with filters + cursor pagination. ' +
+          'These tables get LARGE — NEVER fetch without at least one filter (chat_id / user_id / event_type / date range / content_search). ' +
+          '\n\nDISCOVERY-FIRST DISCIPLINE: in any iteration that queries history, first call `connector_list_entities` (and/or `connector_list` if you need a bot id) to refresh what currently exists — connectors, chats, and users change between turns. DO NOT reuse chat_ids / user_ids remembered from earlier turns without re-verifying, and do not assume the connector context block in the current message covers other chats. ' +
+          '\n\nFilters: connector_id, chat_id (specific group/channel), thread_id (forum topic), user_id (external sender id), event_type, direction, status, date range (from/to ISO), content_search (ILIKE against payload.content.text). ' +
+          'Returns `{ events, next_cursor }` — pass next_cursor back as `cursor` to page forward.',
         group: 'connector',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
-        connector_id: z.string().describe('Connector ID'),
-        direction: z.enum(['inbound', 'outbound']).optional().describe('Filter by direction: "inbound" = from user, "outbound" = from bot/system. Omit to get both.'),
-        event_type: z.string().optional().describe('Filter by exact event_type, e.g. "receive_message", "send_message", "reaction_add".'),
-        limit: z.number().int().min(1).max(100).default(20),
+        connector_id: z.string().optional().describe('Scope to one connector; omit to search across all connectors in the project.'),
+        chat_id: z.string().optional().describe('Filter to one chat/group/channel by platform chat_id (e.g. Telegram "-100...").'),
+        thread_id: z.string().optional().describe('Filter to one forum topic / thread inside a chat.'),
+        user_id: z.string().optional().describe('Filter by external sender id (e.g. Telegram numeric user_id).'),
+        direction: z.enum(['inbound', 'outbound']).optional().describe('"inbound" = from user, "outbound" = from bot.'),
+        event_type: z.string().optional().describe('Exact event_type, e.g. "message", "reaction", "send_message".'),
+        status: z.string().optional().describe('Exact status, e.g. "routed", "dropped", "pending_approval".'),
+        content_search: z.string().optional().describe('Case-insensitive substring match against the message text inside the event payload.'),
+        from: z.string().optional().describe('ISO timestamp — lower bound of created_at.'),
+        to: z.string().optional().describe('ISO timestamp — upper bound of created_at.'),
+        cursor: z.string().optional().describe('Pagination cursor from a previous response (opaque base64 string).'),
+        limit: z.number().int().min(1).max(100).default(30),
       }),
       execute: async (args) => {
-        const { connector_id, direction, event_type, limit } = args as {
-          connector_id: string
-          direction?: 'inbound' | 'outbound'
-          event_type?: string
-          limit: number
+        const a = args as {
+          connector_id?: string; chat_id?: string; thread_id?: string; user_id?: string
+          direction?: 'inbound' | 'outbound'; event_type?: string; status?: string
+          content_search?: string; from?: string; to?: string; cursor?: string; limit: number
         }
-        const events = await getConnectorEvents(connector_id, limit, { direction, event_type })
-        return { events }
+        const cursor = a.cursor ? decodeCursor(a.cursor) : null
+        const result = await listConnectorEventsForProject({
+          project_id: projectId,
+          connector_id: a.connector_id,
+          chat_id: a.chat_id,
+          thread_id: a.thread_id,
+          user_id: a.user_id,
+          direction: a.direction,
+          event_type: a.event_type,
+          status: a.status,
+          content_search: a.content_search,
+          from: a.from ? new Date(a.from) : undefined,
+          to: a.to ? new Date(a.to) : undefined,
+          cursor,
+          limit: a.limit,
+        })
+        return {
+          events: result.items,
+          next_cursor: encodeCursor(result.next_cursor),
+        }
       },
     }),
 
-    // ── Get recent messages from a chat ──────────────────────────────
+    // ── Get messages from a thread (paginated + searchable) ──────────
 
     defineTool({
       meta: {
         id: 'connector_get_thread',
-        name: 'Get Thread Messages',
-        description: 'Get recent messages logged for a connector. Supports direction filter: "inbound" = messages FROM users, "outbound" = messages FROM the bot. Each row includes `raw_payload` (the original platform object) so you can extract entities, custom_emoji metadata, attachments, etc. — useful for saving message templates.',
+        name: 'Get Connector Messages',
+        description:
+          'Search inbound/outbound connector messages across the project with filters + cursor pagination. ' +
+          'This table gets LARGE — NEVER fetch without at least one filter. ' +
+          '\n\nDISCOVERY-FIRST DISCIPLINE: before querying, refresh the landscape in THIS iteration by calling `connector_list_entities` for chat_ids/user_ids/threads. Re-fetch every time — chats/users change between turns; data cached from earlier responses is stale. Do not assume the current connector_context block covers other chats. ' +
+          '\n\nFilters: connector_id, chat_id, thread_id, direction, status ("handled", "unhandled", "pending", "dropped", "rate_limited", "sent", "failed"), date range (from/to ISO), content_search (ILIKE against content_snapshot). ' +
+          'Each row has `raw_payload` (the original platform object) so you can extract entities, custom_emoji, attachments. ' +
+          'Returns `{ messages, next_cursor }` — pass next_cursor back to page.',
         group: 'connector',
       },
       permission: '*',
       modes: ['chat', 'task'],
       input: z.object({
-        connector_id: z.string().describe('Connector ID'),
-        direction: z.enum(['inbound', 'outbound']).optional().describe('Filter by direction. Omit to get both.'),
-        limit: z.number().int().min(1).max(50).default(10),
+        connector_id: z.string().optional(),
+        chat_id: z.string().optional().describe('Filter to one chat_id.'),
+        thread_id: z.string().optional().describe('Filter to one thread_id inside a chat.'),
+        direction: z.enum(['inbound', 'outbound']).optional(),
+        status: z.string().optional().describe('e.g. "handled", "unhandled", "pending", "dropped", "rate_limited".'),
+        content_search: z.string().optional().describe('Case-insensitive substring match against content_snapshot.'),
+        from: z.string().optional().describe('ISO timestamp — lower bound of created_at.'),
+        to: z.string().optional().describe('ISO timestamp — upper bound of created_at.'),
+        cursor: z.string().optional().describe('Pagination cursor from a previous response.'),
+        limit: z.number().int().min(1).max(100).default(30),
       }),
       execute: async (args) => {
-        const { connector_id, direction, limit } = args as {
-          connector_id: string
-          direction?: 'inbound' | 'outbound'
+        const a = args as {
+          connector_id?: string; chat_id?: string; thread_id?: string
+          direction?: 'inbound' | 'outbound'; status?: string
+          content_search?: string; from?: string; to?: string; cursor?: string; limit: number
+        }
+        const cursor = a.cursor ? decodeCursor(a.cursor) : null
+        const result = await listConnectorMessagesForProject({
+          project_id: projectId,
+          connector_id: a.connector_id,
+          chat_id: a.chat_id,
+          thread_id: a.thread_id,
+          direction: a.direction,
+          status: a.status,
+          content_search: a.content_search,
+          from: a.from ? new Date(a.from) : undefined,
+          to: a.to ? new Date(a.to) : undefined,
+          cursor,
+          limit: a.limit,
+        })
+        return {
+          messages: result.items,
+          next_cursor: encodeCursor(result.next_cursor),
+        }
+      },
+    }),
+
+    // ── Entity discovery: list distinct chat_ids / user_ids / thread_ids ──
+
+    defineTool({
+      meta: {
+        id: 'connector_list_entities',
+        name: 'List Connector Entities',
+        description:
+          'AUTHORITATIVE discovery tool for chats, users, and forum topics the bot has seen. Always use THIS (not connector_list_targets) when you need to find a real chat_id / user_id / thread_id — list_targets only surfaces ADMIN-REGISTERED aliases and is an incomplete subset. ' +
+          '\n\nALWAYS call this at the start of any iteration that will observe traffic (summarise a group, recall a user\'s last messages, audit activity). Treat results as fresh-per-turn; do NOT reuse entity ids from earlier turns without re-listing. Entity set changes between turns (new members, new groups). ' +
+          '\n\nscope="chats" → unique chat_ids with chat title + chat_type + event_count + last_seen_at. ' +
+          'scope="users" → unique external user_ids with display_name + @username + event_count + last_seen_at. ' +
+          'scope="threads" → unique (chat_id, thread_id) pairs for forum topics. ' +
+          '\n\nThen narrow with `connector_get_events` / `connector_get_thread` using the discovered ids + content_search + date filters.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        scope: z.enum(['chats', 'users', 'threads']).describe('Which entity dimension to list.'),
+        connector_id: z.string().optional().describe('Scope to one connector; omit to list across all connectors in the project.'),
+        limit: z.number().int().min(1).max(200).default(50),
+      }),
+      execute: async (args) => {
+        const { scope, connector_id, limit } = args as {
+          scope: 'chats' | 'users' | 'threads'
+          connector_id?: string
           limit: number
         }
-        const messages = await getConnectorMessages(connector_id, limit, { direction })
-        return { messages }
+        const entities = await listConnectorDistinctEntities({
+          project_id: projectId,
+          connector_id,
+          scope,
+          limit,
+        })
+        return { scope, entities, count: entities.length }
+      },
+    }),
+
+    // ── Fetch a single event / message by internal id ────────────────
+
+    defineTool({
+      meta: {
+        id: 'connector_get_event',
+        name: 'Get Connector Event by ID',
+        description:
+          'Fetch the full connector_events row by its internal UUID. The current [connector_context] ' +
+          'block injects the inbound message\'s `Internal event_id` — pass that id here to load the ' +
+          'complete row including parsed payload, raw_payload (the original platform JSON — Telegram ' +
+          'entities, custom_emoji, reply_to_message, etc.), metadata, status, and the owning connector. ' +
+          'Scoped to the current project; returns null if not found.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        event_id: z.string().describe('Internal UUID from [connector_context].Internal event_id or connector_get_events results.'),
+      }),
+      execute: async (args) => {
+        const { event_id } = args as { event_id: string }
+        const row = await getProjectConnectorEventById(projectId, event_id)
+        return row ? { event: row } : { event: null, error: 'Not found in this project.' }
+      },
+    }),
+
+    defineTool({
+      meta: {
+        id: 'connector_get_message',
+        name: 'Get Connector Message by ID',
+        description:
+          'Fetch the full connector_messages row by its internal UUID. The current [connector_context] ' +
+          'block injects the inbound message\'s `Internal message_id` — pass that id here to load the ' +
+          'complete row including conversation_id, ref_keys, content_snapshot, raw_payload (original ' +
+          'platform object), and the owning connector. Scoped to the current project; returns null if ' +
+          'not found.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        message_id: z.string().describe('Internal UUID from [connector_context].Internal message_id or connector_get_thread results.'),
+      }),
+      execute: async (args) => {
+        const { message_id } = args as { message_id: string }
+        const row = await getProjectConnectorMessageById(projectId, message_id)
+        return row ? { message: row } : { message: null, error: 'Not found in this project.' }
       },
     }),
 
@@ -125,7 +296,11 @@ export function buildConnectorTools(projectId: string) {
         id: 'connector_send',
         side_effectful: true,
         name: 'Send Connector Message',
-        description: 'Send a message to a platform chat via connector',
+        description:
+          'Send a message to a platform chat via connector using raw ref_keys (e.g. `{ chat_id, thread_id? }`). ' +
+          'Use this when you already have the chat_id — discover chat_ids via `connector_list_entities` ' +
+          '(authoritative) or use `connector_send_to_target` if the user asked for a named alias. ' +
+          'Always verify the connector is active via a fresh `connector_list` call in the same iteration before sending.',
         group: 'connector',
       },
       permission: '*',
@@ -380,11 +555,14 @@ export function buildConnectorTools(projectId: string) {
         id: 'connector_list_targets',
         name: 'List Channel Targets',
         description:
-          'List named channel targets across the project — predefined destinations (groups, ' +
-          'channels, DMs) you can send to by name without knowing chat IDs. Each row also includes ' +
-          'the owning connector (id, plugin_id/adapter, display_name, status) so you know which ' +
-          'bot / platform delivers the message, and can disambiguate when multiple connectors ' +
-          'have targets with the same name. Call this before connector_send_to_target.',
+          'List ADMIN-REGISTERED named ALIASES for outbound sends — a curated subset of destinations ' +
+          '(groups, channels, DMs) that can be addressed by name via `connector_send_to_target`. ' +
+          'This is NOT the authoritative list of chats the bot has seen — that comes from ' +
+          '`connector_list_entities`. Use this only when the user asks you to send to a named ' +
+          'alias ("kirim ke morning-briefing") or when you want a short, human-labeled list of ' +
+          'preferred destinations. For discovery or observation use `connector_list_entities`. ' +
+          '\n\nEach row includes the owning connector (id, plugin_id/adapter, display_name, status) ' +
+          'so you can disambiguate when the same alias exists on multiple connectors.',
         group: 'connector',
       },
       permission: '*',
@@ -673,7 +851,12 @@ export function buildConnectorTools(projectId: string) {
       meta: {
         id: 'connector_list_scopes',
         name: 'List Active Scopes',
-        description: 'List active conversation scopes (groups, topics, threads) that the connector has seen. Useful for discovering where the bot is active.',
+        description:
+          'List group/topic/thread scopes that currently have an ACTIVE conversation tied to an agent ' +
+          'via `connector_scope_conversations` (Plan 22). Narrower than `connector_list_entities` — ' +
+          'only surfaces scopes with a live conversation binding, not every chat the bot has ever seen. ' +
+          'Prefer `connector_list_entities` for general discovery; use this when you specifically need ' +
+          '"where do I have an active conversation right now".',
         group: 'connector',
       },
       permission: '*',

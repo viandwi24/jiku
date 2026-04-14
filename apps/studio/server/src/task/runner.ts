@@ -72,21 +72,29 @@ export async function runTaskConversation(
     const cmd = await dispatchSlashCommand({
       projectId, agentId, input: goal, surface, userId: callerId,
     }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-    const afterDispatch = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
-
-    // Plan 25 — @file reference hint
+    // Command + @file injection: same model as chat route. User goal stays
+    // literal; resolved command body + file-mention hint go into per-turn
+    // system segments. See chat.ts for rationale.
+    const resolvedForScan = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
+    const commandSegment = (cmd.matched && cmd.resolvedInput)
+      ? [{ label: `Command Invoked: /${cmd.slug ?? ''} (this turn only)`, content: cmd.resolvedInput }]
+      : undefined
     const refScan = await scanReferences({
-      projectId, text: afterDispatch, userId: callerId, surface,
+      projectId, text: resolvedForScan, userId: callerId, surface,
     }).catch(() => ({ hintBlock: null } as const))
-    const resolvedGoal = refScan.hintBlock ? `${refScan.hintBlock}\n\n${afterDispatch}` : afterDispatch
+    const refSegments = refScan.hintBlock
+      ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
+      : undefined
+    const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
 
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
       caller,
       mode: 'task',
-      input: resolvedGoal,
+      input: goal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
+      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
       // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:
       // a cron-fired agent is allowed to create/update/delete cron tasks (dynamic / conditional scheduling).
       // The infinite-loop risk is handled by the [Cron Trigger] preamble in the stored prompt instead.

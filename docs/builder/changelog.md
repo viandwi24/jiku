@@ -1,6 +1,89 @@
 # Changelog
 
-## 2026-04-14 — Plan 28 revisions: segment render + `message is not modified` guard
+## 2026-04-14 — Plan 24 Phases 2-5: Telegram MTProto userbot adapter (full ship)
+
+**Changed:** Single-session implementation of all remaining Plan 24 phases. The userbot ships end-to-end: plugin registers two adapters from the same module, the user adapter walks an interactive OTP+2FA setup wizard via the Phase 1 foundation, runtime connects via `@mtcute/bun`, eight platform actions are exposed through `connector_run_action`, and a mandatory rate-limit + queue layer wraps every outbound API call.
+
+Phase 2 — TelegramAdapter renamed to TelegramBotAdapter (`jiku.telegram` → `jiku.telegram.bot`). Plugin setup registers both bot + user adapters. `ADAPTER_ID_ALIASES` in connectorRegistry preserves backward-compat lookup. Migration `0032_plan24_telegram_adapter_rename.sql` updates persisted rows.
+
+Phase 3 — `@mtcute/bun` + `@mtcute/core` deps. `TelegramUserAdapter` real implementation: full setup flow (sendCode → signIn handles `SESSION_PASSWORD_NEEDED` branching → checkPassword → finalize exports session). `onActivate` connects + registers `client.on('new_message')` → ConnectorEvent normalize. `ConnectorSetupSessionState` extended with `credential_fields` decrypted per step by route handler so adapter doesn't need DB access.
+
+Phase 4 — 8 actions on user adapter: `forward_message` (default `hide_sender:true` USERBOT-ONLY, `noForwardHeader+forwardSenders:false` for drop_author with custom_emoji preservation), `get_chat_history`, `join_chat`, `leave_chat`, `get_dialogs`, `set_typing`, `delete_message`, `edit_message`. Method capabilities probed at runtime with graceful fallback.
+
+Phase 5 — Mandatory `UserbotQueue` (per-chat FIFO + min 1s gap, sliding 20/min global, 5s new-chat first-send, 2s forward per source, 10/hr join/leave). `FLOOD_WAIT_X` → scope-aware pause. `PEER_FLOOD` → `spamRestricted` latch. `AUTH_KEY_*` → `sessionExpired` latch. Per-credential `queue_policy` JSON override. `connector_get_queue_status` agent tool. `mapQueueError` envelope helper.
+
+**Files touched:**
+- `packages/types/src/index.ts`, `apps/studio/server/src/routes/connector-setup.ts`, `apps/studio/server/src/connectors/setup-store.ts`
+- `apps/studio/server/src/connectors/registry.ts` — alias resolution
+- `apps/studio/server/src/connectors/tools.ts` — `connector_get_queue_status`
+- `apps/studio/db/src/migrations/0032_plan24_telegram_adapter_rename.sql` — new
+- `plugins/jiku.telegram/package.json`, `plugins/jiku.telegram/src/index.ts`
+- `plugins/jiku.telegram/src/userbot-queue.ts` — new
+
+## 2026-04-14 — Plan 24 Phase 1: connector setup wizard UI
+
+- Added `api.connectorSetup.{start,step,cancel}` client + re-exported `ConnectorSetupSpec`/`ConnectorSetupStep`/`ConnectorSetupInput`/`ConnectorSetupStepResult`/`ConnectorSetupStartResponse` types (inlined in `lib/api.ts` — api.ts does not import from `@jiku/types`).
+- Added `requires_interactive_setup?: boolean` to `CredentialAdapter` shape in `lib/api.ts`.
+- New generic wizard `components/connectors/setup-wizard.tsx` — reads spec from server, walks through steps, supports text/number/boolean/secret inputs, retry counter, aborted state, Back/Cancel/Continue buttons, calls DELETE on close.
+- Project credential page (`.../settings/credentials/page.tsx`) now: (a) shows a "Setup required" banner with a Run Setup button for each project credential whose adapter requires interactive setup and has no masked fields yet; (b) auto-opens the wizard right after creating a credential that requires setup; (c) refetches credentials on wizard completion.
+- Files: `apps/studio/web/lib/api.ts`, `apps/studio/web/components/connectors/setup-wizard.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/credentials/page.tsx`.
+
+## 2026-04-14 — Plan 24 Phase 1: connector interactive setup API foundation
+
+**Changed:** Shipped the foundation for adapter-driven multi-step credential setup wizards. Adapters that need interactive flows (OTP entry, 2FA, browser-redirect callbacks) declare them via a `ConnectorSetupSpec` returned from `getSetupSpec()` and an async `runSetupStep(stepId, input, sessionState)` handler. Studio auto-mounts setup endpoints, manages session state in-memory with a 15-min TTL, enforces a 3-retry cap per step (prevents OTP brute-force locking the underlying account), and merges the final `complete:true` field payload into the encrypted credential.
+
+Why now: Plan 24 (Telegram Userbot via MTProto) requires interactive OTP+2FA login that doesn't fit into a single "POST credentials with all fields" flow. The setup API is plugin-agnostic so future adapters (OAuth flows, device-code grants, etc.) reuse the same machinery.
+
+Audit events: `credential.setup_started`, `credential.setup_step`, `credential.setup_completed`, `credential.setup_failed`, `credential.setup_cancelled`.
+
+UI wizard component + credential-form integration: delegated to subagent (in flight). Backend is the deliverable for this checkpoint.
+
+**Files touched:**
+- `packages/types/src/index.ts` — 5 new interfaces.
+- `packages/kit/src/index.ts` — optional `getSetupSpec()`, `runSetupStep()`, `requiresInteractiveSetup` flag on `ConnectorAdapter`; re-exports.
+- `apps/studio/server/src/connectors/setup-store.ts` — new in-memory store.
+- `apps/studio/server/src/routes/connector-setup.ts` — new router.
+- `apps/studio/server/src/index.ts` — registered router.
+- `apps/studio/server/src/audit/logger.ts` — 5 new event types + helpers.
+- `apps/studio/server/src/credentials/adapters.ts` — `requires_interactive_setup` flag exposed on adapter listing.
+
+## 2026-04-14 — Naming cleanup: feature additions vs proper plans
+
+**Changed:** Earlier in the session I labeled five feature additions as `Plan 24 / 25 / 26 / 27 / 28` but they were not proper plan docs (no `docs/plans/NN-*.md` file existed). The real Plan 24 is the new MTProto userbot plan dropped today. Subagent-driven sweep of `docs/builder/*`, `docs/feats/*`, and `docs/scenarios/1-*.md` to drop the false plan numbers and use feature names instead (Commands, @file hint, FS tool permission, Connector custom params, Streaming adapter). Migration filenames and source-code comments untouched (archival). ADR numbers 083-089 kept intact — sequential project history.
+
+**Files touched:** `docs/builder/{current,changelog,decisions,memory,tasks}.md`, `docs/feats/{commands,references,connectors,filesystem}.md`, `docs/scenarios/1-manage-a-channel-with-agent.md`.
+
+## 2026-04-14 — web-reader plugin: history not saved for tool-invoked calls
+
+**Changed:** `jiku.web-reader` tool handler read `projectId` from `toolCtx.runtime.caller.user_data.project_id`, which `resolveCaller` never populates — so agent-invoked `web_read` never wrote to history. Only the plugin's own HTTP `/read` endpoint worked (it gets `projectId` from the plugin-ctx closure, not the tool context). Fixed to `toolCtx.runtime['project_id']` — runner injects project_id into every `RuntimeContext` (same pattern `jiku.sheet` already uses).
+
+**Files touched:** `plugins/jiku.web-reader/src/index.ts`.
+
+## 2026-04-14 — Drizzle schema drift on `agents.command_access_mode`
+
+**Changed:** Migration `0030_plan24_commands.sql` added `agents.command_access_mode` via `ALTER TABLE`, but `apps/studio/db/src/schema/agents.ts` wasn't updated to mirror the new column. Drizzle's type-safe `.set({...})` silently stripped the field → `UPDATE "agents" SET WHERE id=$1` (empty SET clause) → Postgres 42601 syntax error. Column now declared in schema next to `skill_access_mode`. PATCH `/agents/:aid/command-access-mode` now persists correctly.
+
+**Files touched:** `apps/studio/db/src/schema/agents.ts`.
+
+## 2026-04-14 — Commands: uniform access-mode gate + connector inbound dispatcher + chat autocomplete
+
+**Changed:** Three coupled tweaks to the Commands dispatcher + UI.
+
+1. **Uniform `command_access_mode` across ALL surfaces** — reverted earlier "chat bypasses allow-list" hack. Config is now single source of truth: `manual` + allow-list gates every surface (chat, connector, cron, task, heartbeat). Rationale: inconsistency between surfaces made the config a lie; if user wants free chat access, they set mode to `all` — explicit, symmetric.
+
+2. **Connector inbound dispatcher** — `event-router.ts` now invokes `dispatchSlashCommand` with `surface='connector'` on inbound text before wrapping. External Telegram/Discord/etc. members can invoke `/command` iff config allows (manual+allowlist OR mode='all'). The Commands feature's original ADR-085 decision to defer this is now partially reversed — security concern resolved by the unified allow-list mechanism.
+
+3. **Chat-input `/` autocomplete popup** — new `SlashCommandAutocomplete` React component mounted above PromptInput. Arrow keys navigate, Tab/Enter insert `/<slug> ` token, Esc dismiss (append space to break prefix match). Fetches agent via new `GET /api/agents/:aid` endpoint (added `api.agents.get`), reads `command_access_mode` + filters list accordingly. Calls `POST /projects/:pid/commands/refresh` on mount so FS-added commands appear without a full project reload. Requires wrapping `PromptInput` in `PromptInputProvider` to lift state.
+
+**Files touched:**
+- `apps/studio/server/src/commands/dispatcher.ts` — removed surface-specific bypass.
+- `apps/studio/server/src/connectors/event-router.ts` — wired dispatcher into inbound path.
+- `apps/studio/server/src/routes/agents.ts` — new `GET /agents/:aid`.
+- `apps/studio/web/lib/api.ts` — new `api.agents.get()`.
+- `apps/studio/web/components/chat/slash-command-autocomplete.tsx` — new.
+- `apps/studio/web/components/chat/conversation-viewer.tsx` — wrap with `PromptInputProvider` + mount autocomplete.
+
+## 2026-04-14 — Streaming adapter revisions: segment render + `message is not modified` guard
 
 **Changed:** Two post-ship refinements to the Telegram streaming adapter.
 
@@ -25,7 +108,7 @@
 
 **Files touched:** `plugins/jiku.telegram/src/index.ts`, `packages/kit/src/index.ts`, `docs/builder/{current,changelog,decisions,memory}.md`, `docs/feats/connectors.md`.
 
-## 2026-04-14 — Plan 28: streaming outbound via adapter handoff (`handleResolvedEvent`)
+## 2026-04-14 — Streaming adapter handoff: streaming outbound via `handleResolvedEvent`
 
 **Changed:** Connector event-router no longer drains the agent stream to completion before sending to the platform. Added `handleResolvedEvent?(ctx: ResolvedEventContext)` to `ConnectorAdapter` in `@jiku/kit`. When an adapter implements it, the event-router resolves binding/identity/conversation, builds the context block + @file hint, then hands off a `ResolvedEventContext` with injected service callables (`startRun`, `registerObserverStream`, `logOutboundMessage`, `logOutboundEvent`, `recordUsage`). Adapter owns queueing + stream consumption + outbound send + logging from there.
 
@@ -52,7 +135,7 @@ Backward compat: adapters without `handleResolvedEvent` fall through to the lega
 
 Landed four high-priority features from `docs/scenarios/1-manage-a-channel-with-agent.md` §9 so the scenario runs clean in production.
 
-**Plan 24 — Commands system (user-triggered `/slash`, FS + plugin, mirrors Skills).**
+**Commands system (user-triggered `/slash`, FS + plugin, mirrors Skills).**
 - Migration `0030_plan24_commands.sql` — `project_commands`, `agent_commands`, `agents.command_access_mode` (`manual` | `all`).
 - Schema + queries in db package; exports added to `@jiku-studio/db`.
 - Core: `parseCommandDoc`, `resolveCommandEntrypoint`, `CommandRegistry` (mirror of Skills), types `CommandManifest`, `CommandSource`, `CommandEntry`, `CommandArgSpec`, `PluginCommandSpec`, `CommandDispatchResult`, `CommandAccessMode`.
@@ -62,13 +145,13 @@ Landed four high-priority features from `docs/scenarios/1-manage-a-channel-with-
 - Audit: `command.invoke`, `command.assignment_changed`, `command.source_changed`.
 - UI: project Commands page + per-agent allow-list page, sidebar link, API client `api.commands.*`.
 
-**Plan 25 — Reference hint provider (`@file`).**
+**Reference hint provider (`@file`).**
 - `src/references/hint.ts` — scans input for `@path/to/file` mentions (workspace-root default, rejects `..`, rejects `./` in MVP, ignores `@alice` non-path-like), stats each match via `getFileByPath`, injects a `<user_references>` block listing ok + not_found entries with size + mtime + `LARGE` tag for files > 1 MB. Cap 20 per invocation.
 - Wired into chat route (after command dispatch), task runner (cron/heartbeat/task), and connector inbound (`src/connectors/event-router.ts`).
 - Agent still reads content on-demand via `fs_read` — zero eager expansion.
 - Audit: `reference.scan` with `{ surface, total, ok, missing }`.
 
-**Plan 26 — FS tool permission via metadata.**
+**FS tool permission via metadata.**
 - Migration `0031_plan26_fs_tool_permission.sql` — `tool_permission` column on `project_files` + `project_folders` (`'read+write' | 'read' | NULL` for inherit).
 - Resolver `resolveFsToolPermission(projectId, path)` — walks parent folder chain; self → ancestors → default `read+write`. Returns `{ effective, source, source_path }`.
 - Enforcement gate in `fs_write`, `fs_edit`, `fs_append`, `fs_move` (both from + to), `fs_delete`. Returns `FS_TOOL_READONLY` with a hint pointing to the source of the restriction. Read operations (`fs_read`, `fs_list`, `fs_search`) are never gated — "shared open" semantics.
@@ -76,7 +159,7 @@ Landed four high-priority features from `docs/scenarios/1-manage-a-channel-with-
 - Audit: `fs.permission_set`, `fs.permission_denied`.
 - UI: file explorer context menu (delegated, in progress).
 
-**Plan 27 — Connector custom params + hint injection.**
+**Connector custom params + hint injection.**
 - Added `ConnectorParamSpec` type + optional `getParamSchema()` on `ConnectorAdapter` in `@jiku/kit`.
 - Added `params?: Record<string, unknown>` on `ConnectorContent` in `@jiku/types`.
 - `connector_send` + `connector_send_to_target` tools accept `params`, validate against the adapter's declared schema (unknown keys → `INVALID_PARAMS` error with valid_params list).

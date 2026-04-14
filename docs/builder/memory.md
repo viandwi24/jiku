@@ -1,8 +1,16 @@
 # Memory
 
+## Drizzle schema must mirror migration ALTER TABLE — silently-dropped fields turn into empty SET clauses
+
+When a migration adds a column via `ALTER TABLE ... ADD COLUMN`, the corresponding `pgTable(...)` declaration in `apps/studio/db/src/schema/*.ts` MUST be updated too. Drizzle's type-safe `.set({ new_col: val })` FILTERS out fields that aren't in the schema object. If that's the only field you're setting, the emitted SQL becomes `UPDATE "table" SET WHERE id=$1` — literal empty SET — and Postgres rejects with `42601: syntax error at or near "where"`. We hit this on `agents.command_access_mode` (migration 0030 ALTER'd; schema file wasn't updated until a user tried to PATCH the field). Whenever adding a migration that touches existing tables, grep `schema/*.ts` for the table and add the column there in the same commit.
+
+## Plugin tools get `project_id` via `toolCtx.runtime['project_id']`, NOT via `caller.user_data.project_id`
+
+`CallerContext.user_data` is the place for user profile + company context (`name`, `email`, `company_id`, `actual_permissions`) — `resolveCaller` deliberately does NOT put `project_id` there. The runner injects `project_id` into every `RuntimeContext` as a top-level key (see `jiku.sheet` pattern around line 365). Plugins that read from `caller.user_data.project_id` get `undefined` silently — tool-triggered code paths stop working while plugin HTTP endpoints (which get `projectId` from their own ctx closure) keep working, producing confusing "works in playground, broken for agent" bugs. We hit this on `jiku.web-reader` history save. Canonical access: `const projectId = toolCtx.runtime['project_id'] as string | undefined`.
+
 ## Telegram `editMessageText` "message is not modified" is a SUCCESS, not an error
 
-Telegram compares the **rendered** output against the current message content. If your new text (after applying `parse_mode`) renders identical to what's already on screen, `editMessageText` returns `400: Bad Request: message is not modified`. This bit us in Plan 28's streaming adapter: the final MarkdownV2 edit identity-matches the last interim plain edit when the body has no MarkdownV2-escapable chars (so `telegramifyMarkdown(x, 'escape') === x`). Treat `err.description.includes('message is not modified')` as a no-op success path — content is already on screen, nothing to do. The same guard should wrap any plain-text fallback edit. Don't warn-log it; spam drowns real errors. If you add new edit sites, copy the `isNotModifiedError` helper pattern.
+Telegram compares the **rendered** output against the current message content. If your new text (after applying `parse_mode`) renders identical to what's already on screen, `editMessageText` returns `400: Bad Request: message is not modified`. This bit us in the streaming adapter: the final MarkdownV2 edit identity-matches the last interim plain edit when the body has no MarkdownV2-escapable chars (so `telegramifyMarkdown(x, 'escape') === x`). Treat `err.description.includes('message is not modified')` as a no-op success path — content is already on screen, nothing to do. The same guard should wrap any plain-text fallback edit. Don't warn-log it; spam drowns real errors. If you add new edit sites, copy the `isNotModifiedError` helper pattern.
 
 ## Telegram streaming adapter renders narrative-ordered, not header-pinned
 
@@ -14,7 +22,7 @@ During streaming, the adapter edits with no `parse_mode` — MarkdownV2 on parti
 
 ## Skills / Commands share a pattern — factor carefully, don't rewrite
 
-Skills (Plan 19) dan Commands (Plan 24) keduanya: FS scan `/<root>/<slug>/<MANIFEST>.md` OR single-file `/<root>/<slug>.md`, parse frontmatter + body, cache di `project_<thing>s`, plugin contributions via `registerPlugin<Thing>()`, project-level registry + per-agent assignment table. Kalau nanti fitur ketiga dengan shape sama muncul (mis. "Docs" FS-first) pertimbangkan factoring `ManifestLoader<T>` generic — tapi BUKAN refactor wajib. Plan 24 sengaja copy ~70% dari SkillLoader struktur supaya cepat ship + mudah dibandingkan saat debug. Konsistensi baris-per-baris (tabel columns, audit event naming `<thing>.assignment_changed`, route layout) lebih penting daripada DRY. Kalau muncul plan ketiga, sebaiknya bareng-bareng dengan refactor generic, bukan sambil memperkenalkan fitur baru.
+Skills (Plan 19) dan Commands keduanya: FS scan `/<root>/<slug>/<MANIFEST>.md` OR single-file `/<root>/<slug>.md`, parse frontmatter + body, cache di `project_<thing>s`, plugin contributions via `registerPlugin<Thing>()`, project-level registry + per-agent assignment table. Kalau nanti fitur ketiga dengan shape sama muncul (mis. "Docs" FS-first) pertimbangkan factoring `ManifestLoader<T>` generic — tapi BUKAN refactor wajib. Commands sengaja copy ~70% dari SkillLoader struktur supaya cepat ship + mudah dibandingkan saat debug. Konsistensi baris-per-baris (tabel columns, audit event naming `<thing>.assignment_changed`, route layout) lebih penting daripada DRY. Kalau muncul plan ketiga, sebaiknya bareng-bareng dengan refactor generic, bukan sambil memperkenalkan fitur baru.
 
 ## `@file` hint itu PRE-prompt, bukan system prompt
 
@@ -22,7 +30,7 @@ Skills (Plan 19) dan Commands (Plan 24) keduanya: FS scan `/<root>/<slug>/<MANIF
 
 ## FS tool permission gate TIDAK kena `fs_mkdir` karena `fs_mkdir` tidak ada
 
-Saat mengerjakan Plan 26 sempat hampir nambah gate untuk `fs_mkdir` mengikuti scenario doc, tapi `fs_mkdir` sebagai tool terpisah memang tidak ada di `filesystem/tools.ts` — folder dibuat otomatis saat file pertama ditulis ke path baru (via `upsertFile` + folder backfill). Kalau nanti `fs_mkdir` benar-benar ditambah sebagai tool, wire-kan `checkToolPermGate(projectId, path, 'mkdir', ...)` di executor-nya — sudah ada precedent di 5 tool existing.
+Saat mengerjakan FS tool permission sempat hampir nambah gate untuk `fs_mkdir` mengikuti scenario doc, tapi `fs_mkdir` sebagai tool terpisah memang tidak ada di `filesystem/tools.ts` — folder dibuat otomatis saat file pertama ditulis ke path baru (via `upsertFile` + folder backfill). Kalau nanti `fs_mkdir` benar-benar ditambah sebagai tool, wire-kan `checkToolPermGate(projectId, path, 'mkdir', ...)` di executor-nya — sudah ada precedent di 5 tool existing.
 
 ## `audit.write` passthrough was added on purpose — pakai untuk event ad-hoc
 
@@ -30,7 +38,7 @@ Saat mengerjakan Plan 26 sempat hampir nambah gate untuk `fs_mkdir` mengikuti sc
 
 ## `connector_list` adalah kontrak "tool yang wajib fresh tiap iteration"
 
-Tool description sudah eksplisit minta agent panggil `connector_list` fresh tiap iterasi yang akan pakai `connector_*`. Pattern ini dimanfaatkan Plan 27 untuk surface `param_schema` per connector — tidak perlu prompt injection karena agent sudah wajib call tool ini. Kalau nanti tambah field baru di `connector_list` output (action schema, rate-limit hint, maintenance status), ikut pattern yang sama: tambah ke return value, tool description tetap "call fresh every iteration". Zero prompt-bloat.
+Tool description sudah eksplisit minta agent panggil `connector_list` fresh tiap iterasi yang akan pakai `connector_*`. Pattern ini dimanfaatkan Connector custom params untuk surface `param_schema` per connector — tidak perlu prompt injection karena agent sudah wajib call tool ini. Kalau nanti tambah field baru di `connector_list` output (action schema, rate-limit hint, maintenance status), ikut pattern yang sama: tambah ke return value, tool description tetap "call fresh every iteration". Zero prompt-bloat.
 
 ## Telegram: `bot started (polling)` log is a lie on its own
 

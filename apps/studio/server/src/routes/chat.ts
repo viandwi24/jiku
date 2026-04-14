@@ -56,18 +56,34 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
     input: rawInput,
     surface: 'chat',
     userId,
-  }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-  const resolvedInput = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : rawInput
+  }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
 
-  // Plan 25 — scan for @file references and prepend a hint block so the agent
-  // knows the file exists and can fs_read it on-demand.
+  // User input stays LITERAL — `/slug args` as typed. The resolved command
+  // body (the SOP markdown the agent should follow) is injected as a per-turn
+  // system segment instead of replacing the user message. Same rationale as
+  // the @file hint: keeps message DB + chat UI honest about what the user
+  // actually typed; edits work naturally.
+  const input = rawInput
+  const commandSegment = (cmd.matched && cmd.resolvedInput)
+    ? [{ label: `Command Invoked: /${cmd.slug ?? ''} (this turn only)`, content: cmd.resolvedInput }]
+    : undefined
+
+  // @file reference hint — scan against the resolved command body if a command
+  // matched (so `@plans/foo.md` inside the command body still resolves), else
+  // against the raw user text.
   const refScan = await scanReferences({
     projectId: agent.project_id,
-    text: resolvedInput,
+    text: cmd.resolvedInput ?? input,
     userId,
     surface: 'chat',
   }).catch(() => ({ hintBlock: null } as const))
-  const input = refScan.hintBlock ? `${refScan.hintBlock}\n\n${resolvedInput}` : resolvedInput
+  const refSegments = refScan.hintBlock
+    ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
+    : undefined
+
+  // Combine both per-turn segments. Either, both, or neither.
+  const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
+  const extraSegmentsArg = extraSegments.length > 0 ? extraSegments : undefined
 
   // --- Auto-reply intercept: check rules before LLM invocation ---
   const autoReplyRules = (agent.auto_replies ?? []) as AutoReplyRule[]
@@ -179,6 +195,7 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
       attachments: attachments.length > 0 ? attachments : undefined,
       input_file_parts: inputFileParts.length > 0 ? inputFileParts : undefined,
       conversation_id: conversationId,
+      extra_system_segments: extraSegmentsArg,
       // Preserve the null/undefined distinction:
       //   undefined → runner falls back to conversation.active_tip (linear extend)
       //   null      → explicit "branch at root" (edit of the first user message)

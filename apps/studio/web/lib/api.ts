@@ -362,6 +362,29 @@ export const api = {
       request<{ ok: boolean }>(`/api/agents/${agentId}/credentials`, { method: 'DELETE' }),
   },
 
+  connectorSetup: {
+    start: (projectId: string, credentialId: string) =>
+      request<ConnectorSetupStartResponse>(
+        `/api/projects/${projectId}/credentials/${credentialId}/setup/start`,
+        { method: 'POST' }
+      ),
+    step: (
+      projectId: string,
+      credentialId: string,
+      sessionId: string,
+      body: { step_id: string; input: Record<string, ConnectorSetupStepInputValue> }
+    ) =>
+      request<ConnectorSetupStepResult>(
+        `/api/projects/${projectId}/credentials/${credentialId}/setup/${sessionId}/step`,
+        { method: 'POST', body: JSON.stringify(body) }
+      ),
+    cancel: (projectId: string, credentialId: string, sessionId: string) =>
+      request<{ ok: boolean }>(
+        `/api/projects/${projectId}/credentials/${credentialId}/setup/${sessionId}`,
+        { method: 'DELETE' }
+      ),
+  },
+
   runs: {
     list: (projectId: string, params?: {
       type?: string
@@ -1524,6 +1547,60 @@ export interface CredentialAdapter {
   fields: AdapterField[]
   metadata: AdapterField[]
   models: AdapterModel[]
+  requires_interactive_setup?: boolean
+}
+
+// ============================================================
+// CONNECTOR INTERACTIVE SETUP (Plan 24 Phase 1)
+// Inlined here (mirrored from @jiku/types) because api.ts does
+// not currently import from @jiku/types; keep in sync manually.
+// ============================================================
+
+export interface ConnectorSetupInput {
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  required: boolean
+  secret?: boolean
+  label: string
+  placeholder?: string
+  description?: string
+}
+
+export interface ConnectorSetupStep {
+  id: string
+  title: string
+  description: string
+  inputs: ConnectorSetupInput[]
+  conditional?: boolean
+}
+
+export interface ConnectorSetupSpec {
+  steps: ConnectorSetupStep[]
+  title?: string
+  intro?: string
+}
+
+export type ConnectorSetupStepInputValue = string | number | boolean
+
+export type ConnectorSetupStepResult =
+  | { ok: true; next_step?: string; ui_message?: string }
+  | { ok: true; complete: true; fields: Record<string, unknown>; ui_message?: string }
+  | {
+      ok: false
+      error: string
+      hint?: string
+      retry_step?: string
+      retry_count?: number
+      max_retries?: number
+      aborted?: boolean
+      reason?: string
+    }
+
+export interface ConnectorSetupStartResponse {
+  setup_session_id: string
+  spec: ConnectorSetupSpec
+  first_step_id: string
+  max_retries_per_step: number
 }
 
 export interface CredentialItem {

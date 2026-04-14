@@ -1002,36 +1002,40 @@ async function executeConversationAdapter(
     })
     const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
 
-    const rawInputText = event.type === 'message'
+    const inputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
 
-    // Plan 24 — slash command dispatcher for connector inbound. Surface
-    // 'connector' means the dispatcher enforces the per-agent allow-list when
-    // the agent's command_access_mode is 'manual' (default) — so external chat
-    // members can only invoke commands the admin explicitly assigned. Set
-    // `command_access_mode='all'` on the agent to lift that gate per binding.
+    // Slash command dispatcher for connector inbound. Same per-agent allow-list
+    // gate as chat surface (uniform model). Result: user input stays LITERAL
+    // (e.g. external Telegram member sees their own message echoed back as
+    // they typed it); the resolved command body lands in a per-turn system
+    // segment so the agent gets the SOP without polluting message history.
     const { dispatchSlashCommand } = await import('../commands/dispatcher.ts')
     const cmdDispatch = await dispatchSlashCommand({
-      projectId, agentId, input: rawInputText, surface: 'connector',
+      projectId, agentId, input: inputText, surface: 'connector',
       userId: identity?.external_id ?? null,
-    }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-    const inputText = (cmdDispatch.matched && cmdDispatch.resolvedInput)
-      ? cmdDispatch.resolvedInput
-      : rawInputText
+    }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
+    const commandSegment = (cmdDispatch.matched && cmdDispatch.resolvedInput)
+      ? [{ label: `Command Invoked: /${cmdDispatch.slug ?? ''} (this turn only)`, content: cmdDispatch.resolvedInput }]
+      : undefined
 
-    // Wrap the (possibly resolved) text in an explicit tag so the model can't
-    // confuse it with the connector_context metadata (prompt-injection defence).
+    // Wrap the literal user text in an explicit tag — the model can't confuse
+    // it with the connector_context metadata (prompt-injection defence).
     const wrappedInput = `<user_message>\n${inputText}\n</user_message>`
 
-    // Plan 25 — @file reference hint. Scan the resolved text (if a command
-    // dispatched, its body may itself reference @files).
+    // @file reference hint — same per-turn segment model as chat-route. Scan
+    // against the resolved command body if a command matched, else raw input.
     const { scanReferences } = await import('../references/hint.ts')
     const refScan = await scanReferences({
-      projectId, text: inputText, surface: 'connector', userId: null,
+      projectId, text: cmdDispatch.resolvedInput ?? inputText, surface: 'connector', userId: null,
     }).catch(() => ({ hintBlock: null } as const))
-    const refBlock = refScan.hintBlock ? `\n\n${refScan.hintBlock}` : ''
-    const input = (contextString ? `${contextString}\n\n${wrappedInput}` : wrappedInput) + refBlock
+    const refSegments = refScan.hintBlock
+      ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
+      : undefined
+    const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
+    const refSegmentsCombined = extraSegments.length > 0 ? extraSegments : undefined
+    const input = contextString ? `${contextString}\n\n${wrappedInput}` : wrappedInput
 
     // Plan 28 — If the adapter implements handleResolvedEvent, hand off full
     // ownership of queueing + stream consumption + outbound send. This lets
@@ -1061,6 +1065,7 @@ async function executeConversationAdapter(
           caller,
           mode: 'chat',
           input,
+          extra_system_segments: refSegmentsCombined,
         }),
         registerObserverStream: (obsStream: ReadableStream<unknown>) => {
           const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
@@ -1123,6 +1128,7 @@ async function executeConversationAdapter(
       caller,
       mode: 'chat',
       input,
+      extra_system_segments: refSegmentsCombined,
     })
 
     // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates

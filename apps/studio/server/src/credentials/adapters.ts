@@ -29,6 +29,12 @@ export interface CredentialAdapter {
   fields: AdapterField[]     // secret → encrypted
   metadata: AdapterField[]   // non-secret → plain JSON
   models: AdapterModel[]     // empty = dynamic fetch
+  /**
+   * Plan 24 — When true, the credential UI shows an additional "Setup" button
+   * and the credential is considered incomplete until the interactive setup
+   * wizard runs to completion. Driven by `ConnectorAdapter.requiresInteractiveSetup`.
+   */
+  requires_interactive_setup?: boolean
 }
 
 /**
@@ -196,6 +202,7 @@ export function getConnectorDerivedAdapters(): CredentialAdapter[] {
       fields,
       metadata,
       models: [],
+      requires_interactive_setup: connectorAdapter.requiresInteractiveSetup === true,
     })
   }
 

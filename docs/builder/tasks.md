@@ -1,13 +1,19 @@
 ## Backlog
 
-### Plan 28 follow-ups (post-ship)
+### Streaming adapter follow-ups (post-ship)
+- [x] Slash `/` autocomplete in chat input — `SlashCommandAutocomplete` component with arrow-key nav + Tab/Enter insert + Esc dismiss. Respects `command_access_mode` (allowlist vs full project).
+- [x] Connector inbound command dispatcher (previously deferred per ADR-085). Now wired with uniform `command_access_mode` gate (ADR-088, supersedes ADR-085's defer decision).
+- [x] Uniform access-mode gate across all surfaces (ADR-089). Removed "chat bypasses allowlist" shortcut — config is single source of truth.
+- [x] Drizzle schema drift on `agents.command_access_mode` — column declared in `schema/agents.ts` to mirror migration 0030.
+- [x] `jiku.web-reader` history save for tool-invoked calls — switched from `caller.user_data.project_id` (always undefined) to `toolCtx.runtime['project_id']` (runner-injected).
+- [ ] Per-binding command allow-list (intersect with agent-level). Currently permissions are agent-wide; a future scenario might want "only this group can invoke `/deploy`". Not needed yet.
 - [ ] Queue drain path (`queue_mode='ack_queue'` dequeue in `drainConnectorQueue`) still uses legacy fake simulate_typing. Wire it through `handleResolvedEvent` so subsequent queued messages also stream.
 - [ ] Verify tool chunk type names match the actual AI SDK emit names. Current switch matches `tool-call`, `tool-input-start`, `tool-input-available`, `tool-output-available`, `tool-result`, `tool-error`, `data-jiku-tool-start`, `data-jiku-tool-end`, `data-jiku-tool-error` — if the runner emits different names, chips silently won't render. Log a sample run's chunk types to confirm.
 - [ ] Port `handleResolvedEvent` pattern to Discord / WhatsApp adapters when they land (each with their own rate-limit + edit-semantics profile).
 - [ ] Tool name escape for MarkdownV2 currently uses inline regex. Factor to a shared util if another adapter needs the same escape later.
 - [ ] Consider per-tool hint (e.g. args preview) next to the tool line — right now only name is shown.
 
-### Plan 24/25/26/27 follow-ups (post-ship)
+### Commands / @file / FS perm / connector params follow-ups (post-ship)
 - [ ] FS permission file-explorer context-menu UI — delegated to subagent 2026-04-14; follow up on completion, verify badge/indicator + bulk-set flow.
 - [ ] Commands: connector inbound dispatcher — currently only chat/task/cron/heartbeat surfaces route `/slug`. Gated opt-in per-binding so external members can't invoke `/deploy-prod`.
 - [ ] Commands: args schema editor UI — users can currently only write args via YAML frontmatter. Nice-to-have form builder.

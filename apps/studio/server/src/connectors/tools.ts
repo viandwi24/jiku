@@ -412,6 +412,31 @@ export function buildConnectorTools(projectId: string) {
       },
     }),
 
+    // Plan 24 Phase 5 — surface userbot rate-limit / queue health to the agent.
+    defineTool({
+      meta: {
+        id: 'connector_get_queue_status',
+        name: 'Get Connector Queue Status',
+        description:
+          'Inspect rate-limit + queue health for a connector. Userbot connectors (jiku.telegram.user) enforce a per-chat min gap, global per-minute quota, FLOOD_WAIT scope-aware pause, and PEER_FLOOD spam-restricted latch — call this BEFORE bursting many sends, especially for marketing / broadcast tasks. Returns `{ pending_per_chat, global_calls_last_minute, global_quota_remaining, global_rate_used_percent, flood_wait_active, spam_restricted, session_expired, policy, estimated_delay_next_ms }`. If `spam_restricted=true` or `session_expired=true`, STOP all auto-send to that connector and surface the issue to the user.',
+        group: 'connector',
+      },
+      permission: '*',
+      modes: ['chat', 'task'],
+      input: z.object({
+        connector_id: z.string().describe('Connector ID'),
+      }),
+      execute: async (args) => {
+        const { connector_id } = args as { connector_id: string }
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id) as { getQueueStatus?: () => unknown } | null
+        if (!adapter) return { error: 'Connector not active' }
+        if (typeof adapter.getQueueStatus !== 'function') {
+          return { connector_id, queue_supported: false, message: 'This connector does not implement queue management. Standard adapter rate-limit applies (no introspection).' }
+        }
+        return { connector_id, queue_supported: true, status: adapter.getQueueStatus() }
+      },
+    }),
+
     // ── Run an adapter-specific action ───────────────────────────────
 
     defineTool({

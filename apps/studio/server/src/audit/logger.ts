@@ -59,9 +59,15 @@ export type AuditEventType =
   | 'command.source_changed'
   // Plan 25 — @file reference hint
   | 'reference.scan'
-  // Plan 26 — FS tool permission
+  // FS tool permission
   | 'fs.permission_set'
   | 'fs.permission_denied'
+  // Plan 24 — connector interactive setup
+  | 'credential.setup_started'
+  | 'credential.setup_step'
+  | 'credential.setup_completed'
+  | 'credential.setup_failed'
+  | 'credential.setup_cancelled'
 
 interface WriteEntry extends AuditContext {
   event_type: AuditEventType
@@ -219,6 +225,22 @@ export const audit = {
 
   fsPermissionDenied: (ctx: AuditContext, path: string, meta: Record<string, unknown>) =>
     write({ ...ctx, event_type: 'fs.permission_denied', resource_type: 'file', resource_name: path, metadata: meta }),
+
+  // Plan 24 — connector interactive setup
+  credentialSetupStarted: (ctx: AuditContext, credentialId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'credential.setup_started', resource_type: 'credential', resource_id: credentialId, metadata: meta }),
+
+  credentialSetupStep: (ctx: AuditContext, credentialId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'credential.setup_step', resource_type: 'credential', resource_id: credentialId, metadata: meta }),
+
+  credentialSetupCompleted: (ctx: AuditContext, credentialId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'credential.setup_completed', resource_type: 'credential', resource_id: credentialId, metadata: meta }),
+
+  credentialSetupFailed: (ctx: AuditContext, credentialId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'credential.setup_failed', resource_type: 'credential', resource_id: credentialId, metadata: meta }),
+
+  credentialSetupCancelled: (ctx: AuditContext, credentialId: string, meta: Record<string, unknown>) =>
+    write({ ...ctx, event_type: 'credential.setup_cancelled', resource_type: 'credential', resource_id: credentialId, metadata: meta }),
 
   // Generic passthrough: some callers (dispatcher) assemble the entry themselves.
   write: (entry: WriteEntry) => write(entry),

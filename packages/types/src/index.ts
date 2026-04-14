@@ -1231,6 +1231,87 @@ export interface ConnectorContext {
   onEvent(event: ConnectorEvent): Promise<void>
 }
 
+// ============================================================
+// CONNECTOR INTERACTIVE SETUP (Plan 24 Phase 1)
+// ============================================================
+
+/**
+ * One input field rendered by the generic setup wizard. Secret=true → masked.
+ */
+export interface ConnectorSetupInput {
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  required: boolean
+  secret?: boolean
+  label: string
+  placeholder?: string
+  description?: string
+}
+
+/**
+ * One step in the interactive setup wizard. Rendered in order; adapter drives
+ * transitions via `runSetupStep`'s `next_step` return.
+ */
+export interface ConnectorSetupStep {
+  id: string
+  title: string
+  description: string
+  inputs: ConnectorSetupInput[]
+  /** When true, wizard may skip this step based on adapter branching logic. */
+  conditional?: boolean
+}
+
+/**
+ * Declared by `ConnectorAdapter.getSetupSpec()`. Studio auto-mounts the setup
+ * endpoints and renders the generic wizard from this spec.
+ */
+export interface ConnectorSetupSpec {
+  /** Ordered list of steps the wizard walks through. */
+  steps: ConnectorSetupStep[]
+  /** Optional title shown in the wizard header. */
+  title?: string
+  /** Optional intro paragraph shown at step 1. */
+  intro?: string
+}
+
+/**
+ * Server-side state carried across steps. Adapter mutates `scratch` to persist
+ * transient data between steps (e.g. an mtcute client, phone_code_hash).
+ * Stored in-memory with a TTL; lost on server restart (user re-runs the wizard).
+ */
+export interface ConnectorSetupSessionState {
+  session_id: string
+  project_id: string
+  credential_id: string
+  /**
+   * Decrypted credential fields, refreshed by the route handler on every step
+   * call. Adapter reads (e.g. `state.credential_fields.api_id`) but should NOT
+   * mutate; permanent updates land via `runSetupStep` returning
+   * `{ok:true, complete:true, fields}`.
+   */
+  credential_fields: Record<string, string>
+  /** Adapter-owned scratch — never exposed to UI. */
+  scratch: Record<string, unknown>
+  /** Monotonic counter of failed attempts on the current step — wizard enforces a retry cap. */
+  retry_count: number
+  /** Which step we're currently expecting input for. */
+  current_step_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+/**
+ * Result of a single `runSetupStep` call.
+ *  - `ok:true, next_step` → wizard advances to `next_step`.
+ *  - `ok:true, complete:true, fields` → wizard persists `fields` into the credential and closes.
+ *  - `ok:false, retry_step` → wizard stays on (or returns to) `retry_step` and shows the error.
+ *  - `ok:false` (no retry_step) → wizard terminates with the error.
+ */
+export type ConnectorSetupStepResult =
+  | { ok: true; next_step?: string; ui_message?: string }
+  | { ok: true; complete: true; fields: Record<string, unknown>; ui_message?: string }
+  | { ok: false; error: string; hint?: string; retry_step?: string }
+
 /**
  * Plan 28 — Resolved binding context passed to `ConnectorAdapter.handleResolvedEvent()`.
  *

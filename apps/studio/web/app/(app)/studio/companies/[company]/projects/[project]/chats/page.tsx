@@ -26,10 +26,12 @@ import {
   PromptInputButton,
   PromptInputFooter,
   PromptInputHeader,
+  PromptInputProvider,
   PromptInputSubmit,
   PromptInputTextarea,
   usePromptInputAttachments,
 } from '@jiku/ui/components/ai-elements/prompt-input.tsx'
+import { SlashCommandAutocomplete } from '@/components/chat/slash-command-autocomplete'
 import {
   Attachments,
   Attachment,
@@ -192,14 +194,24 @@ function ChatsPage({ params, searchParams }: PageProps) {
           </Popover>
 
           {/* Input */}
-          <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
-            <AttachmentPreviews />
-            <PromptInputTextarea placeholder="Type a message… (Enter to send, paste image)" />
-            <PromptInputFooter>
-              <AttachFileButton />
-              <PromptInputSubmit disabled={!selectedAgent || createMutation.isPending} />
-            </PromptInputFooter>
-          </PromptInput>
+          {/* Wrapped in PromptInputProvider so the slash autocomplete can read +
+              set the input value through the shared controller. Same pattern as
+              ConversationViewer. */}
+          <PromptInputProvider>
+            <div className="relative">
+              {selectedAgent && (
+                <SlashCommandAutocomplete agentId={selectedAgent.id} />
+              )}
+              <PromptInput onSubmit={handleSend} accept="image/*,text/*,.csv,.json,.md,.pdf" multiple>
+                <AttachmentPreviews />
+                <PromptInputTextarea placeholder="Type a message… (/ for commands, Enter to send, paste image)" />
+                <PromptInputFooter>
+                  <AttachFileButton />
+                  <PromptInputSubmit disabled={!selectedAgent || createMutation.isPending} />
+                </PromptInputFooter>
+              </PromptInput>
+            </div>
+          </PromptInputProvider>
         </div>
       </div>
     </div>

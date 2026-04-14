@@ -279,7 +279,7 @@ No `agent_id` at root — always inside `output_config`.
 - `channels/[connector]/events/page.tsx` — event log + SSE live stream
 - `channels/[connector]/messages/page.tsx` — inbound/outbound message log
 
-## Streaming Outbound via `handleResolvedEvent` (Plan 28)
+## Streaming Outbound via `handleResolvedEvent`
 
 Optional adapter hook that takes full ownership of stream consumption + outbound send after the event-router has resolved binding/identity/conversation.
 
@@ -342,7 +342,7 @@ At finalize, tool lines italic-wrap; `---` separators render literally.
 ### Related ADRs
 - **ADR-087** — adapter-owned streaming; event-router as matchmaker only.
 
-## Platform-Specific Params (Plan 27)
+## Platform-Specific Params
 
 Adapter declares platform-specific send params via `getParamSchema()`; surfaced to agents via `connector_list` output per-connector (ADR-086, not prompt injection).
 
@@ -367,7 +367,7 @@ class MyAdapter extends ConnectorAdapter {
 
 ```typescript
 interface ConnectorContent {
-  params?: Record<string, unknown>  // Plan 27
+  params?: Record<string, unknown>  // connector custom params
   // ... existing fields
 }
 ```

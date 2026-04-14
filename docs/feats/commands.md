@@ -1,4 +1,4 @@
-# Commands (Plan 24)
+# Commands
 
 User-triggered `/slash` system. FS-first (plus plugin) discovery; mirror arsitektur Skills.
 
@@ -9,10 +9,13 @@ User mengetik `/slug arg1 arg2` sebagai message pertama di turn — dispatcher:
 2. Resolve slug via `CommandLoader` (`/commands/<slug>/COMMAND.md` folder atau `/commands/<slug>.md` file tunggal).
 3. Eligibility check vs agent's `command_access_mode` + `agent_commands` allow-list.
 4. Parse args per `manifest.args` schema.
-5. Replace input dengan `body + <command_args>` block.
-6. Audit `command.invoke`.
+5. Compose `body + <command_args>` block.
+6. **Inject as per-turn `extra_system_segments`** with label `Command Invoked: /<slug>` — user input message stays LITERAL (just `/slug args` as typed). User's chat history + edit flow stay clean; agent sees the SOP body via system context for that turn only.
+7. Audit `command.invoke`.
 
-Command body adalah markdown instruksi untuk agent — bisa referensi `@plans/marketing.md` (Plan 25 hint akan merender notice-nya).
+> **Update 2026-04-14:** dispatcher dulu **REPLACE** user input dengan resolved body. Itu bikin message DB jadi kotor (giant body bukan `/slug args`), edit flow rusak, history aneh. Sekarang pakai per-turn segment model — sama seperti `@file` reference hint. User text stays literal, command body lives in system context.
+
+Command body adalah markdown instruksi untuk agent — bisa referensi `@plans/marketing.md` (the @file reference hint akan merender notice-nya).
 
 ## Surfaces wired
 
@@ -20,7 +23,24 @@ Command body adalah markdown instruksi untuk agent — bisa referensi `@plans/ma
 - ✅ Task runner — spawn_task tool, manual task
 - ✅ Cron scheduler (via task runner) — `cron_create(prompt: "/marketing-channel-execute ...")`
 - ✅ Heartbeat (via task runner)
-- ⏭️ Connector inbound — DEFERRED (ADR-085, security-gated opt-in di backlog)
+- ✅ Connector inbound (Telegram + any adapter that goes through `event-router`) — ADR-088 reversed ADR-085's earlier defer. Gated uniformly via `command_access_mode` (ADR-089).
+
+## UI: `/` autocomplete in chat input
+
+Typing `/` as the first character of the chat input pops a dropdown of matching commands:
+- ↑ / ↓ navigate the list.
+- Tab / Enter insert `/<slug> ` (with trailing space, ready for args).
+- Esc dismiss (soft dismiss — appends a space to break the prefix match).
+- Popup filters live as the user types (`/mar` → commands whose slug starts with "mar").
+- Shows emoji (from `manifest.metadata.jiku.emoji`), slug, description, up to 2 tags.
+- Respects `command_access_mode`: in `manual` mode shows the agent's allow-list; in `all` mode shows every active project command. Matches the backend dispatcher's gate.
+- Fires `POST /projects/:pid/commands/refresh` on mount so FS-added commands appear without a project-wide reload.
+
+Implementation: `apps/studio/web/components/chat/slash-command-autocomplete.tsx`. Requires parent to wrap `<PromptInput>` in `<PromptInputProvider>` so the autocomplete can read + set the input value through the shared controller.
+
+## Access-mode gate is uniform (ADR-089)
+
+`command_access_mode` is honored on every surface. `manual` = only commands explicitly assigned to the agent via `agent_commands`; `all` = any active project command. No surface-special-cases. If a user wants "free chat access but gated connector access", they fork the need into two agents with different modes — the config is the single source of truth.
 
 ## Public API
 

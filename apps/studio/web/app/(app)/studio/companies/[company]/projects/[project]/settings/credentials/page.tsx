@@ -4,10 +4,22 @@ import { use, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { CredentialAdapter } from '@/lib/api'
-import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, CredentialList, CredentialForm } from '@jiku/ui'
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  CredentialList,
+  CredentialForm,
+} from '@jiku/ui'
 import type { CredentialCardItem } from '@jiku/ui'
-import { Plus } from 'lucide-react'
+import { AlertTriangle, Plus, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { ConnectorSetupWizard } from '@/components/connectors/setup-wizard'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -18,6 +30,7 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
   const qc = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
   const [editTarget, setEditTarget] = useState<CredentialCardItem | null>(null)
+  const [setupTarget, setSetupTarget] = useState<{ id: string; adapter_id: string } | null>(null)
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -52,10 +65,14 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
   const createMutation = useMutation({
     mutationFn: (body: Parameters<typeof api.credentials.createProject>[1]) =>
       api.credentials.createProject(project!.id, body),
-    onSuccess: () => {
+    onSuccess: (res, vars) => {
       qc.invalidateQueries({ queryKey: ['project-credentials', project?.id] })
       setShowAdd(false)
       toast.success('Credential added')
+      const ad = adaptersById.get(vars.adapter_id)
+      if (ad?.requires_interactive_setup) {
+        setSetupTarget({ id: res.credential.id, adapter_id: vars.adapter_id })
+      }
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to add credential'),
   })
@@ -90,6 +107,15 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
 
   const adapters: CredentialAdapter[] = adaptersData?.adapters ?? []
 
+  const adaptersById = new Map(adapters.map(a => [a.adapter_id, a]))
+  const projectCreds = projectCredsData?.credentials ?? []
+  const credsNeedingSetup = projectCreds.filter(c => {
+    const ad = adaptersById.get(c.adapter_id)
+    if (!ad?.requires_interactive_setup) return false
+    // Consider setup incomplete if there are no masked secret fields yet.
+    return Object.keys(c.fields_masked ?? {}).length === 0
+  })
+
   return (
     <div className="space-y-6">
       {(companyCredsData?.credentials.length ?? 0) > 0 && (
@@ -109,8 +135,31 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
           <Plus className="w-4 h-4 mr-1" /> Add Credential
         </Button>
       </div>
+      {credsNeedingSetup.length > 0 && (
+        <div className="space-y-2">
+          {credsNeedingSetup.map(c => (
+            <Alert key={c.id}>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle className="flex items-center justify-between gap-2">
+                <span>Setup required — {c.name}</span>
+                <Button
+                  size="sm"
+                  onClick={() => setSetupTarget({ id: c.id, adapter_id: c.adapter_id })}
+                >
+                  <Wand2 className="w-3.5 h-3.5 mr-1" /> Run Setup
+                </Button>
+              </AlertTitle>
+              <AlertDescription>
+                This connector requires an interactive setup before it can be used. Click
+                Run Setup to complete configuration.
+              </AlertDescription>
+            </Alert>
+          ))}
+        </div>
+      )}
+
       <CredentialList
-        credentials={projectCredsData?.credentials ?? []}
+        credentials={projectCreds}
         onEdit={setEditTarget}
         onDelete={(id) => deleteMutation.mutate(id)}
         onTest={(id) => testMutation.mutate(id)}
@@ -164,6 +213,21 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
           )}
         </DialogContent>
       </Dialog>
+
+      {setupTarget && project && (
+        <ConnectorSetupWizard
+          projectId={project.id}
+          credentialId={setupTarget.id}
+          adapterId={setupTarget.adapter_id}
+          open={!!setupTarget}
+          onOpenChange={(open) => { if (!open) setSetupTarget(null) }}
+          onComplete={() => {
+            qc.invalidateQueries({ queryKey: ['project-credentials', project?.id] })
+            toast.success('Connector setup complete')
+            setSetupTarget(null)
+          }}
+        />
+      )}
     </div>
   )
 }

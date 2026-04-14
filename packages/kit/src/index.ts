@@ -20,6 +20,9 @@ import type {
   ConnectorContext,
   ConnectorAction,
   ResolvedEventContext,
+  ConnectorSetupSpec,
+  ConnectorSetupSessionState,
+  ConnectorSetupStepResult,
   PluginUIDefinition,
 } from '@jiku/types'
 
@@ -41,6 +44,9 @@ export type {
   ConnectorContext,
   ConnectorAction,
   ResolvedEventContext,
+  ConnectorSetupSpec,
+  ConnectorSetupSessionState,
+  ConnectorSetupStepResult,
   PluginUIDefinition,
 }
 
@@ -195,6 +201,14 @@ export abstract class ConnectorAdapter {
    */
   readonly credentialSchema?: CredentialSchemaLike
 
+  /**
+   * Plan 24 — When true, Studio shows a "Setup" button on the credential
+   * form (alongside or instead of standard "Save") and forbids activating
+   * the credential until the interactive setup wizard runs to completion.
+   * The wizard is driven by `getSetupSpec()` + `runSetupStep()`.
+   */
+  readonly requiresInteractiveSetup?: boolean
+
   abstract onActivate(ctx: ConnectorContext): Promise<void>
   abstract onDeactivate(): Promise<void>
   abstract parseEvent(raw: unknown): ConnectorEvent | null
@@ -248,7 +262,31 @@ export abstract class ConnectorAdapter {
   getParamSchema?(): ConnectorParamSpec[]
 
   /**
-   * Plan 28 — Handle a resolved inbound event end-to-end. When defined, the
+   * Plan 24 — Interactive setup: declare the wizard steps the credential
+   * requires. When this returns a spec, Studio auto-mounts setup endpoints and
+   * renders a generic multi-step wizard driven by `runSetupStep`. Return
+   * `undefined` (or omit) for adapters that take a simple static credential
+   * (e.g. a bot token).
+   */
+  getSetupSpec?(): ConnectorSetupSpec | undefined
+
+  /**
+   * Plan 24 — Advance the interactive setup one step. Receives the step id
+   * being executed, the user's input for that step, and the session state
+   * (where the adapter persists cross-step scratch like an mtcute client or a
+   * phone_code_hash). On success, return `{ok:true, next_step}` to advance, or
+   * `{ok:true, complete:true, fields}` to persist fields into the credential.
+   * On failure, return `{ok:false, error, retry_step?}` — `retry_step` lets the
+   * wizard show the error and stay on (or rewind to) a specific step.
+   */
+  runSetupStep?(
+    stepId: string,
+    input: Record<string, unknown>,
+    sessionState: ConnectorSetupSessionState,
+  ): Promise<ConnectorSetupStepResult>
+
+  /**
+   * Streaming adapter: handle a resolved inbound event end-to-end. When defined, the
    * event-router hands off after resolving binding + identity + conversation +
    * inbound context string, and the adapter takes ownership of queueing,
    * runtimeManager.run invocation, stream consumption, outbound send, and usage

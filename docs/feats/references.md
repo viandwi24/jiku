@@ -1,6 +1,12 @@
-# Reference Hint Provider — @file (Plan 25)
+# Reference Hint Provider — @file
 
-Pre-prompt subsystem yang scan input untuk `@path/to/file` mention, verify file ada di virtual disk, inject `<user_references>` notice — tanpa eager expand konten (progressive disclosure, sama seperti Skills hint).
+Pre-prompt subsystem yang scan input untuk `@path/to/file` mention, verify file ada di virtual disk, inject `<user_references_filemention>` notice **sebagai per-turn system segment** (BUKAN appended ke user input) — tanpa eager expand konten (progressive disclosure, sama seperti Skills hint).
+
+> **Renamed 2026-04-14:** dari `<user_references>` (terlalu generic) → `<user_references_filemention>`. Subsystem lain yang mau add reference jenis lain (e.g. `<user_references_url>`, `<user_references_image>`) bisa pakai naming serupa tanpa clash.
+>
+> **Injection model 2026-04-14:** dipindah dari "prepend ke input string" ke `params.extra_system_segments` di `runtimeManager.run`. Alasan: appending ke user input bikin block visible di chat UI (user lihat text yang dia tidak ketik) dan membingungkan saat user edit pesannya. Sekarang user message tetap bersih — block hanya hidup di system context untuk turn itu saja.
+>
+> **Suppress empty hint 2026-04-14:** dulu kalau semua mention 404 di disk, block "NOT present on the disk" tetap dirender. Sekarang kalau zero file resolve, ZERO hint — agent baca @mention dari user text saja sebagai signal.
 
 ## What it does
 

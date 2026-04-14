@@ -1,8 +1,31 @@
 # Decisions
 
+## ADR-089 — Commands access-mode gate is uniform across all surfaces (supersedes §surface bypass in the Commands feature)
+
+**Context:** While wiring the Commands system, I introduced a "chat surface bypasses the allow-list" shortcut — rationale was UX: "chat is user-triggered, user knows what they're doing, forcing an allow-list is friction." The Telegram connector surface was simultaneously deferred entirely (ADR-085). The result was asymmetric and confusing: `command_access_mode='manual'` with empty allow-list rejected Telegram calls (correct) but silently accepted chat calls (wrong — the config said manual). Config was a lie.
+
+**Decision:** Remove the surface-specific bypass. `command_access_mode` is honored uniformly on every surface (chat, connector, cron, task, heartbeat). `manual` = allow-list only; `all` = any active project command. If a user wants free access in chat, they flip the agent to `all` — explicit and symmetric. Autocomplete UI mirrors the same gate: shows allow-list in manual mode, full project in all mode.
+
+**Consequences:**
+- Config contract is now honest: what's configured is what happens, everywhere.
+- Asymmetric mental model gone — debugging "why does it work in chat but not Telegram" no longer exists.
+- Small UX cost: users need one explicit step (set mode=all) to get "friction-free chat" behavior. That's the right trade — consistency > hidden shortcuts.
+- Supersedes the "Eligibility: Lebih longgar (user tahu konteks)" line in scenario doc §6.1's Commands vs Skills table. The table was aspirational; practice showed uniformity is more valuable than per-surface tuning.
+
+## ADR-088 — Connector inbound gets the command dispatcher (partially reverses ADR-085)
+
+**Context:** ADR-085 (earlier same day) deferred wiring the Commands dispatcher into the connector inbound path because of a security concern: external Telegram members could type `/deploy-prod` if we naively dispatched. That decision assumed permission design was still unresolved. With ADR-089 settled, the `command_access_mode` gate is the permission design: `manual` + allow-list already prevents unauthorized members from invoking arbitrary commands.
+
+**Decision:** Wire `dispatchSlashCommand` into `routeConnectorEvent` with `surface='connector'`. External members can invoke a command iff the admin has assigned it to the agent (manual mode) or the agent is in `all` mode. No per-binding flag needed — the agent-level config is sufficient.
+
+**Consequences:**
+- Scenario 1's Flow A (Telegram-triggered commands like `/summary`) is now possible without deferring to cron.
+- Security boundary is the agent's `command_access_mode` + allow-list, same as every other surface. Single mental model.
+- Future: if we ever need *per-binding* command restriction (e.g., "only this group can invoke `/deploy`"), add a binding-level allow-list that intersects with the agent-level one. Not needed yet.
+
 ## ADR-087 — Adapter owns streaming outbound, event-router handoff via `handleResolvedEvent`
 
-**Context:** Before Plan 28, the connector event-router did end-to-end handling: parseEvent → logArrival → resolve binding + identity → `runtimeManager.run()` → accumulate the full stream into `responseText` → `adapter.sendMessage({ text: fullText, simulate_typing: true })`. The adapter then did a *fake* progressive reveal (3 slice × 2s edits) on a message that was already final. Observable symptom: in the web runs viewer the stream completed first, THEN Telegram's `⌛` placeholder appeared and typing simulation began — sequential, not concurrent. Tool invocations (fs_read, connector_send, etc.) were invisible on Telegram entirely. Root cause was structural: the router drained the stream-to-completion before touching the adapter.
+**Context:** Before the streaming adapter handoff, the connector event-router did end-to-end handling: parseEvent → logArrival → resolve binding + identity → `runtimeManager.run()` → accumulate the full stream into `responseText` → `adapter.sendMessage({ text: fullText, simulate_typing: true })`. The adapter then did a *fake* progressive reveal (3 slice × 2s edits) on a message that was already final. Observable symptom: in the web runs viewer the stream completed first, THEN Telegram's `⌛` placeholder appeared and typing simulation began — sequential, not concurrent. Tool invocations (fs_read, connector_send, etc.) were invisible on Telegram entirely. Root cause was structural: the router drained the stream-to-completion before touching the adapter.
 
 **Decision:** Split responsibilities cleanly.
 
@@ -26,7 +49,7 @@
 
 ## ADR-086 — Connector param schema surfaced via tool output, not prompt injection
 
-**Context:** Scenario 1 §9.D rencana awal adalah meng-inject `<connector_params connector="telegram">` block ke system prompt saat binding aktif menyentuh connector tersebut — context-aware, tapi butuh runner menginspeksi binding + connector set tiap run, plus cara buka `connector_params` berebut tempat dengan skill hint, memory section, persona, dll. Setiap tambah segment = tambah complexity di `resolver/prompt.ts` dan tambah token footprint default setiap run.
+**Context:** Scenario 1 §9.D's original plan was to inject `<connector_params connector="telegram">` block ke system prompt saat binding aktif menyentuh connector tersebut — context-aware, tapi butuh runner menginspeksi binding + connector set tiap run, plus cara buka `connector_params` berebut tempat dengan skill hint, memory section, persona, dll. Setiap tambah segment = tambah complexity di `resolver/prompt.ts` dan tambah token footprint default setiap run.
 
 **Decision:** Skip prompt injection. Extend existing `connector_list` tool output untuk emit `param_schema` per connector. Agent sudah punya disiplin "call `connector_list` fresh every iteration before using any connector_* tool" (sudah di description tool). Karena schema datang lewat tool result, token cost dibayar **hanya** kalau agent sebenar-benarnya akan panggil `connector_send` di turn itu — zero prompt-bloat untuk run yang tidak menyentuh connector sama sekali.
 
@@ -38,7 +61,7 @@
 
 ## ADR-085 — Commands dispatcher: chat/cron/task/heartbeat only, skip connector inbound
 
-**Context:** Scenario 1 §6.1 menyebut connector-inbound message sebagai scope trigger untuk `/slash` dispatcher, dengan catatan "gated permission supaya member eksternal tidak sembarangan invoke `/deploy-prod`". Untuk MVP Plan 24, wiring dispatcher ke event-router inbound berarti:
+**Context:** Scenario 1 §6.1 menyebut connector-inbound message sebagai scope trigger untuk `/slash` dispatcher, dengan catatan "gated permission supaya member eksternal tidak sembarangan invoke `/deploy-prod`". Untuk MVP Commands, wiring dispatcher ke event-router inbound berarti:
 - Keputusan desain permission model per-binding (flag `allow_slash_commands`? allow-list per identity status? role-based?).
 - Trust boundary berubah — saat ini connector inbound adalah untrusted text; dispatcher = semi-executor yang bisa resolve body kaya yang jalan sebagai system-caller.
 - Bisa bikin skenario surface attack vector sebelum ada review keamanan.
@@ -52,7 +75,7 @@
 
 ## ADR-084 — @file reference hint: stat-only, exact paths, no glob / relative in MVP
 
-**Context:** Saat mendesain Plan 25, dua pilihan obvious:
+**Context:** Saat mendesain @file reference hint, dua pilihan obvious:
 1. **Eager expand** — ambil konten file langsung di pre-prompt stage, inject ke context. Zero agent effort, tapi blow up token untuk file besar/banyak.
 2. **Hint-only (stat)** — cuma validasi file exists + emit notice "file X tersedia, fs_read-lah", agent decide kapan/berapa baca.
 
@@ -71,7 +94,7 @@ Plus pertanyaan scope: support `@./relative`, `@../parent`, `@glob/*.md`, `@fold
 
 ## ADR-083 — FS tool permission: two tiers only, enforce at tool-layer not at-rest
 
-**Context:** Plan 26 butuh keputusan granularity dan enforcement location:
+**Context:** The FS tool permission feature needs a decision on granularity and enforcement location:
 - Berapa tier? `read+write`, `read`, `none`, atau tier khusus per-tool?
 - Enforce di FS service (block semua writes termasuk dari HTTP UI)? Atau hanya di agent tool layer?
 

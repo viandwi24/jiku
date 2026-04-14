@@ -36,10 +36,10 @@ Skenario ini menguji seberapa dekat Jiku dengan visinya sebagai platform agent o
 - **Tulang punggung sudah ada** — connector, binding, persona, skills, cron task, heartbeat, memory, audit, usage tracking semuanya production-grade.
 - **Coverage saat ini: ~90%** (naik dari 70% di v3, sedikit turun dari 95% karena gap disk media upload §9.E teridentifikasi). Skenario Flow A jalan clean; Flow B jalan kecuali jalur asset media harus sementara fallback ke Telegram saved messages.
 - **Empat fitur fondasi yang sebelumnya 🆕 sudah di-ship 2026-04-14:**
-  1. ✅ **Commands system (Plan 24)** — user-triggered `/slash` FS-first. Mirror arsitektur Skills. Dispatcher live di chat + task + cron + heartbeat surface. Connector-inbound dispatcher ditunda (backlog, alasan keamanan).
-  2. ✅ **Reference hint provider `@file` (Plan 25)** — scanner + injector `<user_references>` dengan size + mtime + flag LARGE. Wired di 4 surface.
-  3. ✅ **Filesystem tool permission via metadata (Plan 26)** — `tool_permission` di `project_files` + `project_folders`, resolver inheritance walk, gate di `fs_write`/`fs_edit`/`fs_append`/`fs_move`/`fs_delete`, UI context menu + badge.
-  4. ✅ **Connector custom params + hint injection (Plan 27)** — `getParamSchema()` di `ConnectorAdapter`, `params` pass-through di `ConnectorContent`, Telegram declare 7 params, `connector_list` surface `param_schema` per-connector.
+  1. ✅ **Commands system** — user-triggered `/slash` FS-first. Mirror arsitektur Skills. Dispatcher live di chat + task + cron + heartbeat surface. Connector-inbound dispatcher ditunda (backlog, alasan keamanan).
+  2. ✅ **Reference hint provider `@file`** — scanner + injector `<user_references>` dengan size + mtime + flag LARGE. Wired di 4 surface.
+  3. ✅ **Filesystem tool permission via metadata** — `tool_permission` di `project_files` + `project_folders`, resolver inheritance walk, gate di `fs_write`/`fs_edit`/`fs_append`/`fs_move`/`fs_delete`, UI context menu + badge.
+  4. ✅ **Connector custom params + hint injection** — `getParamSchema()` di `ConnectorAdapter`, `params` pass-through di `ConnectorContent`, Telegram declare 7 params, `connector_list` surface `param_schema` per-connector.
 - **Gap baru teridentifikasi (🔴 High):** §9.E **Disk Media Upload** — virtual disk belum terima upload binary (jpg/png/webp/gif/svg/mp4/mov/mkv/mp3/pdf dll). Blocker untuk Flow B marketing yang butuh asset visual versioned di `/assets/marketing/`.
 - **Nice-to-have** (bukan blocker untuk skenario jalan): moderation rule declarative, approval workflow outbound, per-channel dashboard, multi-channel broadcast, per-channel rate limit. Tidak berubah dari v3.
 
@@ -519,7 +519,7 @@ Legenda: ✅ Full · ⚠️ Partial · ❌ Missing · 🆕 Butuh fitur baru (sud
 | Rekap mingguan cron | ✅ | |
 | Heartbeat unanswered | ✅ | |
 | Human approval outbound | ⚠️ | Tidak ada gate — trust ke persona + audit post-facto (§9b Nice-to-have) |
-| Reply format (Markdown, reply-to) | ✅ | Plan 27: `params:{reply_to_message_id, parse_mode, ...}` + per-connector `param_schema` di `connector_list` |
+| Reply format (Markdown, reply-to) | ✅ | Connector custom params: `params:{reply_to_message_id, parse_mode, ...}` + per-connector `param_schema` di `connector_list` |
 | Review & audit | ⚠️ | Tersebar di beberapa page — cukup untuk sekarang (§9b Nice-to-have) |
 
 ### 8.2 Flow B
@@ -527,16 +527,16 @@ Legenda: ✅ Full · ⚠️ Partial · ❌ Missing · 🆕 Butuh fitur baru (sud
 | Step | Coverage | Catatan |
 |---|---|---|
 | Plan file di FS | ✅ | Virtual disk + `fs_read` |
-| Command `/marketing-channel-execute` | ✅ | Plan 24 — dispatcher live di chat/task/cron/heartbeat |
-| `@plans/...` di command body | ✅ | Plan 25 — scanner inject `<user_references>` block |
+| Command `/marketing-channel-execute` | ✅ | Commands system — dispatcher live di chat/task/cron/heartbeat |
+| `@plans/...` di command body | ✅ | @file reference hint — scanner inject `<user_references>` block |
 | Cron trigger dengan SOP | ✅ | Cron prompt `/slug` → dispatcher resolve body + `<command_args>` |
 | Kirim pesan ke channel | ✅ | `connector_send_to_target` |
-| Format pesan (Markdown, media, reply-to) | ✅ | Plan 27 |
+| Format pesan (Markdown, media, reply-to) | ✅ | Connector custom params |
 | Aset / foto di virtual disk | 🆕 | Butuh §9.E — saat ini disk belum terima upload media binary |
 | Aset / foto via Telegram saved messages | ✅ | Fallback sementara via `connector_run_action('fetch_media')` |
 | Append log ke plan | ✅ | `fs_append` |
 | Baca laporan | ✅ | `fs_read` dari `/reports/` |
-| Proteksi `/reports/` dari overwrite | ✅ | Plan 26 — set folder `tool_permission='read'` via file explorer context menu |
+| Proteksi `/reports/` dari overwrite | ✅ | FS tool permission — set folder `tool_permission='read'` via file explorer context menu |
 | Self-revise plan | ✅ | `fs_write` / `fs_edit` ke Revision Log — `/plans/` default `read+write` |
 | Approval revisi ke admin | ⚠️ | Manual DM ke admin — cukup untuk MVP (§9b Nice-to-have) |
 | Multi-channel broadcast | ⚠️ | Eksplisit per target — cukup untuk MVP (§9b Nice-to-have) |
@@ -547,20 +547,20 @@ Legenda: ✅ Full · ⚠️ Partial · ❌ Missing · 🆕 Butuh fitur baru (sud
 
 **Status per 2026-04-14 sesi sore — keempat item 🔴 High sudah SHIPPED.** Detail desain tetap disimpan sebagai referensi; subseksi "Ship notes" mencatat deviasi dari rencana awal.
 
-### §9.A — Commands System ✅ SHIPPED (Plan 24)
+### §9.A — Commands System ✅ SHIPPED
 **Prioritas awal:** 🔴 High
 **Masalah:** tidak ada mekanisme FS-first user-triggered. Setiap cron / task prompt harus copy-paste SOP panjang → drift, hard to maintain.
 **Ide:** implement sesuai §6.1. Mirror arsitektur Skills, reuse loader code.
 
 **Ship notes:**
-- Migrasi `0030_plan24_commands.sql` (tabel `project_commands`, `agent_commands`, kolom `agents.command_access_mode`).
+- Migrasi `0030_plan24_commands.sql` (archival filename preserved; tabel `project_commands`, `agent_commands`, kolom `agents.command_access_mode`).
 - Core: `parseCommandDoc`, `CommandRegistry`; types `CommandManifest`, `CommandSource`, dll di `@jiku/types`.
 - Studio: `CommandLoader` FS scan `/commands/<slug>/COMMAND.md` (folder) atau `/commands/<slug>.md` (file tunggal). `dispatchSlashCommand()` dipanggil di chat route, task/cron/heartbeat runner. Body + parsed args digabung ke `<command_args>` block lalu disambung sebagai resolved input.
 - Routes + UI project Commands page + per-agent allow-list page + sidebar link.
 - Audit: `command.invoke`, `command.assignment_changed`, `command.source_changed`.
 - **Deviasi dari rencana §6.1:** connector-inbound dispatcher (Telegram `/deploy-prod` dari member) TIDAK di-wire — alasan keamanan, masuk backlog. Surface chat/cron/task/heartbeat cukup untuk skenario marketing.
 
-### §9.B — Reference Hint Provider (`@file`) ✅ SHIPPED (Plan 25)
+### §9.B — Reference Hint Provider (`@file`) ✅ SHIPPED
 **Prioritas awal:** 🔴 High
 **Masalah:** tidak ada mekanisme mengangkat file-mention ke context agent. Agent harus tebak nama file atau user harus expand manual.
 **Ide:** implement sesuai §6.2. Ringan, lazy, non-invasive.
@@ -571,13 +571,13 @@ Legenda: ✅ Full · ⚠️ Partial · ❌ Missing · 🆕 Butuh fitur baru (sud
 - Audit: `reference.scan` dengan `{ surface, total, ok, missing }`.
 - **Deviasi:** MVP tidak support glob (`@plans/*.md`) atau directory summarisation — masuk backlog.
 
-### §9.C — Filesystem Tool Permission via Metadata ✅ SHIPPED (Plan 26)
+### §9.C — Filesystem Tool Permission via Metadata ✅ SHIPPED
 **Prioritas awal:** 🔴 High (khusus trust untuk self-improvement loop Flow B)
 **Masalah:** agent bisa `fs_write` sembarang path. Untuk skenario self-improvement, agent baca `/reports/*` — kalau agent bug atau halusinasi, dia bisa overwrite ground-truth data. Tidak ada gate deklaratif.
 **Ide:** implement sesuai §6.3. Per-file/folder metadata `tool_permission: read | read+write`, inherited dari parent, di-enforce di FS tool layer. User set via disk file explorer UI.
 
 **Ship notes:**
-- Migrasi `0031_plan26_fs_tool_permission.sql` — kolom `tool_permission` di `project_files` + `project_folders` (nullable, `'read' | 'read+write'`).
+- Migrasi `0031_plan26_fs_tool_permission.sql` (archival filename preserved) — kolom `tool_permission` di `project_files` + `project_folders` (nullable, `'read' | 'read+write'`).
 - `resolveFsToolPermission(projectId, path)` di `@jiku-studio/db` — walk self → ancestor chain → default `read+write`. Return `{ effective, source, source_path }`.
 - Gate `checkToolPermGate` dipanggil di `fs_write`, `fs_edit`, `fs_append`, `fs_move` (from + to), `fs_delete`. Return kode `FS_TOOL_READONLY` + hint yang menyebut sumber restriksi. Read operations tetap selalu boleh.
 - Routes: `GET /projects/:pid/files/permission?path=`, `PATCH /projects/:pid/files/permission`.
@@ -586,7 +586,7 @@ Legenda: ✅ Full · ⚠️ Partial · ❌ Missing · 🆕 Butuh fitur baru (sud
 - **Untuk demo skenario — cara seed:** klik kanan folder `/reports/` → Tool permission → "Read only". Klik kanan `/commands/` + `/skills/` sama (nice-to-have supaya agent tidak edit SOP sendiri). `/plans/` biarkan default.
 - **Deviasi:** tier `none` (read juga di-block) TIDAK dibuat — deferred, cuma `read` vs `read+write` seperti plan.
 
-### §9.D — Connector Custom Params + Param Hint Injection ✅ SHIPPED (Plan 27)
+### §9.D — Connector Custom Params + Param Hint Injection ✅ SHIPPED
 **Prioritas awal:** 🔴 High (khusus kualitas pesan Flow A & B)
 **Masalah:** `connector_send` saat ini field-nya generik (target, text, dll). Padahal tiap connector punya kapabilitas spesifik — Telegram: `reply_to_message_id`, `parse_mode` (Markdown/HTML), `disable_web_page_preview`, `message_thread_id` (forum topic), `protect_content`.
 
@@ -764,12 +764,12 @@ Rate limit config per-binding (`max_outbound_per_minute`). Rate limit global exi
 
 ### Tahap 1 — Fondasi ✅ SELESAI (2026-04-14)
 
-Keempat fitur di-ship sebagai Plan 24–27 (bukan 20–23 seperti draft awal; 20–23 sudah dipakai plan lain):
+Keempat fitur di-ship sebagai feature additions di atas plan tree (bukan plan dokumen resmi — lihat changelog 2026-04-14):
 
-1. ✅ **Plan 24 — Commands system** — FS + plugin, dispatcher prefix `/` di chat/task/cron/heartbeat.
-2. ✅ **Plan 25 — Reference hint provider (`@file`)** — scanner + notice injector di 4 surface.
-3. ✅ **Plan 26 — Filesystem tool permission via metadata** — per-file/folder, inherited, UI context menu + badge.
-4. ✅ **Plan 27 — Connector custom params** — per-connector param schema di `connector_list` output (bukan prompt injection seperti rencana awal — lebih murah token, tetap context-aware).
+1. ✅ **Commands system** — FS + plugin, dispatcher prefix `/` di chat/task/cron/heartbeat.
+2. ✅ **Reference hint provider (`@file`)** — scanner + notice injector di 4 surface.
+3. ✅ **Filesystem tool permission via metadata** — per-file/folder, inherited, UI context menu + badge.
+4. ✅ **Connector custom params** — per-connector param schema di `connector_list` output (bukan prompt injection seperti rencana awal — lebih murah token, tetap context-aware).
 
 ### Tahap 2 — Nice to Have (belum dikerjakan)
 

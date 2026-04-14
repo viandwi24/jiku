@@ -31,6 +31,7 @@ import { aclMembersRouter } from './routes/acl-members.ts'
 import { aclInvitationsRouter } from './routes/acl-invitations.ts'
 import { skillsRouter } from './routes/skills.ts'
 import { commandsRouter } from './routes/commands.ts'
+import { connectorSetupRouter } from './routes/connector-setup.ts'
 import { cronTasksRouter } from './routes/cron-tasks.ts'
 import { mcpServersRouter } from './routes/mcp-servers.ts'
 import { toolStatesRouter } from './routes/tool-states.ts'
@@ -97,6 +98,7 @@ app.use('/api', aclMembersRouter)
 app.use('/api', aclInvitationsRouter)
 app.use('/api', skillsRouter)
 app.use('/api', commandsRouter)
+app.use('/api', connectorSetupRouter)
 app.use('/api', cronTasksRouter)
 app.use('/api', mcpServersRouter)
 app.use('/api', toolStatesRouter)

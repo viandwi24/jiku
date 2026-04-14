@@ -106,26 +106,28 @@ export async function scanReferences(opts: {
     { surface, total: matches.length, ok: ok.length, missing: missing.length },
   )
 
-  if (matches.length === 0) return { matches: [], hintBlock: null }
+  // Suppress block entirely when nothing was matched. Older revisions still
+  // emitted a "NOT present on the disk" block for purely-missing scans — that
+  // produced an awkward visible block in the chat UI for a bot that had nothing
+  // useful to say. New rule: if NO file resolved, no hint at all (the @mention
+  // text in the user message itself is enough signal for the agent).
+  if (ok.length === 0) return { matches, hintBlock: null }
 
-  const lines: string[] = ['<user_references>']
-  lines.push('User / context is referencing the following files from the project workspace disk.')
-  lines.push('These files are available — use the `fs_read` tool to read their contents as needed. Do NOT ask the user to paste them.')
+  const lines: string[] = ['<user_references_filemention>']
+  lines.push('User mentioned these files via `@path` in their message. Files exist on the project workspace disk — use `fs_read` to load contents as needed. Do NOT ask the user to paste them.')
   lines.push('')
-  if (ok.length > 0) {
-    for (const r of ok) {
-      const size = r.size_bytes !== undefined ? `${formatBytes(r.size_bytes)}` : ''
-      const large = r.is_large ? ' LARGE — use offset/limit when fs_read-ing' : ''
-      const mtime = r.updated_at ? `, updated ${r.updated_at.toISOString?.().slice(0, 10) ?? ''}` : ''
-      lines.push(`- ${r.path}${size ? ` (${size}${mtime})` : ''}${large}`)
-    }
+  for (const r of ok) {
+    const size = r.size_bytes !== undefined ? `${formatBytes(r.size_bytes)}` : ''
+    const large = r.is_large ? ' LARGE — use offset/limit when fs_read-ing' : ''
+    const mtime = r.updated_at ? `, updated ${r.updated_at.toISOString?.().slice(0, 10) ?? ''}` : ''
+    lines.push(`- ${r.path}${size ? ` (${size}${mtime})` : ''}${large}`)
   }
   if (missing.length > 0) {
     lines.push('')
-    lines.push('The following were mentioned but are NOT present on the disk:')
-    for (const r of missing) lines.push(`- ${r.path} — not found`)
+    lines.push('Also mentioned (not on disk — agent can ignore or ask the user):')
+    for (const r of missing) lines.push(`- ${r.path}`)
   }
-  lines.push('</user_references>')
+  lines.push('</user_references_filemention>')
 
   return { matches, hintBlock: lines.join('\n') }
 }

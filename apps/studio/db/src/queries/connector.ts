@@ -73,6 +73,25 @@ export async function getBindings(connectorId: string) {
     .orderBy(desc(connector_bindings.created_at))
 }
 
+// Pending group-pairing drafts: bindings auto-created when the bot was added
+// to a group but no admin has picked an agent for them yet. Heuristic:
+// enabled=false AND output_config has no `agent_id`. Admin approves via the
+// group-pairings UI → fills in agent_id + member_mode + flips enabled=true.
+export async function getPendingGroupPairings(connectorId: string) {
+  const rows = await db
+    .select()
+    .from(connector_bindings)
+    .where(and(
+      eq(connector_bindings.connector_id, connectorId),
+      eq(connector_bindings.enabled, false),
+    ))
+    .orderBy(desc(connector_bindings.created_at))
+  return rows.filter(b => {
+    const agentId = (b.output_config as Record<string, unknown> | null)?.['agent_id']
+    return !agentId
+  })
+}
+
 export async function getBindingById(id: string) {
   const rows = await db.select().from(connector_bindings).where(eq(connector_bindings.id, id)).limit(1)
   return rows[0] ?? null
@@ -110,6 +129,7 @@ export async function createBinding(data: {
   trigger_regex?: string
   schedule_filter?: Record<string, unknown>
   scope_key_pattern?: string | null
+  member_mode?: 'require_approval' | 'allow_all'
 }) {
   const rows = await db
     .insert(connector_bindings)
@@ -144,6 +164,7 @@ export async function updateBinding(id: string, data: Partial<{
   trigger_regex: string
   schedule_filter: Record<string, unknown>
   scope_key_pattern: string | null
+  member_mode: 'require_approval' | 'allow_all'
 }>) {
   const rows = await db
     .update(connector_bindings)
@@ -168,6 +189,11 @@ export async function getIdentitiesForBinding(bindingId: string) {
 }
 
 export async function getPairingRequestsForConnector(connectorId: string) {
+  // Only surface identities that are actually pending and not yet bound.
+  // Previously this filtered on `binding_id IS NULL` only — after an admin
+  // rejected a request (status → 'blocked'), the row stayed in the list
+  // because binding_id was still null, so the UI "Reject" button appeared to
+  // do nothing.
   return db
     .select()
     .from(connector_identities)
@@ -175,9 +201,15 @@ export async function getPairingRequestsForConnector(connectorId: string) {
       and(
         eq(connector_identities.connector_id, connectorId),
         sql`${connector_identities.binding_id} is null`,
+        eq(connector_identities.status, 'pending'),
       )
     )
     .orderBy(desc(connector_identities.created_at))
+}
+
+export async function getIdentityById(id: string) {
+  const rows = await db.select().from(connector_identities).where(eq(connector_identities.id, id)).limit(1)
+  return rows[0] ?? null
 }
 
 export async function findIdentityByExternalId(connectorId: string, externalUserId: string) {

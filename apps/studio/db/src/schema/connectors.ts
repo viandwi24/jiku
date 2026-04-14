@@ -69,6 +69,16 @@ export const connector_bindings = pgTable('connector_bindings', {
   /** Scope key pattern, e.g. null = all, "group:*" = group chats only, "dm:*" = DMs, exact = specific scope. */
   scope_key_pattern:    text('scope_key_pattern'),
 
+  /**
+   * Group/channel member admission gate (2026-04-14).
+   * 'require_approval' = new members' first message creates a pending identity
+   * pairing request; admin must approve before the agent responds.
+   * 'allow_all' = any member in the scope can trigger the agent immediately.
+   * Ignored for DM (source_type='private') bindings — those are already
+   * single-user via source_ref_keys.user_id.
+   */
+  member_mode:          text('member_mode').notNull().default('require_approval'),
+
   enabled:              boolean('enabled').notNull().default(true),
   created_at:           timestamp('created_at').notNull().defaultNow(),
 }, t => [

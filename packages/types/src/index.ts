@@ -1276,6 +1276,14 @@ export interface ConnectorBinding {
   include_sender_info: boolean
   /** Plan 22 — Scope filter: null = all, "group:*" = groups only, "dm:*" = DMs, exact = specific scope */
   scope_key_pattern?: string | null
+  /**
+   * Group/channel member admission gate. Applies only when the binding spans
+   * multiple users (source_type=group|channel or scope_key present).
+   *   'require_approval' = new members become pending identities; admin must approve.
+   *   'allow_all'        = new members trigger the agent immediately.
+   * For DM bindings (source_type='private') this is ignored.
+   */
+  member_mode: 'require_approval' | 'allow_all'
   enabled: boolean
   created_at: Date
 }

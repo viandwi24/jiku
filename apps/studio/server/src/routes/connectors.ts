@@ -14,6 +14,8 @@ import {
   deleteBinding,
   getIdentitiesForBinding,
   getPairingRequestsForConnector,
+  getPendingGroupPairings,
+  getIdentityById,
   updateIdentity,
   getConnectorEvents,
   getConnectorMessages,
@@ -264,7 +266,15 @@ router.get('/connectors/:id/pairing-requests', authMiddleware, requireConnectorP
   }
 })
 
-/** POST /connectors/:id/pairing-requests/:iid/approve — approve + auto-create binding */
+/** POST /connectors/:id/pairing-requests/:iid/approve — approve + auto-create binding
+ *
+ * The new binding is scoped STRICTLY to this identity's DM:
+ *   source_type      = 'private'
+ *   source_ref_keys  = { user_id: identity.external_ref_keys.user_id }
+ * so it cannot match other users' messages or group messages that happen to
+ * share the same connector. Previously bindings were created without a scope
+ * which caused cross-user/cross-scope leakage.
+ */
 router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
   const { output_adapter, output_config, display_name } = req.body as {
     output_adapter?: string
@@ -273,9 +283,22 @@ router.post('/connectors/:id/pairing-requests/:iid/approve', authMiddleware, req
   }
   if (!output_config?.agent_id) { res.status(400).json({ error: 'output_config.agent_id required' }); return }
   try {
+    const identityRow = await getIdentityById(req.params['iid']!)
+    if (!identityRow) { res.status(404).json({ error: 'Identity not found' }); return }
+    if (identityRow.connector_id !== req.params['id']) {
+      res.status(400).json({ error: 'Identity does not belong to this connector' }); return
+    }
+
+    const externalUserId = (identityRow.external_ref_keys as Record<string, string> | null)?.user_id
+    if (!externalUserId) {
+      res.status(400).json({ error: 'Identity is missing external_ref_keys.user_id — cannot scope binding' }); return
+    }
+
     const binding = await createBinding({
       connector_id: req.params['id']!,
-      display_name: display_name ?? 'Auto (pairing)',
+      display_name: display_name ?? `DM: ${identityRow.display_name ?? externalUserId}`,
+      source_type: 'private',
+      source_ref_keys: { user_id: externalUserId },
       output_adapter: output_adapter ?? 'conversation',
       output_config: output_config ?? {},
     })
@@ -297,6 +320,65 @@ router.post('/connectors/:id/pairing-requests/:iid/reject', authMiddleware, requ
     const identity = await updateIdentity(req.params['iid']!, { status: 'blocked' })
     if (!identity) { res.status(404).json({ error: 'Identity not found' }); return }
     res.json({ identity })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// ─── Group pairing drafts (2026-04-14) ──────────────────────────────────────
+// When the bot is added to a group, the adapter auto-creates a disabled
+// binding with scope_key_pattern='group:<chat_id>' and no agent_id. Admin
+// approves from the UI: picks an agent + member_mode, tool flips enabled=true.
+
+/** GET /connectors/:id/group-pairings — list pending group pairing drafts */
+router.get('/connectors/:id/group-pairings', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  try {
+    const drafts = await getPendingGroupPairings(req.params['id']!)
+    res.json({ group_pairings: drafts })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/group-pairings/:bid/approve — assign agent + enable */
+router.post('/connectors/:id/group-pairings/:bid/approve', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  const { agent_id, member_mode, display_name } = req.body as {
+    agent_id: string
+    member_mode?: 'require_approval' | 'allow_all'
+    display_name?: string
+  }
+  if (!agent_id) { res.status(400).json({ error: 'agent_id required' }); return }
+  try {
+    const binding = await getBindingById(req.params['bid']!)
+    if (!binding || binding.connector_id !== req.params['id']) {
+      res.status(404).json({ error: 'Binding not found' }); return
+    }
+    const mergedConfig = { ...(binding.output_config as Record<string, unknown>), agent_id }
+    const cleanDisplayName = display_name
+      ?? (binding.display_name?.startsWith('Pending group pairing:')
+        ? binding.display_name.replace(/^Pending group pairing:\s*/, 'Group: ')
+        : binding.display_name)
+    const updated = await updateBinding(req.params['bid']!, {
+      output_config: mergedConfig,
+      member_mode: member_mode ?? 'require_approval',
+      enabled: true,
+      display_name: cleanDisplayName ?? undefined,
+    })
+    res.json({ binding: updated })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/group-pairings/:bid/reject — delete the draft */
+router.post('/connectors/:id/group-pairings/:bid/reject', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const binding = await getBindingById(req.params['bid']!)
+    if (!binding || binding.connector_id !== req.params['id']) {
+      res.status(404).json({ error: 'Binding not found' }); return
+    }
+    await deleteBinding(req.params['bid']!)
+    res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }

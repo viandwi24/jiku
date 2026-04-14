@@ -295,6 +295,60 @@ function PairingRequestRow({
   )
 }
 
+function GroupPairingRow({
+  binding,
+  agents,
+  onApprove,
+  onReject,
+}: {
+  binding: ConnectorBinding
+  agents: { id: string; name: string }[]
+  onApprove: (agentId: string, memberMode: 'require_approval' | 'allow_all') => void
+  onReject: () => void
+}) {
+  const [selectedAgent, setSelectedAgent] = useState('')
+  const [memberMode, setMemberMode] = useState<'require_approval' | 'allow_all'>('require_approval')
+  const title = binding.display_name?.replace(/^Pending group pairing:\s*/, '') ?? binding.scope_key_pattern ?? binding.id
+  return (
+    <div className="flex items-center justify-between py-3 px-4 rounded-lg border bg-card gap-3">
+      <div className="space-y-0.5 min-w-0">
+        <p className="text-sm font-medium truncate">{title}</p>
+        <p className="text-xs text-muted-foreground font-mono">{binding.scope_key_pattern}</p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <Select value={memberMode} onValueChange={v => setMemberMode(v as 'require_approval' | 'allow_all')}>
+          <SelectTrigger className="h-7 text-xs w-36"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="require_approval">Require approval</SelectItem>
+            <SelectItem value="allow_all">Allow all members</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={selectedAgent} onValueChange={setSelectedAgent}>
+          <SelectTrigger className="h-7 text-xs w-40"><SelectValue placeholder="Select agent..." /></SelectTrigger>
+          <SelectContent>
+            {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm" variant="outline"
+          className="h-7 w-7 p-0 text-green-600 border-green-500/40"
+          disabled={!selectedAgent}
+          onClick={() => selectedAgent && onApprove(selectedAgent, memberMode)}
+        >
+          <Check className="h-3 w-3" />
+        </Button>
+        <Button
+          size="sm" variant="outline"
+          className="h-7 w-7 p-0 text-destructive border-destructive/40"
+          onClick={onReject}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function ConnectorDetailPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug, connector: connectorId } = use(params)
   const qc = useQueryClient()
@@ -358,6 +412,29 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-pairing', connectorId] }),
   })
 
+  const { data: groupPairingData } = useQuery({
+    queryKey: ['connector-group-pairing', connectorId],
+    queryFn: () => api.connectors.groupPairings.list(connectorId),
+    refetchInterval: 10_000,
+  })
+
+  const approveGroupPairingMutation = useMutation({
+    mutationFn: ({ bindingId, agentId, memberMode }: { bindingId: string; agentId: string; memberMode: 'require_approval' | 'allow_all' }) =>
+      api.connectors.groupPairings.approve(connectorId, bindingId, {
+        agent_id: agentId,
+        member_mode: memberMode,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-group-pairing', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-bindings', connectorId] })
+    },
+  })
+
+  const rejectGroupPairingMutation = useMutation({
+    mutationFn: (bindingId: string) => api.connectors.groupPairings.reject(connectorId, bindingId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-group-pairing', connectorId] }),
+  })
+
   const { data: inviteCodesData } = useQuery({
     queryKey: ['connector-invite-codes', connectorId],
     queryFn: () => api.connectors.inviteCodes.list(connectorId),
@@ -416,9 +493,13 @@ export default function ConnectorDetailPage({ params }: PageProps) {
   })
 
   const connector = connectorData?.connector
-  const bindings = bindingsData?.bindings ?? []
   const agents = agentsData?.agents ?? []
   const pairingRequests = pairingData?.pairing_requests ?? []
+  const groupPairings = groupPairingData?.group_pairings ?? []
+  // Exclude draft group-pairing bindings from the main list — they live in the
+  // Group Pairing Requests section above. Heuristic: enabled=false AND no agent_id.
+  const draftIds = new Set(groupPairings.map(b => b.id))
+  const bindings = (bindingsData?.bindings ?? []).filter(b => !draftIds.has(b.id))
   const inviteCodes = inviteCodesData?.invite_codes ?? []
   const targets = targetsData?.targets ?? []
 
@@ -504,7 +585,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-medium flex items-center gap-1.5">
                 <UserCheck className="h-4 w-4" />
-                Pairing Requests
+                DM Pairing Requests
               </h2>
               <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600 border-yellow-500/20">
                 {pairingRequests.length} pending
@@ -518,6 +599,38 @@ export default function ConnectorDetailPage({ params }: PageProps) {
                   agents={agents}
                   onApprove={(agentId, adapter) => approvePairingMutation.mutate({ identityId: req.id, agentId, adapter })}
                   onReject={() => rejectPairingMutation.mutate(req.id)}
+                />
+              ))}
+            </div>
+          </div>
+          <Separator />
+        </>
+      )}
+
+      {/* Group Pairing Drafts — bot was added to a group, admin must assign an agent */}
+      {groupPairings.length > 0 && (
+        <>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-medium flex items-center gap-1.5">
+                <UserCheck className="h-4 w-4" />
+                Group Pairing Requests
+              </h2>
+              <Badge variant="secondary" className="bg-sky-500/10 text-sky-600 border-sky-500/20">
+                {groupPairings.length} pending
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The bot was added to these groups. Pick an agent + member mode to turn each draft into an active group binding.
+            </p>
+            <div className="space-y-2">
+              {groupPairings.map(b => (
+                <GroupPairingRow
+                  key={b.id}
+                  binding={b}
+                  agents={agents}
+                  onApprove={(agentId, memberMode) => approveGroupPairingMutation.mutate({ bindingId: b.id, agentId, memberMode })}
+                  onReject={() => rejectGroupPairingMutation.mutate(b.id)}
                 />
               ))}
             </div>

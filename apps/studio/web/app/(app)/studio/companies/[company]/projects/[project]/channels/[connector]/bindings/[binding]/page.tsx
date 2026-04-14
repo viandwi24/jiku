@@ -20,7 +20,7 @@ import {
   Switch,
 } from '@jiku/ui'
 import { Input } from '@jiku/ui'
-import { ArrowLeft, CheckCircle2, XCircle, Clock, User } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, XCircle, Clock, User, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 
 interface PageProps {
@@ -109,17 +109,31 @@ export default function BindingDetailPage({ params }: PageProps) {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">Source</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {binding.source_type === 'any' && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
+              <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-[11px] text-amber-700 dark:text-amber-400">
+                <strong>Source Type &ldquo;Any&rdquo;</strong> matches every chat on this connector — DMs, groups, and channels. Unintended users can trigger this binding. Prefer <code className="bg-amber-500/10 px-1 rounded">Private</code> (with a sender filter), <code className="bg-amber-500/10 px-1 rounded">Group</code>, or <code className="bg-amber-500/10 px-1 rounded">Channel</code> and use <em>Scope Filter</em> / <em>Source Ref Keys</em> to lock to a specific chat or user.
+              </div>
+            </div>
+          )}
+          {binding.source_ref_keys && Object.keys(binding.source_ref_keys).length > 0 && (
+            <div className="rounded-md border bg-muted/20 p-2.5">
+              <p className="text-[11px] font-medium text-muted-foreground mb-1">Locked to sender / chat</p>
+              <pre className="text-[11px] font-mono">{JSON.stringify(binding.source_ref_keys, null, 2)}</pre>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-muted-foreground">Source Type</p>
               <Select value={binding.source_type} onValueChange={v => updateBindingMutation.mutate({ source_type: v })}>
                 <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="any">Any</SelectItem>
-                  <SelectItem value="private">Private</SelectItem>
-                  <SelectItem value="group">Group</SelectItem>
-                  <SelectItem value="channel">Channel</SelectItem>
+                  <SelectItem value="private">Private (DM) — single user</SelectItem>
+                  <SelectItem value="group">Group — multi-user</SelectItem>
+                  <SelectItem value="channel">Channel — broadcast</SelectItem>
+                  <SelectItem value="any">Any (legacy, unsafe)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -146,9 +160,100 @@ export default function BindingDetailPage({ params }: PageProps) {
                 </SelectContent>
               </Select>
             </div>
+            {(binding.source_type === 'group' || binding.source_type === 'channel' || binding.source_type === 'any') && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground">Member Mode</p>
+                <p className="text-[10px] text-muted-foreground">How new members in the scope are admitted.</p>
+                <Select
+                  value={binding.member_mode ?? 'require_approval'}
+                  onValueChange={v => updateBindingMutation.mutate({ member_mode: v as 'require_approval' | 'allow_all' })}
+                >
+                  <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="require_approval">Require approval (safer)</SelectItem>
+                    <SelectItem value="allow_all">Allow all members</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
+
+      {/* Scope Lock — friendly per-source-type picker */}
+      {(binding.source_type === 'group' || binding.source_type === 'channel' || binding.source_type === 'private') && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Scope Lock</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(binding.source_type === 'group' || binding.source_type === 'channel') && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground">Chat ID (lock to one specific {binding.source_type})</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Paste the platform chat_id (e.g. Telegram <code className="bg-muted px-1 rounded">-1003890986702</code>). Leave empty to match any {binding.source_type}. Saving updates both <code className="bg-muted px-1 rounded">scope_key_pattern</code> and <code className="bg-muted px-1 rounded">source_ref_keys.chat_id</code>.
+                </p>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="-1001234567890"
+                  defaultValue={
+                    (binding.source_ref_keys as Record<string, string> | null | undefined)?.['chat_id']
+                    ?? (binding.scope_key_pattern?.startsWith('group:') && !binding.scope_key_pattern.includes('*')
+                      ? binding.scope_key_pattern.split(':')[1]
+                      : '')
+                    ?? ''
+                  }
+                  onBlur={e => {
+                    const raw = e.target.value.trim()
+                    const existingRef = (binding.source_ref_keys as Record<string, string> | null | undefined) ?? {}
+                    if (!raw) {
+                      const { chat_id: _removed, ...rest } = existingRef
+                      void _removed
+                      updateBindingMutation.mutate({
+                        scope_key_pattern: null,
+                        source_ref_keys: Object.keys(rest).length ? rest : null,
+                      })
+                    } else {
+                      updateBindingMutation.mutate({
+                        scope_key_pattern: `group:${raw}`,
+                        source_ref_keys: { ...existingRef, chat_id: raw },
+                      })
+                    }
+                  }}
+                />
+              </div>
+            )}
+            {binding.source_type === 'private' && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground">Sender User ID (lock to one user's DM)</p>
+                <p className="text-[10px] text-muted-foreground">
+                  External user_id from the platform (e.g. Telegram numeric id). Pairing approval sets this automatically — edit only if you need to re-scope.
+                </p>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="1309769651"
+                  defaultValue={(binding.source_ref_keys as Record<string, string> | null | undefined)?.['user_id'] ?? ''}
+                  onBlur={e => {
+                    const raw = e.target.value.trim()
+                    const existingRef = (binding.source_ref_keys as Record<string, string> | null | undefined) ?? {}
+                    if (!raw) {
+                      const { user_id: _removed, ...rest } = existingRef
+                      void _removed
+                      updateBindingMutation.mutate({
+                        source_ref_keys: Object.keys(rest).length ? rest : null,
+                      })
+                    } else {
+                      updateBindingMutation.mutate({
+                        source_ref_keys: { ...existingRef, user_id: raw },
+                      })
+                    }
+                  }}
+                />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Routing (Plan 15.5) */}
       <Card>

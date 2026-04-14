@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-04-14 — connectors: fix reject button + group auto-pairing flow
+
+- **Bug fix — Reject button did nothing**: `getPairingRequestsForConnector()` filtered only on `binding_id IS NULL`. Clicking reject set `status='blocked'` but left `binding_id=null`, so the rejected row stayed in the UI list forever. Query now also requires `status='pending'`. Rejecting now makes the row disappear as expected.
+- **Group auto-pairing**: when the bot is added (member or admin) to a Telegram group/supergroup, the adapter auto-creates a **draft binding** — `source_type='group'`, `scope_key_pattern='group:<chat_id>'`, `enabled=false`, `output_config.agent_id` empty, `member_mode='require_approval'`. Admin sees this under a new "Group Pairing Requests" section on the connector detail page, picks an agent + member mode, and hits approve → binding is enabled and starts routing. Reject deletes the draft.
+- **Backend**: new query `getPendingGroupPairings()`, routes `GET /connectors/:id/group-pairings`, `POST .../:bid/approve`, `POST .../:bid/reject`. UI mirrors the DM pairing row — just with a memberMode picker instead of an output-adapter picker.
+- Channels (not groups) still use the named-target auto-register flow from before.
+- Files: `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/routes/connectors.ts`, `plugins/jiku.telegram/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx` (type fix: `member_mode` cast).
+
+## 2026-04-14 — connectors: binding scope tightening (DM lock + implicit scope gate + member_mode)
+
+User-reported bug: User A's loose binding (`source_type='any'`, no scope pattern, no ref_keys) captured User B's messages inside a shared Telegram group, auto-creating an identity for User B under User A's binding and letting the agent respond. Root cause was a combination of three things: (1) pairing approval created bindings without any sender scope, (2) `matchesTrigger()` had no implicit scope gate based on `source_type`, (3) new identities were auto-approved the moment any binding matched.
+
+Fixes (applied as 4 incremental steps):
+
+1. **Pairing approval creates strict DM bindings**: `POST /connectors/:id/pairing-requests/:iid/approve` now sets `source_type: 'private'` + `source_ref_keys: { user_id: <identity.external> }` on the new binding so it can only ever match that one user's DMs.
+2. **Event-router scope gate**: `matchesTrigger()` now (a) treats `source_ref_keys.user_id` specially — compared against `event.sender.external_id` rather than `event.ref_keys` (where user_id doesn't live); (b) enforces an implicit scope gate: `source_type='private'` → require empty scope_key (DM); `source_type='group'|'channel'` → require non-empty scope_key. `any` keeps its legacy behaviour but is now flagged as unsafe in the UI.
+3. **`member_mode` column on connector_bindings** (`require_approval` default / `allow_all`): for multi-user scopes (group/channel OR any binding that receives an event with a scope_key), new members' first message creates a `pending` identity that an admin must approve. `allow_all` keeps the old auto-approve behaviour for open public groups. DM bindings ignore this field because they are already locked to one user. Migration: `0028_binding_member_mode.sql`.
+4. **UI**: binding detail page now shows an amber warning when `source_type='any'`, displays `source_ref_keys` when present (so admin sees the sender lock), adds a Member Mode picker for group/channel/any bindings, and relabels the source type dropdown to emphasise "Private (DM) — single user" vs "Any (legacy, unsafe)".
+
+Legacy loose bindings still work but are flagged. Admins should either re-approve through the pairing UI (produces a strict DM binding) or manually add `source_ref_keys` / `scope_key_pattern` / change `source_type` away from `any`.
+
+Files: `apps/studio/db/src/migrations/0028_binding_member_mode.sql`, `apps/studio/db/src/schema/connectors.ts`, `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/routes/connectors.ts`, `packages/types/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx`.
+
+## 2026-04-14 — fix: telegram adapter — service messages no longer trigger agent + raw_payload on all polling handlers
+
+- **Bug**: in groups, joining a member (or any service message — new_chat_title, pinned_message, voice_chat_*, migrate_to_chat_id, etc.) triggered an empty-content `message` event that the agent ran against with "(no text content)". Root cause: the `bot.on('message')` polling handler unconditionally emitted every `msg` as `type: 'message'`, even when `text`/`caption`/media were all absent.
+- **Fix**: classify before emit — if `text`/`caption`/media present → `message`; else `new_chat_members` → `join`, `left_chat_member` → `leave`; other service messages dropped silently. Agent now only runs for real user content.
+- **Bug 2**: `raw_payload` missing for polling-path events because only the `channel_post` handler set it. Webhook-path events had raw_payload (attached in the HTTP handler), but polling events went directly via `ctx.onEvent` with raw_payload undefined — so the channels UI detail drawer showed no "Raw Payload" block.
+- **Fix 2**: attach `raw_payload: gramCtx.update` to every polling handler (`message`, `message_reaction`, `edited_message`, `my_chat_member` already had it, `channel_post` already had it).
+- File: `plugins/jiku.telegram/src/index.ts`.
+
 ## 2026-04-14 — connectors: enrich list_targets + ambiguity-safe send_to_target
 
 Multi-connector safety for named channel targets:

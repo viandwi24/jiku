@@ -588,8 +588,28 @@ class TelegramAdapter extends ConnectorAdapter {
     this.bot.on('message', async (gramCtx: any) => {
       const msg = gramCtx.message
       const { media, mediaMetadata } = extractTelegramMedia(msg)
+
+      // Classify: real message vs service message. Telegram sends many
+      // service messages (new_chat_members, left_chat_member, new_chat_title,
+      // pinned_message, migrate_to_chat_id, voice_chat_*, etc.) on the same
+      // `message` event; the agent should NOT treat those as user input.
+      const hasContent = msg.text !== undefined || msg.caption !== undefined || media !== undefined
+
+      let type: ConnectorEvent['type']
+      if (hasContent) {
+        type = 'message'
+      } else if (msg.new_chat_members) {
+        type = 'join'
+      } else if (msg.left_chat_member) {
+        type = 'leave'
+      } else {
+        // Other service messages (title/photo changes, pinned, migrate, voice_chat_*) —
+        // nothing the agent can act on. Drop silently (still visible in raw Telegram logs).
+        return
+      }
+
       const event: ConnectorEvent = {
-        type: 'message',
+        type,
         connector_id: this.id,
         ref_keys: {
           message_id: String(msg.message_id),
@@ -602,7 +622,9 @@ class TelegramAdapter extends ConnectorAdapter {
           username: msg.from?.username,
           is_bot: msg.from?.is_bot,
         },
-        content: { text: msg.text ?? msg.caption, media },
+        content: hasContent
+          ? { text: msg.text ?? msg.caption, media }
+          : { raw: msg.new_chat_members ?? msg.left_chat_member },
         metadata: {
           language_code: msg.from?.language_code ?? null,
           client_timestamp: new Date(msg.date * 1000).toISOString(),
@@ -611,6 +633,7 @@ class TelegramAdapter extends ConnectorAdapter {
           ...mediaMetadata,
         },
         timestamp: new Date(msg.date * 1000),
+        raw_payload: gramCtx.update,
       }
       await ctx.onEvent(event)
     })
@@ -632,6 +655,7 @@ class TelegramAdapter extends ConnectorAdapter {
         content: { text: emoji, raw: { emoji } },
         metadata: { chat_type: update.chat?.type },
         timestamp: new Date(update.date * 1000),
+        raw_payload: gramCtx.update,
       }
       await ctx.onEvent(event)
     })
@@ -654,6 +678,7 @@ class TelegramAdapter extends ConnectorAdapter {
         content: { text: msg.text ?? msg.caption, raw: { new_text: msg.text } },
         metadata: { chat_type: msg.chat.type, chat_title: 'title' in msg.chat ? msg.chat.title : undefined },
         timestamp: new Date((msg.edit_date ?? msg.date) * 1000),
+        raw_payload: gramCtx.update,
       }
       await ctx.onEvent(event)
     })
@@ -708,7 +733,44 @@ class TelegramAdapter extends ConnectorAdapter {
 
       const isAdminNow = newStatus === 'administrator' || newStatus === 'creator'
       const wasAdminBefore = oldStatus === 'administrator' || oldStatus === 'creator'
+      const isMemberNow = newStatus === 'member' || isAdminNow
+      const wasMemberBefore = oldStatus === 'member' || wasAdminBefore
       const isChannelOrSupergroup = chat.type === 'channel' || chat.type === 'supergroup'
+      const isGroupOrSupergroup = chat.type === 'group' || chat.type === 'supergroup'
+
+      // Bot added to a group/supergroup → auto-create a DRAFT binding so the
+      // admin can approve it with one click (pick agent + member_mode) and turn
+      // it into a live group binding. The binding is created `enabled=false`
+      // with empty output_config.agent_id so it won't match anything until
+      // approved. Channels use the target-auto-register flow below instead.
+      if (isMemberNow && !wasMemberBefore && isGroupOrSupergroup) {
+        try {
+          const { createBinding, getBindings } = await import('@jiku-studio/db')
+          const scopeKey = `group:${chat.id}`
+          const existingBindings = await getBindings(ctx.connectorId).catch(() => [])
+          const alreadyHas = existingBindings.some(b => b.scope_key_pattern === scopeKey)
+          if (!alreadyHas) {
+            await createBinding({
+              connector_id: ctx.connectorId,
+              display_name: `Pending group pairing: ${chat.title ?? chat.id}`,
+              source_type: 'group',
+              scope_key_pattern: scopeKey,
+              output_adapter: 'conversation',
+              output_config: {},
+              member_mode: 'require_approval',
+            })
+            // Mark disabled — createBinding defaults enabled=true, but a draft
+            // should never match until admin picks an agent.
+            const { updateBinding, getBindings: refetch } = await import('@jiku-studio/db')
+            const refreshed = await refetch(ctx.connectorId)
+            const draft = refreshed.find(b => b.scope_key_pattern === scopeKey)
+            if (draft) await updateBinding(draft.id, { enabled: false })
+            console.log(`[telegram] auto-registered group pairing draft "${chat.title}" (${scopeKey})`)
+          }
+        } catch (err) {
+          console.warn('[telegram] failed to auto-register group pairing draft:', err)
+        }
+      }
 
       // Bot added/promoted to admin in a channel → auto-create target.
       if (isAdminNow && !wasAdminBefore && isChannelOrSupergroup) {

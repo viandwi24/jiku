@@ -107,15 +107,32 @@ function matchesScopePattern(scopeKey: string | undefined, pattern: string | nul
 }
 
 function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boolean {
-  // Source check
+  // Source ref_keys check.
+  // Special-case `user_id`: it lives on event.sender.external_id, not event.ref_keys
+  // (platforms don't carry the sender id in ref_keys). Treating it here lets a
+  // DM binding strictly lock to a single user without the adapter having to
+  // invent a synthetic ref_key.
   if (binding.source_ref_keys && typeof binding.source_ref_keys === 'object') {
     const required = binding.source_ref_keys as Record<string, string>
     for (const [k, v] of Object.entries(required)) {
-      if (event.ref_keys[k] !== v) return false
+      const actual = k === 'user_id' ? event.sender.external_id : event.ref_keys[k]
+      if (actual !== v) return false
     }
   }
 
-  // Plan 22 — scope_key_pattern filter
+  // Implicit scope gate derived from source_type — prevents a binding created
+  // with source_type='private' from silently capturing group messages (and
+  // vice versa) when the admin didn't set scope_key_pattern explicitly.
+  if (binding.source_type === 'private') {
+    // DM only: scope_key must be undefined/empty.
+    if (event.scope_key) return false
+  } else if (binding.source_type === 'group' || binding.source_type === 'channel') {
+    // Multi-chat: scope_key must exist (adapter populated it for group/channel/topic).
+    if (!event.scope_key) return false
+  }
+  // source_type === 'any' → no implicit gate.
+
+  // Plan 22 — explicit scope_key_pattern filter (still authoritative if set).
   if (binding.scope_key_pattern) {
     if (!matchesScopePattern(event.scope_key, binding.scope_key_pattern)) return false
   }
@@ -432,12 +449,18 @@ export async function routeConnectorEvent(
 
     if (!identity) {
       isNewIdentity = true
+      // Group/channel bindings honour member_mode. DM bindings (source_type='private')
+      // are already locked to one user via source_ref_keys.user_id — member_mode
+      // doesn't apply; new DM identities are trusted because the binding scope
+      // already accepted them.
+      const isMultiUserScope = typedBinding.source_type === 'group' || typedBinding.source_type === 'channel' || !!event.scope_key
+      const requiresApproval = isMultiUserScope && (typedBinding.member_mode ?? 'require_approval') === 'require_approval'
       identity = await createIdentity({
         connector_id: connector.id,
         binding_id: typedBinding.id,
         external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
         display_name: event.sender.display_name ?? event.sender.username,
-        status: 'approved',
+        status: requiresApproval ? 'pending' : 'approved',
       })
     } else {
       // Assign binding if identity was a pairing request (no binding yet)

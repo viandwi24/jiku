@@ -453,6 +453,19 @@ export const api = {
         request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/reject`, { method: 'POST' }),
     },
 
+    // Group pairing drafts — bot was added to a group; admin must assign an agent.
+    groupPairings: {
+      list: (connectorId: string) =>
+        request<{ group_pairings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/group-pairings`),
+      approve: (connectorId: string, bindingId: string, body: { agent_id: string; member_mode?: 'require_approval' | 'allow_all'; display_name?: string }) =>
+        request<{ binding: ConnectorBinding }>(`/api/connectors/${connectorId}/group-pairings/${bindingId}/approve`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      reject: (connectorId: string, bindingId: string) =>
+        request<{ ok: boolean }>(`/api/connectors/${connectorId}/group-pairings/${bindingId}/reject`, { method: 'POST' }),
+    },
+
     targets: {
       list: (connectorId: string) =>
         request<{ targets: ConnectorTargetItem[] }>(`/api/connectors/${connectorId}/targets`),
@@ -1624,6 +1637,8 @@ export interface ConnectorBinding {
   include_sender_info: boolean
   /** Plan 22 — Scope filter: null = all, "group:*", "dm:*", exact */
   scope_key_pattern?: string | null
+  /** How new members in a group/channel scope are admitted. DM bindings ignore this. */
+  member_mode?: 'require_approval' | 'allow_all'
   enabled: boolean
   created_at: string
 }

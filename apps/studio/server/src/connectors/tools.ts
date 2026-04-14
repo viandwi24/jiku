@@ -46,6 +46,21 @@ function decodeCursor(v: string): { created_at: Date; id: string } | null {
 }
 
 /**
+ * Resolve `getIdentity()` for an active connector. Returns `null` if the adapter
+ * is not loaded, doesn't expose identity, or throws. Surfaced as `identity` in
+ * connector_* tool results so the agent + operator can verify exactly which
+ * platform identity is acting (critical for diagnosing "chat not found"-style
+ * errors caused by configured-bot ≠ chat-member mismatch).
+ */
+function resolveConnectorIdentity(connectorId: string): { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null {
+  try {
+    const adapter = connectorRegistry.getAdapterForConnector(connectorId) as { getIdentity?: () => { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null } | null
+    if (!adapter || typeof adapter.getIdentity !== 'function') return null
+    return adapter.getIdentity() ?? null
+  } catch { return null }
+}
+
+/**
  * Build connector built-in tools.
  * These are registered on agents when the project has active connectors.
  * They are NOT plugin tools — they're injected directly as built_in_tools.
@@ -86,6 +101,7 @@ export function buildConnectorTools(projectId: string) {
               plugin_id: c.plugin_id,
               display_name: c.display_name,
               status: c.status,
+              identity: resolveConnectorIdentity(c.id),
               param_schema,
             }
           }),
@@ -351,10 +367,24 @@ export function buildConnectorTools(projectId: string) {
           }
         }
 
+        const identity = resolveConnectorIdentity(connector_id)
         const sendResult = await adapter.sendMessage(
           { ref_keys: target_ref_keys, reply_to_ref_keys },
           { text, markdown, simulate_typing, params },
         )
+        // Always wrap the adapter result with the debug envelope so caller
+        // (agent + operator) can see identity + target on success AND failure.
+        const wrappedResult = {
+          ...sendResult,
+          identity,
+          debug: {
+            connector_id,
+            adapter_id: adapter.id,
+            target_ref_keys,
+            reply_to_ref_keys: reply_to_ref_keys ?? null,
+            params_sent: params ?? null,
+          },
+        }
         // Log outbound message + outbound event for inspection in channels UI
         const msgRow = await logConnectorMessage({
           connector_id,
@@ -376,7 +406,7 @@ export function buildConnectorTools(projectId: string) {
           status: sendResult.success ? 'routed' : 'error',
         }).catch(() => null)
         if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
-        return sendResult
+        return wrappedResult
       },
     }),
 
@@ -433,7 +463,7 @@ export function buildConnectorTools(projectId: string) {
         if (typeof adapter.getQueueStatus !== 'function') {
           return { connector_id, queue_supported: false, message: 'This connector does not implement queue management. Standard adapter rate-limit applies (no introspection).' }
         }
-        return { connector_id, queue_supported: true, status: adapter.getQueueStatus() }
+        return { connector_id, identity: resolveConnectorIdentity(connector_id), queue_supported: true, status: adapter.getQueueStatus() }
       },
     }),
 
@@ -468,6 +498,7 @@ export function buildConnectorTools(projectId: string) {
         if (!action) return { success: false, error: `Unknown action "${action_id}". Call connector_list_actions to see available actions.` }
 
         try {
+          const identity = resolveConnectorIdentity(connector_id)
           const result = await adapter.runAction(action_id, params)
           // Log outbound event so it shows up in the channels Events tab
           const evRow = await logConnectorEvent({
@@ -476,7 +507,7 @@ export function buildConnectorTools(projectId: string) {
             direction: 'outbound',
             ref_keys: (params['target_ref_keys'] as Record<string, string>) ?? {},
             payload: params,
-            raw_payload: result,
+            raw_payload: { result, identity },
             status: 'routed',
           }).catch(() => null)
           if (evRow) broadcastProjectEvent(projectId, evRow as unknown as Record<string, unknown>)
@@ -638,6 +669,7 @@ export function buildConnectorTools(projectId: string) {
               plugin_id: connector.plugin_id,
               display_name: connector.display_name,
               status: connector.status,
+              identity: resolveConnectorIdentity(connector.id),
             },
           })),
         }
@@ -727,7 +759,24 @@ export function buildConnectorTools(projectId: string) {
             }
           }
         }
-        return adapter.sendMessage(sendTarget, { text, markdown, simulate_typing, params })
+        const identity = resolveConnectorIdentity(target.connector_id)
+        const sendResult = await adapter.sendMessage(sendTarget, { text, markdown, simulate_typing, params })
+        return {
+          ...sendResult,
+          identity,
+          debug: {
+            connector_id: target.connector_id,
+            adapter_id: adapter.id,
+            target_name,
+            resolved_target: {
+              id: target.id,
+              name: target.name,
+              ref_keys: target.ref_keys,
+              scope_key: target.scope_key ?? null,
+            },
+            params_sent: params ?? null,
+          },
+        }
       },
     }),
 

@@ -262,6 +262,20 @@ export abstract class ConnectorAdapter {
   getParamSchema?(): ConnectorParamSpec[]
 
   /**
+   * Identity of the active connector instance (e.g. for Telegram bot adapter:
+   * `{ name: 'mybot', username: '@mybot', user_id: '123456' }`; for userbot:
+   * `{ name: 'alice', username: '@alice', user_id: '789' }`).
+   *
+   * Surfaced by every connector_* agent tool in the `identity` field so the
+   * agent (and the operator inspecting tool output) can verify EXACTLY which
+   * platform identity is acting. Critical for diagnostics like "chat not found"
+   * — usually means the configured bot identity is not a member of the chat.
+   *
+   * Adapter MAY return null pre-activation. Default returns null.
+   */
+  getIdentity?(): ConnectorIdentity | null
+
+  /**
    * Plan 24 — Interactive setup: declare the wizard steps the credential
    * requires. When this returns a spec, Studio auto-mounts setup endpoints and
    * renders a generic multi-step wizard driven by `runSetupStep`. Return
@@ -298,6 +312,22 @@ export abstract class ConnectorAdapter {
    * "accumulate then sendMessage" path.
    */
   handleResolvedEvent?(ctx: ResolvedEventContext): Promise<void>
+}
+
+/**
+ * Identity of the active connector instance — bot username, user_id, anything
+ * the platform uses to identify "who is acting". Returned by `getIdentity()`
+ * and surfaced as `identity` in every connector_* agent tool result.
+ */
+export interface ConnectorIdentity {
+  /** Display label — usually the username or login handle. */
+  name: string
+  /** Platform username if applicable (e.g. `@mybot` for Telegram). */
+  username?: string | null
+  /** Platform-side numeric/string id (e.g. Telegram bot.id). */
+  user_id?: string | null
+  /** Free-form extras the adapter wants to expose (premium status, etc). */
+  metadata?: Record<string, unknown>
 }
 
 /**

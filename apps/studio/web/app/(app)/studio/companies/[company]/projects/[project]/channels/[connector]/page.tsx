@@ -17,8 +17,12 @@ import {
   SelectTrigger,
   SelectValue,
   Separator,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Check, Clock, Copy, Link2, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Ban, Bot, Check, Clock, Copy, Link2, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -61,6 +65,79 @@ function formatAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   return `${Math.floor(seconds / 3600)}h`
+}
+
+/**
+ * "Running as" identity badge — shows which bot/user account the adapter is
+ * actually authenticated as. Static per active connector, but we refetch every
+ * 30s since it can change after a re-activate (e.g. different credential).
+ */
+function IdentityBadge({
+  identity,
+  reason,
+}: {
+  identity: { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null
+  reason?: string
+}) {
+  // Adapter doesn't support identity introspection — hide entirely.
+  if (reason === 'adapter_not_identity_capable') return null
+
+  if (!identity) {
+    if (reason === 'connector_not_active') {
+      return (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Bot className="h-3 w-3" />
+          <span>(not active — start to see identity)</span>
+        </div>
+      )
+    }
+    return null
+  }
+
+  const label = identity.username
+    ? `Running as ${identity.username.startsWith('@') ? identity.username : `@${identity.username}`}`
+    : `Running as ${identity.name}`
+
+  const kind = typeof identity.metadata?.['kind'] === 'string' ? (identity.metadata['kind'] as string) : null
+  const isPremium = identity.metadata?.['is_premium']
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-0.5 text-xs font-medium">
+            <Bot className="h-3 w-3 text-muted-foreground" />
+            <span>Running as </span>
+            <span className="font-mono">
+              {identity.username
+                ? (identity.username.startsWith('@') ? identity.username : `@${identity.username}`)
+                : identity.name}
+            </span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          <div className="space-y-0.5">
+            <div>{label}</div>
+            {identity.user_id && (
+              <div className="text-muted-foreground">
+                user_id: <span className="font-mono">{identity.user_id}</span>
+              </div>
+            )}
+            {kind && (
+              <div className="text-muted-foreground">
+                kind: <span className="font-mono">{kind}</span>
+              </div>
+            )}
+            {typeof isPremium === 'boolean' && (
+              <div className="text-muted-foreground">
+                is_premium: <span className="font-mono">{String(isPremium)}</span>
+              </div>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 }
 
 function BindingCard({
@@ -579,6 +656,15 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     refetchInterval: 15_000,
   })
 
+  // Identity poll — effectively static while the connector is active, but
+  // refetch every 30s so a re-activate with a different credential shows up
+  // without a full page reload.
+  const { data: identityData } = useQuery({
+    queryKey: ['connector-identity', connectorId],
+    queryFn: () => api.connectors.getIdentity(connectorId),
+    refetchInterval: 30_000,
+  })
+
   const connector = connectorData?.connector
   const agents = agentsData?.agents ?? []
   const pairingRequests = pairingData?.pairing_requests ?? []
@@ -657,9 +743,16 @@ export default function ConnectorDetailPage({ params }: PageProps) {
           </>
         )}
       </div>
-      {/* Health indicator — only meaningful when the adapter reports runtime state. */}
-      {connector.status === 'active' && healthData?.adapter && (
-        <HealthBadge adapter={healthData.adapter} />
+      {/* Health + identity indicators — only meaningful when the adapter reports runtime state. */}
+      {(connector.status === 'active' || identityData) && (
+        <div className="flex flex-wrap items-center gap-3">
+          {connector.status === 'active' && healthData?.adapter && (
+            <HealthBadge adapter={healthData.adapter} />
+          )}
+          {identityData && (
+            <IdentityBadge identity={identityData.identity} reason={identityData.reason} />
+          )}
+        </div>
       )}
       {connector.error_message && (
         <p className="text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded px-3 py-2">

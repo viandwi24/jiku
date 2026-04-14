@@ -446,6 +446,8 @@ export const api = {
       error_message: string | null
       adapter: { polling: boolean; last_event_at: string | null; bot_user_id: number | null } | null
     }>(`/api/connectors/${id}/health`),
+    getIdentity: (id: string) =>
+      request<{ ok: boolean; identity: { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null; reason?: string }>(`/api/connectors/${id}/identity`),
 
     bindings: {
       list: (connectorId: string) => request<{ bindings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/bindings`),

@@ -247,6 +247,29 @@ router.get('/connectors/:id/health', authMiddleware, requireConnectorPermission(
   }
 })
 
+/**
+ * GET /connectors/:id/identity
+ *
+ * Returns the platform identity of the active connector instance — for Telegram
+ * bot: `{ name: 'mybot', username: '@mybot', user_id: '12345' }`; for userbot:
+ * the logged-in user. Surfaced in the connector detail UI as a "Running as: …"
+ * badge so the operator can verify EXACTLY which platform identity is acting
+ * (critical for diagnosing "chat not found"-style mismatches).
+ */
+router.get('/connectors/:id/identity', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  const id = req.params['id']!
+  try {
+    const connector = await getConnectorById(id)
+    if (!connector) return res.status(404).json({ error: 'Connector not found' })
+    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getIdentity?: () => unknown } | null
+    if (!adapter) return res.json({ ok: true, identity: null, reason: 'connector_not_active' })
+    if (typeof adapter.getIdentity !== 'function') return res.json({ ok: true, identity: null, reason: 'adapter_not_identity_capable' })
+    return res.json({ ok: true, identity: adapter.getIdentity() ?? null })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
 // ─── Bindings CRUD ───────────────────────────────────────────────────────────
 
 /** GET /connectors/:id/bindings */

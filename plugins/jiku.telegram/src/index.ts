@@ -1380,9 +1380,21 @@ class TelegramBotAdapter extends ConnectorAdapter {
             drop_pending_updates: true,
             allowed_updates: allowed_updates as unknown as string[],
           } as any)
-          // `start()` resolving normally means `bot.stop()` was called. Exit.
-          console.log('[telegram] polling loop exited cleanly')
-          return
+          // `start()` resolved without throwing. There are TWO scenarios:
+          //   (a) WE called bot.stop() — explicit shutdown, exit cleanly.
+          //   (b) grammy internally stopped (e.g. Telegram dropped the long-poll
+          //       connection, an unhandled handler error bubbled, network blip).
+          //       The bot is now silently dead. Previously we treated this as
+          //       (a) and exited — leaving the bot offline forever. Now we only
+          //       trust it as (a) when `pollingStopRequested === true`.
+          if (this.pollingStopRequested) {
+            console.log('[telegram] polling loop exited cleanly (deactivate requested)')
+            return
+          }
+          console.warn(`[telegram] polling stopped unexpectedly without explicit deactivate — restarting in ${backoffMs}ms`)
+          await new Promise<void>(r => setTimeout(r, backoffMs))
+          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF)
+          continue
         } catch (err) {
           if (this.pollingStopRequested) return
           const isConflict = String(err).includes('409')
@@ -1399,7 +1411,13 @@ class TelegramBotAdapter extends ConnectorAdapter {
           backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF)
         }
       }
-    })()
+    })().catch(err => {
+      // Defence in depth — the IIFE itself should never reject because both
+      // paths inside the loop are wrapped, but if a future refactor introduces
+      // an un-handled await this prevents an unhandled-rejection from killing
+      // the process.
+      console.error('[telegram] polling supervisor crashed (this should NEVER happen):', err)
+    })
 
     console.log('[telegram] bot started (polling loop running with auto-reconnect)')
   }
@@ -1425,6 +1443,16 @@ class TelegramBotAdapter extends ConnectorAdapter {
       polling: this.bot !== null && !this.pollingStopRequested,
       last_event_at: this.lastEventAt ? new Date(this.lastEventAt).toISOString() : null,
       bot_user_id: this.botUserId,
+    }
+  }
+
+  override getIdentity() {
+    if (!this.botUsername && !this.botUserId) return null
+    return {
+      name: this.botUsername ?? `bot:${this.botUserId}`,
+      username: this.botUsername ? `@${this.botUsername}` : null,
+      user_id: this.botUserId !== null ? String(this.botUserId) : null,
+      metadata: { kind: 'bot' },
     }
   }
 
@@ -1908,7 +1936,35 @@ class TelegramBotAdapter extends ConnectorAdapter {
         raw_payload: lastSent,
       }
     } catch (err) {
-      return { success: false, error: String(err), raw_payload: { error: String(err) } }
+      // Diagnostic envelope so agents (and the operator inspecting tool output)
+      // can see EXACTLY what was about to hit Telegram. "chat not found" with
+      // chat_id X usually means the bot configured here isn't a member of
+      // chat X — verify with `getMe` against the bot's token, then check
+      // membership in the Telegram client.
+      const errStr = String(err)
+      let botUsername: string | null = null
+      try {
+        const me = await this.bot!.api.getMe()
+        botUsername = me.username ?? `id_${me.id}`
+      } catch { /* best-effort */ }
+      return {
+        success: false,
+        error: errStr,
+        raw_payload: {
+          error: errStr,
+          debug: {
+            method: 'sendMessage',
+            chat_id: chatId,
+            opts_sent: commonOpts,
+            text_length: (content.text ?? '').length,
+            had_media: !!content.media || !!content.media_group,
+            bot_username: botUsername,
+            hint: errStr.includes('chat not found')
+              ? `Telegram returned "chat not found". Verify the BOT (@${botUsername ?? 'unknown'}) is a member/admin of chat_id=${chatId}. Run \`curl https://api.telegram.org/bot<THIS_BOT_TOKEN>/getChat?chat_id=${chatId}\` with the SAME token configured in this connector — if that succeeds while sendMessage fails, bot is NOT admin OR has no post permission. If it also returns "chat not found", the bot was never added to the chat (or was kicked).`
+              : undefined,
+          },
+        },
+      }
     }
   }
 
@@ -2360,6 +2416,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
     try {
       const me = await this.client.getMe()
       this.myUserId = String(me.id)
+      this.myUsername = me.username ?? null
+      this.myIsPremium = me.isPremium === true
     } catch { /* non-fatal */ }
 
     // Inbound — wire 'new_message' to ConnectorEvent shape.
@@ -2384,6 +2442,19 @@ class TelegramUserAdapter extends ConnectorAdapter {
     this.projectId = null
     this.connectorId = null
     this.myUserId = null
+  }
+
+  private myUsername: string | null = null
+  private myIsPremium: boolean = false
+
+  override getIdentity() {
+    if (!this.myUserId && !this.myUsername) return null
+    return {
+      name: this.myUsername ?? `user:${this.myUserId}`,
+      username: this.myUsername ? `@${this.myUsername}` : null,
+      user_id: this.myUserId,
+      metadata: { kind: 'userbot', is_premium: this.myIsPremium },
+    }
   }
 
   override parseEvent(): ConnectorEvent | null {

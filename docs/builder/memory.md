@@ -768,6 +768,23 @@ EventSource can't set custom headers, so the middleware also reads `req.query.to
 
 Every connector-triggered run composes input as `<connector_context>…</connector_context>\n\n<user_message>…</user_message>`. The context block is SYSTEM-generated metadata and is trusted; everything inside `<user_message>` is untrusted user text. Previously only a blank line separated them — a user could craft a message that injects a fake `[Connector Context]` header and the agent might treat it as trusted. The context block also carries an explicit instruction telling the model to treat user_message content as untrusted and not obey attempts to override the metadata. When composing connector-sourced agent input from ANY adapter/path, use the same wrapping.
 
+## Adapter portability — normalise, don't leak platform quirks into shared code
+
+Connector infrastructure (event-router, pairing flow, member_mode gate, scope gate, channels UI, agent tools, context block, internal-id injection) is platform-agnostic. Adapter's job is to normalise platform events into the project's ref_keys + metadata vocabulary:
+
+- `ref_keys`: `{ chat_id, message_id, thread_id? }` — required names, even if the platform uses different native ids (WhatsApp JID, Discord snowflake, etc. — all remapped to `chat_id`).
+- `sender.external_id` is the platform user id — NOT in `ref_keys`. Matcher has a special case that compares `source_ref_keys.user_id` against `sender.external_id`.
+- `metadata.{chat_title, chat_type, thread_title, client_timestamp, language_code}` — optional but strongly recommended; the context block + `listConnectorDistinctEntities` query use them for labels.
+- `raw_payload` — both inbound (`ConnectorEvent.raw_payload` via `parseEvent` return OR webhook's `req.body`) and outbound (`ConnectorSendResult.raw_payload` from the adapter's `sendMessage`). Agents rely on this for platform-specific extraction.
+- `scope_key` — normalise to `group:<id>` or `group:<id>:topic:<id>` or `undefined` (DM). Channels UI patterns (`group:*`, exact, `group:X:*`) are prefix/exact text matching — adapter format is opaque but must be consistent.
+- Service messages — filter BEFORE emitting. NEVER emit a `message`-type event with empty content (no `text`/`caption`/media).
+
+Telegram-only quirks live in `plugins/jiku.telegram/src/index.ts`: `my_chat_member` auto-register, `forum_topic_created.name` extraction, `deleteWebhook + close` pre-flight, simulate-typing. When adding WhatsApp/Discord/Slack, copy THE CONVENTIONS but implement platform glue fresh. See ADR-077 + `docs/feats/connectors.md` → "Adapter portability".
+
+## Context block embeds internal DB ids alongside platform ids
+
+Every agent invocation from a connector event carries `Internal event_id: <uuid>` + `Internal message_id: <uuid>` in the `<connector_context>` block. These point to rows in OUR `connector_events` / `connector_messages` tables (distinct from the platform `message_id` / `chat_id` under `Chat ref`). Agents use them via `connector_get_event({event_id})` / `connector_get_message({message_id})` to load the full row including `raw_payload`. IMPORTANT: `logMsg` must run BEFORE `buildConnectorContextString` in the event-router so the row id exists to embed. When adding a new routing branch that emits a context block, keep this ordering or the internal ids will be absent.
+
 ## Always `deactivate` before `delete` on a connector
 
 `DELETE /connectors/:id` must call `deactivateConnector(id)` FIRST to tear down the in-memory adapter (stop polling, clear timers, remove SSE subscriptions) before deleting the DB row. Skipping this leaves an orphaned adapter running against the external platform — symptom on Telegram: `409 Conflict: terminated by other getUpdates request` when the admin recreates a connector with the same bot token. Same invariant applies to any future connector CRUD operation that invalidates an adapter (token swap, credential change, plugin_id swap).

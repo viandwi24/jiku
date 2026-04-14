@@ -1,5 +1,40 @@
 # Decisions
 
+## ADR-077 — Connector input composition + agent tool contract (platform-agnostic)
+
+**Context:** The `[Connector Context]` block was originally plain text separated from the user message by a blank line — a crafted message could inject a fake `[Connector Context]` header and the model would read it as trusted metadata. The block also only included the platform + connector UUID (not display name), the raw `chat_id` (not chat_title), and the Telegram `message_id` (not our internal row ids — so agents couldn't fetch the full DB row later). Agent query tools (`connector_get_events`, `connector_get_thread`) had minimal filters (only `direction` + `event_type` + `limit`); no way to discover chat_ids or user_ids; no pagination. This made multi-tenant / multi-platform observation unsafe and inefficient. And the whole stack had creeping Telegram assumptions that would block WhatsApp/Discord/Slack adapters.
+
+**Decision:** Four simultaneous contracts, all adapter-agnostic:
+
+1. **Input composition is XML-tagged**: every connector-triggered agent run composes input as `<connector_context>…</connector_context>\n\n<user_message>…</user_message>`. The context block opens with an explicit instruction treating everything inside `<user_message>` as UNTRUSTED. No adapter overrides this — adapter only supplies `ConnectorEvent`; the event-router owns composition.
+
+2. **Context block carries enough for the agent to self-locate**:
+   - `Connector: <display_name> (id=<uuid>)` — both human + machine identity.
+   - `Internal event_id: <uuid>` and `Internal message_id: <uuid>` — point to OUR DB rows (`connector_events` / `connector_messages`), distinct from the platform ids under `Chat ref`. Agents use them with `connector_get_event` / `connector_get_message` to load `raw_payload` + metadata.
+   - `Chat: "<title>" (<type>, chat_id=<id>, → topic "<name>" (thread_id=<id>)?)` — structured location.
+   - `Sender: <display_name> @<username> (external user_id=<id>)` — grounded identity.
+   - `Chat scope key: <key>` — exposes the binding scope system.
+
+3. **Agent tool contract** follows a discovery-first pattern:
+   - `connector_list` — list bots/integrations; **call fresh every iteration**.
+   - `connector_list_entities({ scope: 'chats'|'users'|'threads' })` — AUTHORITATIVE discovery (distinct entities with labels + counts + last_seen).
+   - `connector_list_targets` — ADMIN-REGISTERED ALIASES only, NOT the full chat list.
+   - `connector_get_events` / `connector_get_thread` — always filter; cursor paginated.
+   - `connector_get_event` / `connector_get_message` — by internal UUID from the context block.
+   Tool descriptions enforce: "tables are LARGE — never fetch without a filter", "re-list discovery every turn".
+
+4. **ref_keys + metadata vocabulary is normalized** across adapters:
+   - `ref_keys.chat_id` — required (platform wadah percakapan).
+   - `ref_keys.message_id` — required (individual platform message).
+   - `ref_keys.thread_id` — optional (forum topic / thread / sub-channel).
+   - `sender.external_id` — platform user id (NOT in ref_keys; `source_ref_keys.user_id` is compared against this via special-case in `matchesTrigger`).
+   - `metadata.{chat_title, chat_type, thread_title, client_timestamp, language_code}` — optional but recommended.
+   - `raw_payload` — original platform JSON on both `ConnectorEvent` (via adapter `parseEvent` or webhook `req.body`) and `ConnectorSendResult` (adapter `sendMessage` return).
+
+**Consequences:** Adding a new connector adapter (WhatsApp/Discord/Slack) = one plugin file implementing `ConnectorAdapter` from `@jiku/kit`, normalising to the vocabulary above. Everything else (routing, pairing flow, binding scope gate, member_mode, SSE, channels UI, Scope Lock, Group Pairing, Blocked Identities, agent tools, context block, internal-id injection, stale-file detection, raw payload inspection) works unchanged. Telegram-specific quirks (`my_chat_member` auto-register, forum topic name extraction from `reply_to_message.forum_topic_created.name`, grammy long-poll `deleteWebhook + close` pre-flight) live exclusively in `plugins/jiku.telegram/src/index.ts`. Context block XML wrapping prevents prompt-injection from user text. Internal-id injection lets agents resolve DB rows without a second lookup path. Status vocabulary (ADR-076) + scope model (ADR-074) + read-before-write filesystem (ADR-075) slot into this contract without modification.
+
+---
+
 ## ADR-076 — Inbound message status vocabulary
 
 **Context:** `connector_messages.status` started as free-form text; inbound rows used `'sent'` (conflict with outbound `'sent'`), missing rows when no binding matched, no way to filter "agent handled" vs "pending"/"dropped" in the Messages UI or via `connector_get_thread`.

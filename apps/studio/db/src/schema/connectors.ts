@@ -44,6 +44,14 @@ export const connector_bindings = pgTable('connector_bindings', {
   trigger_source:       text('trigger_source').notNull().default('message'),  // message | event
   trigger_mode:         text('trigger_mode').notNull().default('always'),     // always | mention | reply | command | keyword
   trigger_keywords:     text('trigger_keywords').array(),
+  // When true, each trigger_keywords entry is compiled as a case-insensitive regex.
+  trigger_keywords_regex: boolean('trigger_keywords_regex').notNull().default(false),
+  // Custom tokens for trigger_mode='mention' (e.g. ['@halo_bot','hai bot']).
+  // Null/empty = fall back to adapter-detected mention (event.metadata.bot_mentioned).
+  trigger_mention_tokens: text('trigger_mention_tokens').array(),
+  // Whitelist for trigger_mode='command' WITHOUT the leading slash
+  // (e.g. ['help','ask','start']). Null/empty = any "/cmd" passes.
+  trigger_commands:     text('trigger_commands').array(),
   trigger_event_type:   text('trigger_event_type'),
   trigger_event_filter: jsonb('trigger_event_filter'),
 

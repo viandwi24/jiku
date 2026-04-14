@@ -144,19 +144,65 @@ function matchesTrigger(event: ConnectorEvent, binding: ConnectorBinding): boole
   // Trigger event type (when trigger_source = 'event')
   if (binding.trigger_event_type && event.type !== binding.trigger_event_type) return false
 
-  // Trigger mode checks (message only)
+  // Trigger mode checks (message only).
+  //
+  //   always  — match every message (default).
+  //   command — match messages starting with "/". If `trigger_commands` is set,
+  //             only those command names (without slash) count.
+  //             e.g. trigger_commands=['help','ask'] → /help + /ask pass.
+  //   keyword — match if text contains any of `trigger_keywords`.
+  //             If `trigger_keywords_regex=true`, each entry is a regex (case-insensitive).
+  //   mention — match when the bot is addressed. Custom tokens via
+  //             `trigger_mention_tokens` (substring match, case-insensitive);
+  //             otherwise fall back to adapter-detected `metadata.bot_mentioned`.
+  //             DMs implicitly pass (whole message is for the bot).
+  //   reply   — match when the user directly replied to one of the bot's
+  //             messages via the platform's reply feature. DMs implicitly pass.
+  //             Useful in chatty groups: "only respond when someone specifically
+  //             replies to my last answer" instead of triggering on every message.
   if (event.type === 'message' && binding.trigger_mode !== 'always') {
-    const text = event.content?.text?.toLowerCase() ?? ''
+    const rawText = event.content?.text ?? ''
+    const text = rawText.toLowerCase()
     switch (binding.trigger_mode) {
-      case 'command':
+      case 'command': {
         if (!text.startsWith('/')) return false
+        const allowed = binding.trigger_commands
+        if (allowed && allowed.length > 0) {
+          // Extract the command name (before the first space or '@'), strip slash.
+          const cmdRaw = rawText.split(/[\s@]/, 1)[0] ?? ''
+          const cmd = cmdRaw.slice(1).toLowerCase()
+          if (!allowed.some(c => c.toLowerCase() === cmd)) return false
+        }
         break
-      case 'keyword':
-        if (!binding.trigger_keywords?.some(k => text.includes(k.toLowerCase()))) return false
+      }
+      case 'keyword': {
+        const keywords = binding.trigger_keywords ?? []
+        if (keywords.length === 0) return false
+        if (binding.trigger_keywords_regex) {
+          const hit = keywords.some(k => {
+            try { return new RegExp(k, 'i').test(rawText) } catch { return false }
+          })
+          if (!hit) return false
+        } else {
+          if (!keywords.some(k => text.includes(k.toLowerCase()))) return false
+        }
         break
-      case 'mention':
-        // Simple heuristic: text contains @mention
-        if (!text.includes('@')) return false
+      }
+      case 'mention': {
+        if (!event.scope_key) break   // DM = implicit mention
+        const tokens = binding.trigger_mention_tokens ?? []
+        if (tokens.length > 0) {
+          const hit = tokens.some(t => t && text.includes(t.toLowerCase()))
+          if (!hit) return false
+        } else {
+          // Default: trust adapter-detected bot @username / text_mention.
+          if (event.metadata?.['bot_mentioned'] !== true) return false
+        }
+        break
+      }
+      case 'reply':
+        if (!event.scope_key) break
+        if (event.metadata?.['bot_replied_to'] !== true) return false
         break
       default:
         break
@@ -474,12 +520,21 @@ export async function routeConnectorEvent(
           if (!hasDraftForScope) {
             const chatTitle = (event.metadata?.['chat_title'] as string | undefined) ?? event.scope_key
             const chatType = (event.metadata?.['chat_type'] as string | undefined) ?? 'group'
+            const threadTitle = event.metadata?.['thread_title'] as string | undefined
+            const threadId = event.ref_keys['thread_id']
+            // Auto-name includes the topic when the scope is topic-narrow —
+            // admin sees "Jiku Agent Grup → General Discussion" instead of
+            // having to guess from the opaque scope_key.
+            const topicLabel = threadTitle ? ` → ${threadTitle}` : (threadId ? ` → topic ${threadId}` : '')
+            const refKeys: Record<string, string> = {}
+            if (event.ref_keys['chat_id']) refKeys['chat_id'] = event.ref_keys['chat_id']
+            if (threadId) refKeys['thread_id'] = threadId
             const draft = await createBinding({
               connector_id: connectorUuid,
-              display_name: `Pending group pairing: ${chatTitle}`,
+              display_name: `Pending group pairing: ${chatTitle}${topicLabel}`,
               source_type: chatType === 'channel' ? 'channel' : 'group',
               scope_key_pattern: event.scope_key,
-              source_ref_keys: event.ref_keys['chat_id'] ? { chat_id: event.ref_keys['chat_id'] } : undefined,
+              source_ref_keys: Object.keys(refKeys).length ? refKeys : undefined,
               output_adapter: 'conversation',
               output_config: {},
               member_mode: 'require_approval',

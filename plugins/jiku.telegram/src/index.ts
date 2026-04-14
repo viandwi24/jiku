@@ -123,6 +123,8 @@ class TelegramAdapter extends ConnectorAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private bot: Bot | null = null
   private projectId: string | null = null
+  private botUsername: string | null = null  // cached @username (lowercased, no '@') for mention detection
+  private botUserId: number | null = null    // cached numeric id for text_mention + reply-to-bot detection
 
   // ─── Plan 22: scope_key helpers ─────────────────────────────────────
 
@@ -608,6 +610,36 @@ class TelegramAdapter extends ConnectorAdapter {
         return
       }
 
+      // Bot-mention detection — explicit: matches only when THIS bot is mentioned.
+      //  - text entity type='mention' with substring "@<botUsername>" (case-insensitive)
+      //  - text entity type='text_mention' with user.id === bot id (mention without @, e.g. picked from contacts)
+      // Covers both `text` and `caption` entities (photo/doc captions can mention too).
+      let botMentioned = false
+      const scanEntities = (entities: any[] | undefined, sourceText: string | undefined) => {
+        if (!entities || !sourceText) return
+        for (const ent of entities) {
+          if (ent.type === 'mention' && this.botUsername) {
+            const raw = sourceText.slice(ent.offset, ent.offset + ent.length).toLowerCase()
+            if (raw === `@${this.botUsername}`) { botMentioned = true; return }
+          }
+          if (ent.type === 'text_mention' && this.botUserId && ent.user?.id === this.botUserId) {
+            botMentioned = true
+            return
+          }
+        }
+      }
+      scanEntities(msg.entities, msg.text)
+      scanEntities(msg.caption_entities, msg.caption)
+
+      // Reply-to-bot detection — true when this message is a direct reply to
+      // one of the bot's own messages. Ignores the synthetic reply_to_message
+      // pointer Telegram attaches for forum-topic membership.
+      const isReplyToBot =
+        !!this.botUserId
+        && !!msg.reply_to_message?.from?.is_bot
+        && msg.reply_to_message.from?.id === this.botUserId
+        && !msg.reply_to_message.forum_topic_created
+
       // Forum topic name — Telegram embeds the topic name in a few places depending on the message shape.
       //   - msg.forum_topic_created.name      → this IS the topic-creation event
       //   - msg.forum_topic_edited.name       → topic was renamed
@@ -645,12 +677,51 @@ class TelegramAdapter extends ConnectorAdapter {
           chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
           ...(forumTopicName ? { thread_title: forumTopicName } : {}),
           ...(msg.is_topic_message ? { is_topic_message: true } : {}),
+          ...(botMentioned ? { bot_mentioned: true } : {}),
+          ...(isReplyToBot ? { bot_replied_to: true } : {}),
           ...mediaMetadata,
         },
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
       await ctx.onEvent(event)
+
+      // Auto-register forum topic as connector_target the first time we see
+      // one with a known title. Target name: "<chat-slug>__<topic-slug>".
+      // scope_key matches computeScopeKey format so outbound via this target
+      // joins the same scope conversation as inbound events.
+      if (msg.message_thread_id && forumTopicName && this.projectId && hasContent) {
+        const tid = String(msg.message_thread_id)
+        const chatSlug = this.slugifyChannelTitle(
+          'title' in msg.chat ? (msg.chat.title ?? `chat-${msg.chat.id}`) : `chat-${msg.chat.id}`,
+        )
+        const topicSlug = this.slugifyChannelTitle(forumTopicName)
+        const targetName = `${chatSlug}__${topicSlug}`
+        try {
+          const { createConnectorTarget, getConnectorTargetByName } = await import('@jiku-studio/db')
+          const existing = await getConnectorTargetByName(this.projectId, targetName, ctx.connectorId).catch(() => null)
+          if (!existing) {
+            await createConnectorTarget({
+              connector_id: ctx.connectorId,
+              name: targetName,
+              display_name: `${msg.chat.title ?? msg.chat.id} → ${forumTopicName}`,
+              description: `Auto-registered forum topic — first seen ${new Date().toISOString()}`,
+              ref_keys: { chat_id: String(msg.chat.id), thread_id: tid },
+              scope_key: `group:${msg.chat.id}:topic:${tid}`,
+              metadata: {
+                auto_registered: true,
+                chat_type: msg.chat.type,
+                chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+                thread_title: forumTopicName,
+                registered_at: new Date().toISOString(),
+              },
+            })
+            console.log(`[telegram] auto-registered topic target "${targetName}" (group:${msg.chat.id}:topic:${tid})`)
+          }
+        } catch (err) {
+          console.warn('[telegram] failed to auto-register topic target:', err)
+        }
+      }
     })
 
     this.bot.on('message_reaction', async (gramCtx: any) => {
@@ -800,7 +871,10 @@ class TelegramAdapter extends ConnectorAdapter {
               display_name: chat.title ?? null,
               description: `Auto-registered ${chat.type} — bot became admin on ${new Date().toISOString()}`,
               ref_keys: { chat_id: String(chat.id) },
-              scope_key: `chat:${chat.id}`,
+              // Use 'group:' prefix to match computeScopeKey output — otherwise
+              // outbound-via-target would create a scope conversation under
+              // 'chat:<id>' that never matches inbound events keyed 'group:<id>'.
+              scope_key: `group:${chat.id}`,
               metadata: {
                 auto_registered: true,
                 chat_type: chat.type,
@@ -853,6 +927,17 @@ class TelegramAdapter extends ConnectorAdapter {
     //    (important when a previous connector was just deleted — the server-side
     //    slot can linger for up to 30s, causing 409 on our new getUpdates).
     // Both are idempotent and safe to fail; log and continue.
+    // Cache bot identity (@username + numeric id) so we can detect when the
+    // bot is mentioned or replied-to at event-parse time.
+    try {
+      const me = await this.bot.api.getMe()
+      this.botUsername = me.username?.toLowerCase() ?? null
+      this.botUserId = me.id ?? null
+      console.log(`[telegram] identity cached: @${this.botUsername} (id=${this.botUserId})`)
+    } catch (err) {
+      console.warn('[telegram] getMe failed — mention/reply detection disabled:', err)
+    }
+
     try {
       await this.bot.api.deleteWebhook({ drop_pending_updates: true })
     } catch (err) {
@@ -894,6 +979,8 @@ class TelegramAdapter extends ConnectorAdapter {
       await this.bot.stop().catch(() => {})
       this.bot = null
       this.projectId = null
+      this.botUsername = null
+      this.botUserId = null
       console.log('[telegram] bot stopped')
     }
   }

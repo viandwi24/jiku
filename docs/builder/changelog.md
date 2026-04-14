@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-04-14 — telegram: auto-register forum topics as connector targets + scope_key consistency
+
+- **Topic target auto-register**: on first message in a forum topic that has a known topic title, Telegram adapter upserts a `connector_target` row with `name=<chat-slug>__<topic-slug>`, `display_name="<chat> → <topic>"`, `ref_keys={chat_id, thread_id}`, `scope_key=group:<chat_id>:topic:<thread_id>`. Agents can now address specific topics by name via `connector_send_to_target`. Idempotent — checks `getConnectorTargetByName` before creating.
+- **Scope key format consistency**: `my_chat_member` channel/supergroup auto-register was using `scope_key='chat:<id>'`, but `computeScopeKey` (and therefore inbound events) use `group:<id>`. Mismatch would create separate scope-conversations for outbound vs inbound. Fix: use `group:<id>` everywhere. Existing targets unaffected because scope_key is not the send-routing key (ref_keys is) — just fixes scope-conversation threading.
+- File: `plugins/jiku.telegram/src/index.ts`.
+
+## 2026-04-14 — group pairing UI: auto-generated display_name includes topic + violet topic badge
+
+- **Lazy group-pairing** in event-router now composes topic-aware names: `Pending group pairing: Jiku Agent Grup → General Discussion` when the first message came from a forum topic (uses `event.metadata.thread_title` if present, falls back to `topic <thread_id>`). `source_ref_keys.thread_id` is also set so Scope Lock UI pre-fills correctly after approval.
+- **`GroupPairingRow`** component splits `"Chat → Topic"` into two visual parts: chat title as primary text, topic as a violet badge `topic: General #42`. Raw `scope_key_pattern` shown small-muted below. Approve flow (route) keeps topic suffix when stripping the `Pending group pairing:` prefix, so resulting active binding reads `Group: Jiku Agent Grup → General Discussion`.
+- Files: `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`.
+
+## 2026-04-14 — binding trigger_mode: customizable mention tokens, command whitelist, regex keywords
+
+All 5 trigger modes are now tunable per binding:
+
+- **`always`** — every message (default).
+- **`command`** — message must start with `/`. Optional `trigger_commands` whitelist (without slash) narrows to e.g. `['help','ask']`. Respects Telegram's `/help@mybot` suffix (split on `@`). Empty list = any `/...` passes.
+- **`keyword`** — text contains any `trigger_keywords`. New `trigger_keywords_regex: boolean` — when true, each entry is a case-insensitive regex instead of a substring.
+- **`mention`** — bot is addressed. New `trigger_mention_tokens: string[]` for custom tokens (`['@halo_bot','hai bot','bro']`, substring match). When empty, falls back to adapter-detected `metadata.bot_mentioned` (proper Telegram entity parse). DMs implicitly pass.
+- **`reply`** — user used the platform's reply feature to reply directly to one of the bot's own messages. Checked via `metadata.bot_replied_to` flag set by adapter (Telegram: `msg.reply_to_message.from.id === botUserId`, ignoring synthetic forum-topic-created pointer). DMs implicitly pass. Useful in chatty groups — agent only answers when someone specifically replies instead of reacting to every message.
+
+Migration `0029_binding_trigger_custom.sql` adds 3 columns: `trigger_mention_tokens text[]`, `trigger_commands text[]`, `trigger_keywords_regex boolean DEFAULT false`. UI (binding detail → Source card) shows conditional fields per mode with hints + examples.
+
+Files: `apps/studio/db/src/migrations/0029_binding_trigger_custom.sql`, `apps/studio/db/src/schema/connectors.ts`, `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/connectors/event-router.ts`, `packages/types/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx`.
+
+## 2026-04-14 — connectors: proper bot-mention + reply-to-bot trigger detection
+
+- **Bug:** `trigger_mode='mention'` used `text.includes('@')` — matches anything with `@` (emails, unrelated user mentions). `trigger_mode='reply'` had no case in `matchesTrigger` switch, fell through to default → always passed.
+- **Fix:** Telegram adapter caches `bot.api.getMe()` at activation (`botUsername`, `botUserId`). Message handler scans `msg.entities` + `msg.caption_entities` for type `'mention'` matching `@<botUsername>` AND `'text_mention'` with `user.id === botUserId`. Reply-to-bot check: `msg.reply_to_message.from.id === botUserId && !msg.reply_to_message.forum_topic_created` (ignore synthetic topic-pointer). Flags exposed as `event.metadata.bot_mentioned` / `event.metadata.bot_replied_to`.
+- **matchesTrigger** now consults those flags. DMs implicitly count as mention/reply (whole message addressed to bot). `reply` case added to the switch.
+- Files: `plugins/jiku.telegram/src/index.ts`, `apps/studio/server/src/connectors/event-router.ts`.
+
 ## 2026-04-14 — connectors: inject internal event_id + message_id into context; by-id fetch tools
 
 Agents can now cross-reference the [connector_context] block against our own DB — not just Telegram's ids.

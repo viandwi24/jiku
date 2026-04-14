@@ -1634,6 +1634,9 @@ export interface ConnectorBinding {
   trigger_source: string
   trigger_mode: string
   trigger_keywords?: string[] | null
+  trigger_keywords_regex?: boolean
+  trigger_mention_tokens?: string[] | null
+  trigger_commands?: string[] | null
   trigger_event_type?: string | null
   trigger_event_filter?: Record<string, unknown> | null
   /** Routing priority — higher wins. Default 0. */

@@ -152,14 +152,90 @@ export default function BindingDetailPage({ params }: PageProps) {
               <Select value={binding.trigger_mode} onValueChange={v => updateBindingMutation.mutate({ trigger_mode: v })}>
                 <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="always">Always</SelectItem>
-                  <SelectItem value="mention">Mention</SelectItem>
-                  <SelectItem value="reply">Reply</SelectItem>
-                  <SelectItem value="command">Command</SelectItem>
-                  <SelectItem value="keyword">Keyword</SelectItem>
+                  <SelectItem value="always">Always (every message)</SelectItem>
+                  <SelectItem value="mention">Mention (bot is addressed)</SelectItem>
+                  <SelectItem value="reply">Reply (user replied to bot msg)</SelectItem>
+                  <SelectItem value="command">Command (/foo)</SelectItem>
+                  <SelectItem value="keyword">Keyword (text match)</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-[10px] text-muted-foreground">
+                DMs implicitly pass the mention / reply check (the whole message is for the bot).
+              </p>
             </div>
+
+            {binding.trigger_mode === 'mention' && (
+              <div className="space-y-1.5 col-span-2">
+                <p className="text-xs font-medium text-muted-foreground">Custom Mention Tokens (optional)</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Comma-separated custom tokens that count as "mention" (substring, case-insensitive).
+                  Example: <code className="bg-muted px-1 rounded">@halo_bot, hai bot, bro</code>.
+                  Leave empty to use automatic bot-@username detection (Telegram entities).
+                </p>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="@my_bot, hey bot, oi"
+                  defaultValue={(binding.trigger_mention_tokens ?? []).join(', ')}
+                  onBlur={e => {
+                    const tokens = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                    updateBindingMutation.mutate({
+                      trigger_mention_tokens: tokens.length > 0 ? tokens : null,
+                    })
+                  }}
+                />
+              </div>
+            )}
+
+            {binding.trigger_mode === 'command' && (
+              <div className="space-y-1.5 col-span-2">
+                <p className="text-xs font-medium text-muted-foreground">Command Whitelist (optional)</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Comma-separated command names WITHOUT the slash. Only matching commands trigger.
+                  Example: <code className="bg-muted px-1 rounded">help, ask, start</code> → <code className="bg-muted px-1 rounded">/help</code>, <code className="bg-muted px-1 rounded">/ask foo</code>, <code className="bg-muted px-1 rounded">/start@mybot</code> pass.
+                  Leave empty to allow any <code className="bg-muted px-1 rounded">/...</code> message.
+                </p>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="help, ask, start"
+                  defaultValue={(binding.trigger_commands ?? []).join(', ')}
+                  onBlur={e => {
+                    const cmds = e.target.value.split(',').map(s => s.trim().replace(/^\//, '')).filter(Boolean)
+                    updateBindingMutation.mutate({
+                      trigger_commands: cmds.length > 0 ? cmds : null,
+                    })
+                  }}
+                />
+              </div>
+            )}
+
+            {binding.trigger_mode === 'keyword' && (
+              <div className="space-y-1.5 col-span-2">
+                <div className="flex items-center gap-4">
+                  <p className="text-xs font-medium text-muted-foreground flex-1">Keywords</p>
+                  <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={binding.trigger_keywords_regex ?? false}
+                      onChange={e => updateBindingMutation.mutate({ trigger_keywords_regex: e.target.checked })}
+                    />
+                    Treat each as regex (case-insensitive)
+                  </label>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Comma-separated. Substring match by default; enable regex mode to use patterns like{' '}
+                  <code className="bg-muted px-1 rounded">^(help|support)\b</code>.
+                </p>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="help, support, bantuan"
+                  defaultValue={(binding.trigger_keywords ?? []).join(', ')}
+                  onBlur={e => {
+                    const kw = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                    updateBindingMutation.mutate({ trigger_keywords: kw })
+                  }}
+                />
+              </div>
+            )}
             {(binding.source_type === 'group' || binding.source_type === 'channel' || binding.source_type === 'any') && (
               <div className="space-y-1.5">
                 <p className="text-xs font-medium text-muted-foreground">Member Mode</p>

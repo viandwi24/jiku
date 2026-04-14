@@ -119,6 +119,9 @@ export async function createBinding(data: {
   trigger_source?: string
   trigger_mode?: string
   trigger_keywords?: string[]
+  trigger_keywords_regex?: boolean
+  trigger_mention_tokens?: string[]
+  trigger_commands?: string[]
   trigger_event_type?: string
   trigger_event_filter?: Record<string, unknown>
   output_adapter?: string
@@ -153,6 +156,9 @@ export async function updateBinding(id: string, data: Partial<{
   trigger_source: string
   trigger_mode: string
   trigger_keywords: string[]
+  trigger_keywords_regex: boolean
+  trigger_mention_tokens: string[] | null
+  trigger_commands: string[] | null
   trigger_event_type: string
   trigger_event_filter: Record<string, unknown>
   output_adapter: string

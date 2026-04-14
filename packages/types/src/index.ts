@@ -1262,6 +1262,12 @@ export interface ConnectorBinding {
   trigger_source: 'message' | 'event'
   trigger_mode: 'always' | 'mention' | 'reply' | 'command' | 'keyword'
   trigger_keywords?: string[] | null
+  /** When true, each trigger_keywords entry is compiled as a case-insensitive regex. */
+  trigger_keywords_regex?: boolean
+  /** Custom tokens for trigger_mode='mention' — any text match counts. */
+  trigger_mention_tokens?: string[] | null
+  /** Whitelist of command names (without leading '/') for trigger_mode='command'. */
+  trigger_commands?: string[] | null
   trigger_event_type?: string | null
   trigger_event_filter?: Record<string, unknown> | null
   output_adapter: string

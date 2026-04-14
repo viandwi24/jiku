@@ -308,12 +308,25 @@ function GroupPairingRow({
 }) {
   const [selectedAgent, setSelectedAgent] = useState('')
   const [memberMode, setMemberMode] = useState<'require_approval' | 'allow_all'>('require_approval')
-  const title = binding.display_name?.replace(/^Pending group pairing:\s*/, '') ?? binding.scope_key_pattern ?? binding.id
+  const rawTitle = binding.display_name?.replace(/^Pending group pairing:\s*/, '') ?? binding.scope_key_pattern ?? binding.id
+  // Split chat and topic parts for nicer rendering: "Chat → Topic"
+  const [chatPart, ...topicRest] = rawTitle.split(' → ')
+  const topicPart = topicRest.join(' → ') || null
+  const sourceRefKeys = (binding.source_ref_keys ?? {}) as Record<string, string>
+  const threadId = sourceRefKeys['thread_id'] ?? (binding.scope_key_pattern?.match(/:topic:(\d+)/)?.[1])
   return (
-    <div className="flex items-center justify-between py-3 px-4 rounded-lg border bg-card gap-3">
-      <div className="space-y-0.5 min-w-0">
-        <p className="text-sm font-medium truncate">{title}</p>
-        <p className="text-xs text-muted-foreground font-mono">{binding.scope_key_pattern}</p>
+    <div className="flex items-start justify-between py-3 px-4 rounded-lg border bg-card gap-3">
+      <div className="space-y-1 min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm font-medium truncate">{chatPart}</p>
+          {topicPart && (
+            <Badge variant="outline" className="text-[10px] font-normal bg-violet-500/10 text-violet-600 border-violet-500/30">
+              topic: {topicPart}
+              {threadId && <span className="ml-1 opacity-60 font-mono">#{threadId}</span>}
+            </Badge>
+          )}
+        </div>
+        <p className="text-[10px] text-muted-foreground font-mono truncate">{binding.scope_key_pattern}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <Select value={memberMode} onValueChange={v => setMemberMode(v as 'require_approval' | 'allow_all')}>

@@ -1,3 +1,44 @@
+## Phase (2026-04-14) — Connector binding semantics overhaul — SHIPPED
+
+Fixed a serious multi-tenant leak in binding matching: a binding created for one user's DM could silently capture messages from unrelated users in a shared group. Landed as an incremental stack:
+
+1. **Strict pairing approval** — `POST /connectors/:id/pairing-requests/:iid/approve` now creates a DM binding with `source_type='private'` + `source_ref_keys={ user_id: <identity.external> }`, locking to that one user.
+2. **Event-router scope gate** — `matchesTrigger()` treats `source_ref_keys.user_id` against `event.sender.external_id`; implicit scope gate from `source_type` (`private` → require empty scope_key, `group`/`channel` → require non-empty). `any` kept for back-compat, flagged as unsafe in UI.
+3. **`member_mode` column** on `connector_bindings` (`require_approval` default, `allow_all`) — new members in a group/channel scope become `pending` identities until admin approves. DM bindings ignore (already single-user). Migration `0028_binding_member_mode.sql`.
+4. **UI** — binding detail: amber warning for `source_type='any'`, Source Ref Keys display, Member Mode picker, Scope Lock card (Chat ID input for group/channel, User ID input for private → writes both `scope_key_pattern` and `source_ref_keys` in one save).
+5. **Group auto-pairing** — bot added to a Telegram group/supergroup via `my_chat_member` auto-creates a DRAFT binding (`enabled=false`, `scope_key_pattern='group:<id>'`). Admin approves via new "Group Pairing Requests" section → picks agent + member_mode → binding enabled.
+6. **Lazy group-pairing** — if a group message arrives and no draft exists for that scope (bot added before hook existed), event-router creates the draft on first message. DM path still per-user pending identity.
+7. **Reject fix** — `getPairingRequestsForConnector` now filters `status='pending'` too (was only `binding_id IS NULL`) so rejecting actually removes the row from the UI.
+8. **Blocked identities cleanup UI** — new section listing `status='blocked'` rows with Unblock (→ pending) + hard-delete actions. Replaces the old "delete whole connector" workaround.
+9. **Always log inbound messages** — even when no binding matches, a `connector_messages` row is written so traffic is observable + `connector_get_thread` agent tool sees it.
+10. **Normalize message status vocabulary** — inbound statuses: `handled` / `unhandled` / `pending` / `dropped` / `rate_limited`; outbound: `sent` / `failed`. UI filter surfaces all.
+
+Relevant files:
+- `apps/studio/db/src/migrations/0028_binding_member_mode.sql`
+- `apps/studio/db/src/schema/connectors.ts` — `member_mode` column
+- `apps/studio/db/src/queries/connector.ts` — `getIdentityById`, `getBlockedIdentitiesForConnector`, `deleteIdentity`, `getConnectorTargetsEnriched`, `getConnectorTargetsByName`, `getPendingGroupPairings`, stricter `getPairingRequestsForConnector`
+- `apps/studio/server/src/connectors/event-router.ts` — scope gate, member_mode gate, lazy group-pairing, normalized message statuses
+- `apps/studio/server/src/routes/connectors.ts` — strict pairing approval, group-pairings CRUD, blocked-identities CRUD
+- `plugins/jiku.telegram/src/index.ts` — `my_chat_member` auto-creates group draft; service-message filter in `bot.on('message')`; `raw_payload` on all polling handlers
+- `packages/types/src/index.ts` — `ConnectorBinding.member_mode`, `ConnectorEvent.raw_payload`, `ConnectorSendResult.raw_payload`
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx` — Group Pairing Requests + Blocked Identities sections; GroupPairingRow component
+- `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx` — Scope Lock card, Member Mode picker, `any` warning
+- `apps/studio/web/lib/api.ts` — `groupPairings`, `blockedIdentities` clients; `member_mode` on ConnectorBinding
+
+---
+
+## Phase (2026-04-14) — Filesystem: paginated fs_read + fs_append + version-bump fix — SHIPPED
+
+Follow-ups to the read-before-write work:
+- **fs_read pagination** (Claude-Code `Read` parity): `offset` + `limit` params, `cat -n` output format, per-line truncation at 2000 chars, response includes `total_lines` / `start_line` / `end_line` / `truncated` / `hint` telling the model how to page.
+- **fs_append** — zero-overhead append-only tool. No read-gate. Server-side concat. Clears tracker after so next `fs_edit` forces a re-read.
+- **Bug fix**: `upsertFile()` wasn't incrementing `version` on update; optimistic lock was effectively disabled. Now `version += 1` per write, `content_version += 1` only when `content_hash` (SHA-256 of content, computed in service.ts) changes.
+- **Tool choice guide** in FS_WRITE_HINT: fs_append for append-only, fs_edit for partial edits, fs_write for new files / full rewrites.
+
+Files: `apps/studio/db/src/queries/filesystem.ts`, `apps/studio/server/src/filesystem/{service.ts,tools.ts}`.
+
+---
+
 ## Phase (2026-04-14) — Filesystem: read-before-write + stale detection + fs_edit — SHIPPED
 
 Adopted Claude-Code-style file protection: `fs_write` / `fs_edit` require a prior `fs_read` of the path in the same conversation, and reject on external modification. New `fs_edit` tool does substring replacement — preferred over `fs_write` for partial changes (saves tokens + preserves rest of file verbatim).

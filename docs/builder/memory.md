@@ -719,3 +719,51 @@ Tool outputs (screenshots, exported data) should be persisted as attachments, no
    - Enables URL generation in multiple contexts (UI proxy, LLM delivery, etc.)
 
 Never store URLs in the database. Always resolve attachments via ID at the edge (UI or API).
+
+## Binding semantics: scope is explicit and strict (ADR-074)
+
+Do NOT create bindings with `source_type='any'` + null `scope_key_pattern` + null `source_ref_keys` — that's the legacy loose mode and will capture unrelated users / scopes. DM bindings MUST have `source_ref_keys={ user_id: X }`; group/channel bindings MUST have `scope_key_pattern='group:<chat_id>'`. Pairing approval endpoint enforces this for DMs. `my_chat_member` + first-group-message fallback enforce it for groups. When you add a new adapter / flow that creates bindings, replicate the same strict scoping — `matchesTrigger()` now has implicit scope gates from `source_type` but `any` still bypasses them.
+
+## `source_ref_keys.user_id` is special — it comes from `event.sender.external_id`, not `event.ref_keys`
+
+Platforms don't put the sender id in `ref_keys` (Telegram uses `{message_id, chat_id, thread_id}`). The DM sender lock is implemented by treating the key name `user_id` specially inside `matchesTrigger()`: it's compared against `event.sender.external_id`. Other keys in `source_ref_keys` (e.g. `chat_id`) still compare against `event.ref_keys`. Don't add a synthetic `user_id` into `event.ref_keys` in the adapter — it would shadow the special-case path and break cross-plane consistency.
+
+## Always log inbound messages even when no binding matches
+
+`connector_messages` is a complete inbound traffic log — `routeConnectorEvent` writes an `unhandled` row at the no-match branch so the Messages UI and the `connector_get_thread` agent tool see every message. `connector_events` was already complete. Inbound status vocabulary (ADR-076): `handled` / `unhandled` / `pending` / `dropped` / `rate_limited`. Outbound: `sent` / `failed`. When adding a new routing branch, write a corresponding `logMsg` with the right status or the Messages UI will silently miss that case.
+
+## Group pairing = ONE draft binding per scope, not one pending identity per member
+
+Groups are auto-detected two ways: `my_chat_member` when bot is added (Telegram), and lazily on first message event with `event.scope_key` set (fallback for bots added before the hook existed). Both paths create a SINGLE disabled binding with `scope_key_pattern='group:<id>'` + `output_config.agent_id` empty. Admin approves via the "Group Pairing Requests" UI (distinct from DM pairing requests) — picks agent + `member_mode` and flips `enabled=true`. Do NOT create per-user pending identities for group events at the no-binding-match branch; that floods the admin UI.
+
+## Filesystem: read-before-write + stale-state protection (ADR-075)
+
+`fs_write` / `fs_edit` require a `fs_read` in the same conversation and reject on external modification. Tracker is `conversation_fs_reads (conversation_id, path, version, content_hash, read_at)` PK `(conversation_id, path)`. Exception: `fs_write` for a file that doesn't exist yet. Error codes are user-facing: `MUST_READ_FIRST`, `STALE_FILE_STATE`. When adding a new write-path (e.g. a plugin tool that mutates project files), call `getFsRead` + validate version against `getFileByPath` before writing, and `recordFsRead` after writing so subsequent calls chain correctly. Prefer `fs_append` for append-only workflows — it bypasses the gate but invalidates the tracker row (forces re-read for next edit).
+
+## `fs_read` returns `cat -n` format — strip prefixes for `fs_edit`
+
+`fs_read` output is line-number prefixed (`  12\tcontent`) with per-line truncation at 2000 chars. `fs_edit`'s `old_string` must match the RAW file content, NOT the prefixed display. The tool description warns the model about this but it's worth remembering when debugging "why does fs_edit say not-found when I clearly see the string".
+
+## `upsertFile` must increment `version` on every update
+
+Optimistic lock was silently broken for a long time because `upsertFile()` only set `size_bytes` / `mime_type` / `content_cache` / `updated_at` on update — version stayed at 1 forever. Fixed: `version += 1` per update, `content_version += 1` only when `content_hash` (SHA-256 of content, computed in `filesystem/service.ts`) changes. When writing new queries that update `project_files`, keep this invariant or downstream stale detection breaks.
+
+## Raw platform payload is preserved on events + messages
+
+`connector_events.raw_payload` and `connector_messages.raw_payload` hold the original platform JSON (Telegram Update, Telegram sendMessage response, etc.) so the detail drawer can show it and agents can mine it for entities / custom_emoji / attachments. Inbound webhook handler attaches `req.body` if not set; polling handlers (Telegram `bot.on('message'|'message_reaction'|'edited_message'|'channel_post'|'my_chat_member')`) must explicitly set `event.raw_payload = gramCtx.update`. New adapters should follow the same pattern. Outbound path: `ConnectorSendResult.raw_payload` carries the platform API response; adapter `sendMessage` should populate it.
+
+## Telegram `bot.on('message')` fires for service messages too — classify before emitting
+
+`new_chat_members`, `left_chat_member`, `new_chat_title`, `pinned_message`, `migrate_to_chat_id`, `voice_chat_*` etc. all land on the generic `message` handler with `text`/`caption`/media all absent. Without filtering, the agent runs on "(no text content)". Current handler classifies: content present → `type: 'message'`; `new_chat_members` → `'join'`; `left_chat_member` → `'leave'`; other service messages → skip silently. When mirroring this to another adapter (Discord/WhatsApp/Slack), apply the same classification — never emit an empty-content `message` event.
+
+## Connector queue: await full stream drain before releasing `runningConversations`
+
+`drainConnectorQueue` previously released the flag after `runtimeManager.run()` returned but BEFORE the stream was consumed — assistant message is only persisted when the stream finalizes, so the next queued run saved its user message against a stale `active_tip_message_id` → siblings → spurious branches. Fix: `await Promise.all([next.resolve(...), observerDrain])` inside the try block. When adding another path that processes queued runs, enforce the same invariant: hold the conversation lock across the ENTIRE stream, not just the call setup.
+
+## `authMiddleware` accepts `?token=` for SSE
+
+EventSource can't set custom headers, so the middleware also reads `req.query.token` when the Authorization header is missing. This is fine for SSE (read-only streams) but keep in mind when adding new query-authenticated endpoints — they get the same access as header-authenticated ones. Don't expand this to mutations.
+
+## `connector_list_targets` returns connector metadata per row; `connector_send_to_target` detects ambiguity
+
+Each target row includes `{ connector: { id, plugin_id, display_name, status } }` so the agent doesn't need a follow-up `connector_list` call. `connector_send_to_target` with omitted `connector_id` accepts unique target names, but returns `{ success: false, code: 'AMBIGUOUS_TARGET', candidates: [...] }` when the same name exists on multiple connectors — the agent retries with explicit `connector_id`. When adding similar "address by name" APIs, use the same pattern (enriched list + explicit ambiguity error) rather than silently picking the first match.

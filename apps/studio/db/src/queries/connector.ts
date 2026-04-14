@@ -212,6 +212,25 @@ export async function getIdentityById(id: string) {
   return rows[0] ?? null
 }
 
+/** Blocked / rejected identities on a connector — for admin cleanup UI. */
+export async function getBlockedIdentitiesForConnector(connectorId: string) {
+  return db
+    .select()
+    .from(connector_identities)
+    .where(and(
+      eq(connector_identities.connector_id, connectorId),
+      eq(connector_identities.status, 'blocked'),
+    ))
+    .orderBy(desc(connector_identities.created_at))
+}
+
+/** Hard-delete an identity row. Use with care — the external user will have to
+ *  re-pair from scratch if they DM the bot again. Safe here because a blocked
+ *  identity has no binding attached and no live conversations. */
+export async function deleteIdentity(id: string) {
+  await db.delete(connector_identities).where(eq(connector_identities.id, id))
+}
+
 export async function findIdentityByExternalId(connectorId: string, externalUserId: string) {
   const rows = await db
     .select()

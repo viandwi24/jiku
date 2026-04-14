@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-04-14 — connectors: normalize inbound message status vocabulary
+
+Every inbound `connector_messages` row now carries a status that tells you what happened to the message:
+
+- `handled` — binding matched, agent ran (has `conversation_id`).
+- `unhandled` — no binding matched this chat; stored for observability / admin review.
+- `pending` — binding matched but identity is pending approval; agent didn't run.
+- `dropped` — binding matched but identity is blocked.
+- `rate_limited` — binding matched but rate limit was hit.
+- `sent` / `failed` — outbound (bot → platform).
+
+Previously the routed-inbound row used `status='sent'`, conflicting with outbound `sent`. Filters in the Messages tab were updated to surface all inbound states plus the distinct outbound ones. `connector_get_thread` agent tool consumers can now filter by status.
+
+Files: `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/web/components/channels/messages-tab.tsx`.
+
+## 2026-04-14 — connectors: always log inbound messages even without a matching binding
+
+Previously `connector_messages` only got a row when a binding actually ran (inside `executeConversationAdapter`) and when the bot auto-replied. Message events that arrived in unpaired groups/DMs were captured in `connector_events` but NOT in `connector_messages`, so the Messages tab + `connector_get_thread` agent tool couldn't see them.
+
+Fix: at the top of the no-binding-match branch in `routeConnectorEvent`, always write an inbound `connector_messages` row with `status='received'` for message events. Bound messages still get their second row with `conversation_id` later (from `executeConversationAdapter`) — accept the small duplication in exchange for a complete inbound log. File: `apps/studio/server/src/connectors/event-router.ts`.
+
+## 2026-04-14 — connectors: blocked-identities cleanup UI + REST
+
+Admin can now inspect and clean up stuck/rejected pairing rows without nuking the whole connector.
+
+- New query `getBlockedIdentitiesForConnector()` + `deleteIdentity()`.
+- REST: `GET /connectors/:id/blocked-identities`, `POST .../:iid/unblock` (status → 'pending', rejoins the pairing queue), `DELETE /connectors/:id/identities/:iid` (hard delete — user must DM the bot again to re-pair).
+- Connector detail page: new "Blocked Identities" section listing status='blocked' rows with `Unblock` and delete buttons. Shows external user_id and block timestamp.
+- Files: `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/routes/connectors.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`.
+
+## 2026-04-14 — connectors: lazy group-pairing draft from first group message + Scope Lock UI
+
+- **Lazy group-pairing**: event-router's "no binding matches" branch now splits by scope. For group/channel scopes (event.scope_key present), if no draft binding exists for that exact `scope_key_pattern`, one is created lazily on first message (disabled, `source_type=group|channel`, `source_ref_keys.chat_id` set, `member_mode='require_approval'`). Covers cases where `my_chat_member` never fired (bot added before the auto-register hook existed, or Telegram didn't replay the event). DM path unchanged — still creates one pending identity per new user.
+- **Binding detail — Scope Lock card**: friendly per-source-type picker. For `source_type=group|channel` an input for "Chat ID" writes `scope_key_pattern='group:<id>'` + `source_ref_keys.chat_id` in one save. For `source_type=private` an input for "Sender User ID" writes `source_ref_keys.user_id`. Clearing the field removes both keys. Raw `scope_key_pattern` text box remains under Routing for advanced patterns (`group:*`, forum topic, etc.).
+- Files: `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/bindings/[binding]/page.tsx`.
+
 ## 2026-04-14 — connectors: fix reject button + group auto-pairing flow
 
 - **Bug fix — Reject button did nothing**: `getPairingRequestsForConnector()` filtered only on `binding_id IS NULL`. Clicking reject set `status='blocked'` but left `binding_id=null`, so the rejected row stayed in the UI list forever. Query now also requires `status='pending'`. Rejecting now makes the row disappear as expected.

@@ -15,8 +15,10 @@ import {
   getIdentitiesForBinding,
   getPairingRequestsForConnector,
   getPendingGroupPairings,
+  getBlockedIdentitiesForConnector,
   getIdentityById,
   updateIdentity,
+  deleteIdentity,
   getConnectorEvents,
   getConnectorMessages,
   listConnectorEventsForProject,
@@ -378,6 +380,49 @@ router.post('/connectors/:id/group-pairings/:bid/reject', authMiddleware, requir
       res.status(404).json({ error: 'Binding not found' }); return
     }
     await deleteBinding(req.params['bid']!)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// ─── Blocked identities cleanup (2026-04-14) ───────────────────────────────
+// Blocked identities are orphaned rows (binding_id=null, status='blocked').
+// Previously the only way to clear them was to delete the whole connector —
+// now admin can inspect + unblock (send back to pending) or hard-delete.
+
+/** GET /connectors/:id/blocked-identities */
+router.get('/connectors/:id/blocked-identities', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  try {
+    const rows = await getBlockedIdentitiesForConnector(req.params['id']!)
+    res.json({ identities: rows })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** POST /connectors/:id/blocked-identities/:iid/unblock — send back to pending queue */
+router.post('/connectors/:id/blocked-identities/:iid/unblock', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const identityRow = await getIdentityById(req.params['iid']!)
+    if (!identityRow || identityRow.connector_id !== req.params['id']) {
+      res.status(404).json({ error: 'Identity not found' }); return
+    }
+    const updated = await updateIdentity(req.params['iid']!, { status: 'pending' })
+    res.json({ identity: updated })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/** DELETE /connectors/:id/identities/:iid — hard delete */
+router.delete('/connectors/:id/identities/:iid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const identityRow = await getIdentityById(req.params['iid']!)
+    if (!identityRow || identityRow.connector_id !== req.params['id']) {
+      res.status(404).json({ error: 'Identity not found' }); return
+    }
+    await deleteIdentity(req.params['iid']!)
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: String(err) })

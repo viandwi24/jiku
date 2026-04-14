@@ -107,8 +107,13 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
           <SelectTrigger className="h-8 w-[120px] text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>Any status</SelectItem>
-            <SelectItem value="sent">sent</SelectItem>
-            <SelectItem value="failed">failed</SelectItem>
+            <SelectItem value="handled">handled (agent ran)</SelectItem>
+            <SelectItem value="unhandled">unhandled (no binding)</SelectItem>
+            <SelectItem value="pending">pending approval</SelectItem>
+            <SelectItem value="dropped">dropped (blocked)</SelectItem>
+            <SelectItem value="rate_limited">rate_limited</SelectItem>
+            <SelectItem value="sent">sent (outbound)</SelectItem>
+            <SelectItem value="failed">failed (outbound)</SelectItem>
           </SelectContent>
         </Select>
         <Input

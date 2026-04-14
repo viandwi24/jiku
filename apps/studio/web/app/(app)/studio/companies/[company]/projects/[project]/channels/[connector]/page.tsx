@@ -18,7 +18,7 @@ import {
   SelectValue,
   Separator,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Check, Copy, Link2, Plus, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X } from 'lucide-react'
+import { ArrowLeft, Ban, Check, Clock, Copy, Link2, Plus, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -435,6 +435,25 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-group-pairing', connectorId] }),
   })
 
+  const { data: blockedData } = useQuery({
+    queryKey: ['connector-blocked', connectorId],
+    queryFn: () => api.connectors.blockedIdentities.list(connectorId),
+    refetchInterval: 30_000,
+  })
+
+  const unblockIdentityMutation = useMutation({
+    mutationFn: (identityId: string) => api.connectors.blockedIdentities.unblock(connectorId, identityId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-blocked', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-pairing', connectorId] })
+    },
+  })
+
+  const deleteIdentityMutation = useMutation({
+    mutationFn: (identityId: string) => api.connectors.blockedIdentities.delete(connectorId, identityId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-blocked', connectorId] }),
+  })
+
   const { data: inviteCodesData } = useQuery({
     queryKey: ['connector-invite-codes', connectorId],
     queryFn: () => api.connectors.inviteCodes.list(connectorId),
@@ -496,6 +515,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
   const agents = agentsData?.agents ?? []
   const pairingRequests = pairingData?.pairing_requests ?? []
   const groupPairings = groupPairingData?.group_pairings ?? []
+  const blockedIdentities = blockedData?.identities ?? []
   // Exclude draft group-pairing bindings from the main list — they live in the
   // Group Pairing Requests section above. Heuristic: enabled=false AND no agent_id.
   const draftIds = new Set(groupPairings.map(b => b.id))
@@ -600,6 +620,59 @@ export default function ConnectorDetailPage({ params }: PageProps) {
                   onApprove={(agentId, adapter) => approvePairingMutation.mutate({ identityId: req.id, agentId, adapter })}
                   onReject={() => rejectPairingMutation.mutate(req.id)}
                 />
+              ))}
+            </div>
+          </div>
+          <Separator />
+        </>
+      )}
+
+      {/* Blocked / Rejected identities — cleanup workspace */}
+      {blockedIdentities.length > 0 && (
+        <>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-medium flex items-center gap-1.5">
+                <XCircle className="h-4 w-4" />
+                Blocked Identities
+              </h2>
+              <Badge variant="secondary" className="bg-rose-500/10 text-rose-600 border-rose-500/20">
+                {blockedIdentities.length}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Users whose pairing was rejected (or stuck rows). Unblock to send back to the pending queue, or delete to remove them entirely. Deleting means the user must DM the bot again to re-appear as a pairing request.
+            </p>
+            <div className="space-y-2">
+              {blockedIdentities.map(id => (
+                <div key={id.id} className="flex items-center justify-between py-2.5 px-4 rounded-lg border bg-card gap-3">
+                  <div className="space-y-0.5 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {id.display_name ?? id.external_ref_keys?.['username'] ?? id.external_ref_keys?.['user_id'] ?? id.id}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground font-mono truncate">
+                      user_id={id.external_ref_keys?.['user_id']} · blocked since {new Date(id.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      size="sm" variant="outline"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => unblockIdentityMutation.mutate(id.id)}
+                      disabled={unblockIdentityMutation.isPending}
+                    >
+                      <Clock className="h-3 w-3" /> Unblock
+                    </Button>
+                    <Button
+                      size="sm" variant="outline"
+                      className="h-7 w-7 p-0 text-destructive border-destructive/40"
+                      onClick={() => { if (confirm('Hard-delete this identity row?')) deleteIdentityMutation.mutate(id.id) }}
+                      disabled={deleteIdentityMutation.isPending}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
               ))}
             </div>
           </div>

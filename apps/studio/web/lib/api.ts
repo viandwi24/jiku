@@ -453,6 +453,17 @@ export const api = {
         request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/reject`, { method: 'POST' }),
     },
 
+    // Blocked identities — rejected DM pairings or stuck rows. Admin can unblock
+    // (send back to pending queue) or hard-delete.
+    blockedIdentities: {
+      list: (connectorId: string) =>
+        request<{ identities: ConnectorIdentity[] }>(`/api/connectors/${connectorId}/blocked-identities`),
+      unblock: (connectorId: string, identityId: string) =>
+        request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/blocked-identities/${identityId}/unblock`, { method: 'POST' }),
+      delete: (connectorId: string, identityId: string) =>
+        request<{ ok: boolean }>(`/api/connectors/${connectorId}/identities/${identityId}`, { method: 'DELETE' }),
+    },
+
     // Group pairing drafts — bot was added to a group; admin must assign an agent.
     groupPairings: {
       list: (connectorId: string) =>

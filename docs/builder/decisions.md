@@ -1,5 +1,54 @@
 # Decisions
 
+## ADR-076 — Inbound message status vocabulary
+
+**Context:** `connector_messages.status` started as free-form text; inbound rows used `'sent'` (conflict with outbound `'sent'`), missing rows when no binding matched, no way to filter "agent handled" vs "pending"/"dropped" in the Messages UI or via `connector_get_thread`.
+
+**Decision:** Every message event produces exactly one inbound row with a vocabulary that reflects the routing outcome:
+- `handled` — binding matched, agent ran (row carries `conversation_id`)
+- `unhandled` — no binding matched this chat
+- `pending` — binding matched but identity is pending approval
+- `dropped` — binding matched but identity is blocked
+- `rate_limited` — binding matched but rate limit hit
+
+Outbound keeps `sent` / `failed`. Written at each decision point in `routeConnectorEvent` (no-match branch, blocked branch, pending branch, rate-limited branch) and inside `executeConversationAdapter` for the `handled` case.
+
+**Consequences:** Messages table is now a complete inbound traffic log. The Messages tab filter surfaces the distinction explicitly so admins can audit "what did we miss". The inbound-routed row no longer collides with outbound `sent` when filtering.
+
+---
+
+## ADR-075 — Claude-Code-style filesystem safety (read-before-write + stale detection)
+
+**Context:** Native `fs_read` + `fs_write` required the agent to re-send the entire file content on every partial edit — wasted tokens on growing files (user's marketing-journal scenario ballooned to >8 KB in 3 turns). Claude Code enforces read-before-edit and detects external modification via a per-session read tracker. refs-clawcode itself doesn't implement this (pure `replacen()`), but the production Claude Code pattern is well-suited to our multi-agent / multi-user environment.
+
+**Decision:**
+1. New table `conversation_fs_reads (conversation_id, path, version, content_hash, read_at)` PK `(conversation_id, path)`, cascade on conversation delete. Upserted by `fs_read`; consulted by `fs_write`/`fs_edit`; dropped on `fs_move` (old path) / `fs_delete`.
+2. `fs_write` and `fs_edit` reject with `MUST_READ_FIRST` when the file wasn't read in this conversation (exception: `fs_write` for a brand-new file), and with `STALE_FILE_STATE` when the DB `version` differs from the tracked one.
+3. New `fs_edit` tool does substring replacement (`old_string` → `new_string`, optional `replace_all`, `old_string` must be unique unless `replace_all`).
+4. `fs_read` returns `cat -n` format with `offset`/`limit` pagination + per-line truncation + paging hint.
+5. `fs_append` tool bypasses the gate (append-only = no clobber) but clears the tracker row to force re-read if the agent later wants to `fs_edit`.
+6. `upsertFile()` now actually increments `version` on update (it was silently stuck at 1) and stores `content_hash = sha256(content)` so the optimistic lock is meaningful.
+
+**Consequences:** Agents prefer `fs_edit` for partial changes (huge token win) and `fs_append` for growing logs (zero-token payload). Concurrent mutation from UI / other sessions is now detected rather than silently clobbered. Per-session tracker state persists across server restarts because it's in DB — acceptable overhead (one row per path read per conversation) in exchange for correctness.
+
+---
+
+## ADR-074 — Binding scope model: DM lock + implicit scope gate + member_mode
+
+**Context:** A binding created for user A's private chat with the bot silently captured messages from user B in a shared group — auto-creating a new identity for user B under user A's binding, sharing user A's conversation, and letting the agent respond. Root cause was three layered gaps: pairing approval created bindings without any sender scope; `matchesTrigger()` had no scope gate derived from `source_type`; any matching binding auto-approved new identities with `status='approved'`.
+
+**Decision:** A binding is a strict chat-window contract:
+- **DM binding** = `source_type='private'` + `source_ref_keys={ user_id: <external_id> }`. Pairing approval always sets both. `matchesTrigger` compares `source_ref_keys.user_id` against `event.sender.external_id` (user_id is not in `event.ref_keys` so this is a special-cased lookup).
+- **Group/channel binding** = `source_type='group'` (or `'channel'`) + `scope_key_pattern='group:<chat_id>'` + `source_ref_keys.chat_id=<id>`. Admission gated by `member_mode` column: `require_approval` (default) makes new members' first message create a pending identity; `allow_all` auto-approves.
+- **Implicit scope gate** from `source_type`: `private` requires empty `event.scope_key`; `group`/`channel` require non-empty. `any` is legacy + flagged unsafe in UI.
+- **Group auto-pairing**: `my_chat_member` creates a disabled draft binding (`enabled=false`, no `agent_id`). First group message also creates the draft lazily if none exists for that scope (covers bot added before the hook existed). Admin approves via "Group Pairing Requests" section → picks agent + member_mode → binding enabled.
+
+Migration `0028_binding_member_mode.sql` adds `connector_bindings.member_mode text NOT NULL DEFAULT 'require_approval'`.
+
+**Consequences:** Backwards-incompatible UX for legacy loose bindings (`source_type='any'` with null scope + null ref_keys) — they keep working but are flagged in the UI; admin should re-approve or manually scope them. A single group needs ONE draft binding (not one pending identity per member), which reduces admin triage load. DM pairing flow unchanged from the user's perspective (first DM → "access request sent" → admin approves in UI) but now produces a strict binding.
+
+
+
 ## ADR-067 — Message-level branching via `parent_message_id` (Plan 23)
 
 **Context:** Want Claude.ai/ChatGPT-style edit & regenerate UX. Two options: (a) conv-level branching (clone conversation per branch — bloats sidebar, breaks deep links), (b) message-level branching inside one conversation.

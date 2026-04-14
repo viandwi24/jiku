@@ -392,38 +392,111 @@ export async function routeConnectorEvent(
     connector.plugin_id === event.connector_id && matchesTrigger(event, binding as ConnectorBinding)
   )
 
-  // 1b. No matching binding → create pairing request and notify user
+  // 1a. Always record inbound MESSAGE events in connector_messages with a
+  // status that reflects the outcome, so the Messages UI + the
+  // `connector_get_thread` agent tool can filter "handled by the agent" vs
+  // "arrived but not handled".
+  //
+  //   Inbound status vocabulary:
+  //     'unhandled'     — arrived but no binding matched this chat
+  //     'pending'       — binding matched but identity is pending approval
+  //     'dropped'       — binding matched but identity is blocked / filtered
+  //     'rate_limited'  — binding matched but rate limit was hit
+  //     'handled'       — binding matched and agent processed it
+  //
+  // Non-message events live in connector_events (status vocabulary differs there).
+  if (matchingBindings.length === 0 && connectorUuid && event.type === 'message') {
+    await logMsg(projectId, {
+      connector_id: connectorUuid,
+      direction: 'inbound',
+      ref_keys: event.ref_keys,
+      content_snapshot: event.content?.text,
+      raw_payload: event.raw_payload,
+      status: 'unhandled',
+    })
+  }
+
+  // 1b. No matching binding → ensure a pairing request exists so admin can approve.
+  //
+  // Two paths:
+  //   (A) Group / channel / topic scope  — there should be ONE draft group-pairing
+  //       binding per scope, not per-user. Create it lazily if absent (covers the
+  //       case where the bot was added to the group before the auto-register hook
+  //       existed, or the my_chat_member event never fired). We do NOT create a
+  //       per-user pending identity for group events — a single draft binding is
+  //       enough for the admin to approve + apply member_mode.
+  //   (B) DM scope — create (or reuse) a pending identity per user, same as before.
   if (matchingBindings.length === 0) {
     if (connectorUuid && event.type === 'message') {
-      const externalUserId = event.sender.external_id
-      let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
-      if (!identity) {
-        identity = await createIdentity({
-          connector_id: connectorUuid,
-          binding_id: null,
-          external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
-          display_name: event.sender.display_name ?? event.sender.username,
-          status: 'pending',
-        })
-        const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
-        if (adapter) {
-          adapter.sendMessage(
-            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-            { text: '👋 Your access request has been sent. Please wait for admin approval.' },
-          ).catch(() => {})
+      if (event.scope_key) {
+        // Path A: group / channel / topic
+        try {
+          const { getBindings, createBinding, updateBinding } = await import('@jiku-studio/db')
+          const existing = await getBindings(connectorUuid).catch(() => [])
+          const hasDraftForScope = existing.some(b => b.scope_key_pattern === event.scope_key)
+          if (!hasDraftForScope) {
+            const chatTitle = (event.metadata?.['chat_title'] as string | undefined) ?? event.scope_key
+            const chatType = (event.metadata?.['chat_type'] as string | undefined) ?? 'group'
+            const draft = await createBinding({
+              connector_id: connectorUuid,
+              display_name: `Pending group pairing: ${chatTitle}`,
+              source_type: chatType === 'channel' ? 'channel' : 'group',
+              scope_key_pattern: event.scope_key,
+              source_ref_keys: event.ref_keys['chat_id'] ? { chat_id: event.ref_keys['chat_id'] } : undefined,
+              output_adapter: 'conversation',
+              output_config: {},
+              member_mode: 'require_approval',
+            })
+            // createBinding defaults enabled=true — a draft should be disabled
+            // until admin picks an agent.
+            await updateBinding(draft.id, { enabled: false })
+            console.log(`[connector] auto-registered group pairing draft from message event: ${event.scope_key}`)
+          }
+        } catch (err) {
+          console.warn('[connector] failed to lazy-create group pairing draft:', err)
         }
+        await logEv(projectId, {
+          connector_id: connectorUuid,
+          event_type: event.type,
+          ref_keys: event.ref_keys,
+          payload: event as unknown as Record<string, unknown>,
+          raw_payload: event.raw_payload,
+          status: 'pending_approval',
+          drop_reason: 'no_binding',
+          processing_ms: Date.now() - start,
+        })
+      } else {
+        // Path B: DM
+        const externalUserId = event.sender.external_id
+        let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+        if (!identity) {
+          identity = await createIdentity({
+            connector_id: connectorUuid,
+            binding_id: null,
+            external_ref_keys: { user_id: externalUserId, username: event.sender.username ?? '', ...event.ref_keys },
+            display_name: event.sender.display_name ?? event.sender.username,
+            status: 'pending',
+          })
+          const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
+          if (adapter) {
+            adapter.sendMessage(
+              { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+              { text: '👋 Your access request has been sent. Please wait for admin approval.' },
+            ).catch(() => {})
+          }
+        }
+        await logEv(projectId, {
+          connector_id: connectorUuid,
+          identity_id: identity.id,
+          event_type: event.type,
+          ref_keys: event.ref_keys,
+          payload: event as unknown as Record<string, unknown>,
+          raw_payload: event.raw_payload,
+          status: 'pending_approval',
+          drop_reason: 'no_binding',
+          processing_ms: Date.now() - start,
+        })
       }
-      await logEv(projectId, {
-        connector_id: connectorUuid,
-        identity_id: identity.id,
-        event_type: event.type,
-        ref_keys: event.ref_keys,
-        payload: event as unknown as Record<string, unknown>,
-        raw_payload: event.raw_payload,
-        status: 'pending_approval',
-        drop_reason: 'no_binding',
-        processing_ms: Date.now() - start,
-      })
     }
     return 'pending_approval'
   }
@@ -488,6 +561,16 @@ export async function routeConnectorEvent(
         drop_reason: 'blocked',
         processing_ms: Date.now() - start,
       })
+      if (event.type === 'message') {
+        await logMsg(projectId, {
+          connector_id: connector.id,
+          direction: 'inbound',
+          ref_keys: event.ref_keys,
+          content_snapshot: event.content?.text,
+          raw_payload: event.raw_payload,
+          status: 'dropped',
+        })
+      }
       continue
     }
 
@@ -503,6 +586,16 @@ export async function routeConnectorEvent(
         status: 'pending_approval',
         processing_ms: Date.now() - start,
       })
+      if (event.type === 'message') {
+        await logMsg(projectId, {
+          connector_id: connector.id,
+          direction: 'inbound',
+          ref_keys: event.ref_keys,
+          content_snapshot: event.content?.text,
+          raw_payload: event.raw_payload,
+          status: 'pending',
+        })
+      }
       if (isNewIdentity) {
         const adapter = connectorRegistry.getAdapterForConnector(connector.id)
         if (adapter) {
@@ -531,6 +624,16 @@ export async function routeConnectorEvent(
           status: 'rate_limited',
           processing_ms: Date.now() - start,
         })
+        if (event.type === 'message') {
+          await logMsg(projectId, {
+            connector_id: connector.id,
+            direction: 'inbound',
+            ref_keys: event.ref_keys,
+            content_snapshot: event.content?.text,
+            raw_payload: event.raw_payload,
+            status: 'rate_limited',
+          })
+        }
         result = 'rate_limited'
         continue
       }
@@ -764,6 +867,9 @@ async function executeConversationAdapter(
 
   try {
     const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId)
+    // Inbound message successfully routed to an agent — status reflects the
+    // outcome so the Messages UI / connector_get_thread can filter "handled"
+    // vs "unhandled"/"pending"/"dropped"/"rate_limited".
     await logMsg(projectId, {
       connector_id: connectorId,
       conversation_id: conversationId,
@@ -771,7 +877,7 @@ async function executeConversationAdapter(
       ref_keys: event.ref_keys,
       content_snapshot: event.content?.text,
       raw_payload: event.raw_payload,
-      status: 'sent',
+      status: 'handled',
     })
 
     const inputText = event.type === 'message'

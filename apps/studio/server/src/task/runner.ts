@@ -72,12 +72,21 @@ export async function runTaskConversation(
     const cmd = await dispatchSlashCommand({
       projectId, agentId, input: goal, surface, userId: callerId,
     }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-    // Command + @file injection: same model as chat route. User goal stays
-    // literal; resolved command body + file-mention hint go into per-turn
-    // system segments. See chat.ts for rationale.
+    // Command + @file injection: same model as chat route — user goal stays
+    // literal, resolved command body becomes HARD-RULE prepend, file-mention
+    // hint stays as informational segment. See chat.ts for rationale.
     const resolvedForScan = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
-    const commandSegment = (cmd.matched && cmd.resolvedInput)
-      ? [{ label: `Command Invoked: /${cmd.slug ?? ''} (this turn only)`, content: cmd.resolvedInput }]
+    const commandPrepend = (cmd.matched && cmd.resolvedInput)
+      ? [{
+          label: `Active Command — /${cmd.slug ?? ''}`,
+          content: [
+            `[Active Command — HARD RULE for this turn]`,
+            `Caller invoked the slash command \`/${cmd.slug}\` (literal trigger: ${JSON.stringify(goal)}).`,
+            `EXECUTE the SOP body below as if the caller had typed it directly. Do NOT treat as background context.`,
+            ``,
+            cmd.resolvedInput,
+          ].join('\n'),
+        }]
       : undefined
     const refScan = await scanReferences({
       projectId, text: resolvedForScan, userId: callerId, surface,
@@ -85,7 +94,6 @@ export async function runTaskConversation(
     const refSegments = refScan.hintBlock
       ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
       : undefined
-    const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
 
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
@@ -94,7 +102,8 @@ export async function runTaskConversation(
       input: goal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
-      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
+      extra_system_prepend: commandPrepend,
+      extra_system_segments: refSegments,
       // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:
       // a cron-fired agent is allowed to create/update/delete cron tasks (dynamic / conditional scheduling).
       // The infinite-loop risk is handled by the [Cron Trigger] preamble in the stored prompt instead.

@@ -59,18 +59,32 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
   }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
 
   // User input stays LITERAL — `/slug args` as typed. The resolved command
-  // body (the SOP markdown the agent should follow) is injected as a per-turn
-  // system segment instead of replacing the user message. Same rationale as
-  // the @file hint: keeps message DB + chat UI honest about what the user
-  // actually typed; edits work naturally.
+  // body becomes a HARD-RULE PREPEND (top of system prompt, dominating base
+  // persona) so the agent treats it as the active instruction for this turn,
+  // not just background context. Same rationale as the @file hint: message
+  // DB + chat UI stay honest; edit flow works naturally.
+  //
+  // Why prepend (not segments): `extra_system_segments` lands AFTER base_prompt
+  // and reads as supplementary context — models often de-prioritise it when
+  // the user message itself looks low-instruction (e.g. `/slug args`). Prepend
+  // sits ABOVE base_prompt at HARD-RULE position so the directive sticks.
   const input = rawInput
-  const commandSegment = (cmd.matched && cmd.resolvedInput)
-    ? [{ label: `Command Invoked: /${cmd.slug ?? ''} (this turn only)`, content: cmd.resolvedInput }]
+  const commandPrepend = (cmd.matched && cmd.resolvedInput)
+    ? [{
+        label: `Active Command — /${cmd.slug ?? ''}`,
+        content: [
+          `[Active Command — HARD RULE for this turn]`,
+          `The user just invoked the slash command \`/${cmd.slug}\` (literal user message: ${JSON.stringify(rawInput)}).`,
+          `EXECUTE the SOP body below as if the user had typed it directly. Do NOT treat this as background context — this is the user's actual instruction for this turn.`,
+          ``,
+          cmd.resolvedInput,
+        ].join('\n'),
+      }]
     : undefined
 
   // @file reference hint — scan against the resolved command body if a command
-  // matched (so `@plans/foo.md` inside the command body still resolves), else
-  // against the raw user text.
+  // matched (so `@plans/foo.md` inside the body still resolves), else against
+  // raw user text. References stay as regular segments (informational).
   const refScan = await scanReferences({
     projectId: agent.project_id,
     text: cmd.resolvedInput ?? input,
@@ -80,10 +94,6 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
   const refSegments = refScan.hintBlock
     ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
     : undefined
-
-  // Combine both per-turn segments. Either, both, or neither.
-  const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
-  const extraSegmentsArg = extraSegments.length > 0 ? extraSegments : undefined
 
   // --- Auto-reply intercept: check rules before LLM invocation ---
   const autoReplyRules = (agent.auto_replies ?? []) as AutoReplyRule[]
@@ -195,7 +205,8 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
       attachments: attachments.length > 0 ? attachments : undefined,
       input_file_parts: inputFileParts.length > 0 ? inputFileParts : undefined,
       conversation_id: conversationId,
-      extra_system_segments: extraSegmentsArg,
+      extra_system_prepend: commandPrepend,
+      extra_system_segments: refSegments,
       // Preserve the null/undefined distinction:
       //   undefined → runner falls back to conversation.active_tip (linear extend)
       //   null      → explicit "branch at root" (edit of the first user message)

@@ -1016,16 +1016,26 @@ async function executeConversationAdapter(
       projectId, agentId, input: inputText, surface: 'connector',
       userId: identity?.external_id ?? null,
     }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
-    const commandSegment = (cmdDispatch.matched && cmdDispatch.resolvedInput)
-      ? [{ label: `Command Invoked: /${cmdDispatch.slug ?? ''} (this turn only)`, content: cmdDispatch.resolvedInput }]
+    // Command body → HARD-RULE prepend (see chat.ts for rationale).
+    const commandPrepend = (cmdDispatch.matched && cmdDispatch.resolvedInput)
+      ? [{
+          label: `Active Command — /${cmdDispatch.slug ?? ''}`,
+          content: [
+            `[Active Command — HARD RULE for this turn]`,
+            `External user invoked the slash command \`/${cmdDispatch.slug}\` (literal message: ${JSON.stringify(inputText)}).`,
+            `EXECUTE the SOP body below as if the user had typed it directly. Do NOT treat as background context.`,
+            ``,
+            cmdDispatch.resolvedInput,
+          ].join('\n'),
+        }]
       : undefined
 
     // Wrap the literal user text in an explicit tag — the model can't confuse
     // it with the connector_context metadata (prompt-injection defence).
     const wrappedInput = `<user_message>\n${inputText}\n</user_message>`
 
-    // @file reference hint — same per-turn segment model as chat-route. Scan
-    // against the resolved command body if a command matched, else raw input.
+    // @file reference hint — same per-turn segment model. Scan the resolved
+    // command body if a command matched, else raw input.
     const { scanReferences } = await import('../references/hint.ts')
     const refScan = await scanReferences({
       projectId, text: cmdDispatch.resolvedInput ?? inputText, surface: 'connector', userId: null,
@@ -1033,8 +1043,6 @@ async function executeConversationAdapter(
     const refSegments = refScan.hintBlock
       ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
       : undefined
-    const extraSegments = [...(commandSegment ?? []), ...(refSegments ?? [])]
-    const refSegmentsCombined = extraSegments.length > 0 ? extraSegments : undefined
     const input = contextString ? `${contextString}\n\n${wrappedInput}` : wrappedInput
 
     // Plan 28 — If the adapter implements handleResolvedEvent, hand off full
@@ -1065,7 +1073,8 @@ async function executeConversationAdapter(
           caller,
           mode: 'chat',
           input,
-          extra_system_segments: refSegmentsCombined,
+          extra_system_prepend: commandPrepend,
+          extra_system_segments: refSegments,
         }),
         registerObserverStream: (obsStream: ReadableStream<unknown>) => {
           const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
@@ -1128,7 +1137,8 @@ async function executeConversationAdapter(
       caller,
       mode: 'chat',
       input,
-      extra_system_segments: refSegmentsCombined,
+      extra_system_prepend: commandPrepend,
+      extra_system_segments: refSegments,
     })
 
     // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates

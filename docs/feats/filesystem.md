@@ -32,12 +32,33 @@ Credentials are managed via the Credentials system (Plan 4). S3 credential type 
 Text-only: `.txt .md .mdx .rst .html .css .js .jsx .ts .tsx .py .rs .go .java .c .cpp .h .rb .php .swift .kt .cs .sh .json .yaml .yml .toml .env .ini .xml .csv .sql`
 Max size: 5 MB
 
+## Claude-Code-style read-before-write + stale detection (2026-04-14)
+
+To save tokens and prevent lost writes, mutating tools now enforce two invariants borrowed from Claude Code:
+
+1. **Read before mutate**: `fs_write` / `fs_edit` require that the agent has `fs_read`-ed the file earlier in the same conversation. Exception: `fs_write` for a **brand-new file** (path does not exist on disk) — allowed without a prior read.
+2. **Stale detection**: when the agent last read the file, the file's `version` is recorded in a session tracker. On mutate, the current DB `version` is compared to the tracked one. If someone else (another agent, another conversation, the UI) modified the file in the meantime, the mutate is rejected with `STALE_FILE_STATE` and the agent must `fs_read` again.
+
+**Tracker persistence** — table `conversation_fs_reads (conversation_id, path, version, content_hash, read_at)` with PK `(conversation_id, path)`. Cascades on conversation delete. Upserted by `fs_read`; consulted by `fs_write` / `fs_edit`; row dropped on `fs_move` (old path) and `fs_delete`. Cursor file `apps/studio/db/src/migrations/0027_conversation_fs_reads.sql`.
+
+**Error shapes** (returned verbatim as tool result so the model can react):
+- `{ code: 'MUST_READ_FIRST', error: "MUST_READ_FIRST: file \"X\" has not been fs_read in this conversation yet..." }`
+- `{ code: 'STALE_FILE_STATE', error: "STALE_FILE_STATE: file \"X\" was modified externally since your last fs_read (you saw v2, now v5)..." }`
+
+**fs_edit** — substring replacement preferred over `fs_write` for partial changes:
+- `old_string` must match **exactly once** unless `replace_all: true`.
+- Empty `new_string` = deletion.
+- Binary files rejected.
+- Same read-gate + stale check as `fs_write`.
+
 ## Agent Tools
 
 | Tool | Description |
 |------|-------------|
 | `fs_list` | List files and virtual folders at path |
-| `fs_read` | Read file content — intercepts binary files (see below) |
+| `fs_read` | Read file content (registers version in session tracker). Intercepts binary files |
+| `fs_edit` | Replace a substring in an existing file. Requires prior `fs_read` + not stale |
+| `fs_append` | **Preferred for append-only workflows** (logs, journals). No read required, clears tracker after |
 | `fs_write` | Write/create file |
 | `fs_move` | Move/rename file |
 | `fs_delete` | Delete file |

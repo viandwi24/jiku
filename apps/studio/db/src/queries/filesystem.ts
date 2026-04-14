@@ -110,11 +110,17 @@ export async function searchFiles(
 export async function upsertFile(data: NewProjectFile & { project_id: string; path: string }): Promise<ProjectFile> {
   const existing = await getFileByPath(data.project_id, data.path)
   if (existing) {
+    // Optimistic-lock version bumps on every write; content_version bumps when
+    // the bytes actually changed (enables downstream cache invalidation).
+    const contentChanged = data.content_hash != null && data.content_hash !== existing.content_hash
     const [updated] = await db.update(project_files)
       .set({
         size_bytes: data.size_bytes,
         mime_type: data.mime_type,
         content_cache: data.content_cache ?? null,
+        content_hash: data.content_hash ?? existing.content_hash,
+        content_version: contentChanged ? existing.content_version + 1 : existing.content_version,
+        version: existing.version + 1,
         updated_by: data.updated_by ?? null,
         updated_at: new Date(),
       })

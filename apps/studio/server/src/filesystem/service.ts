@@ -1,5 +1,5 @@
 import nodePath from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { eq, and, like, or, sql } from '@jiku-studio/db'
 import { db } from '@jiku-studio/db'
 import {
@@ -194,6 +194,7 @@ export class FilesystemService {
       size_bytes: sizeBytes,
       mime_type: mimeType,
       content_cache: sizeBytes <= 50_000 ? content : null,
+      content_hash: createHash('sha256').update(content).digest('hex'),
       created_by: userId ?? null,
       updated_by: userId ?? null,
     })

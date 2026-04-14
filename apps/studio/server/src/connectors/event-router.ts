@@ -899,6 +899,11 @@ async function drainConnectorQueue(
   // Send typing indicator
   connectorAdapter?.sendTyping?.({ ref_keys: originalEvent.ref_keys }).catch(() => {})
 
+  // IMPORTANT: keep `runningConversations` flagged until the full stream is
+  // drained AND the assistant message is persisted. Releasing early lets the
+  // next queued message start while the previous assistant reply is still
+  // being saved — both user messages then read the same stale
+  // `active_tip_message_id` and end up as siblings (spurious branches).
   runningConversations.add(conversationId)
 
   try {
@@ -914,8 +919,9 @@ async function drainConnectorQueue(
     const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
     const [observerStream, drainStream] = runResult.stream.tee()
 
-    // Drain observer branch
-    ;(async () => {
+    // Drain observer branch (SSE broadcast) — runs in parallel with the
+    // resolver's drain; we await it below together with next.resolve.
+    const observerDrain = (async () => {
       try {
         const obsReader = observerStream.getReader()
         while (true) {
@@ -929,12 +935,20 @@ async function drainConnectorQueue(
       }
     })()
 
-    next.resolve({ ...runResult, stream: drainStream })
+    // MUST await: the resolver reads the stream end-to-end, and the assistant
+    // message is persisted when the underlying stream finalizes. If we return
+    // before this, the recursive drain below starts the next queued run while
+    // the previous assistant row hasn't been written → sibling race.
+    await Promise.all([
+      Promise.resolve(next.resolve({ ...runResult, stream: drainStream })),
+      observerDrain,
+    ])
   } catch (err) {
     next.reject(err instanceof Error ? err : new Error(String(err)))
   } finally {
     runningConversations.delete(conversationId)
-    // Recursively drain next
+    // Recursively drain next — safe now because runningConversations was held
+    // until the previous run fully flushed.
     drainConnectorQueue(conversationId, agentId, projectId, connectorId, originalEvent, binding, identity, runtimeManager)
       .catch(() => {})
   }

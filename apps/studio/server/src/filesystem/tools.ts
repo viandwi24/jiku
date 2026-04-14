@@ -1,6 +1,7 @@
 import { z } from 'zod'
-import type { ToolDefinition, ToolStreamChunk } from '@jiku/types'
+import type { ToolDefinition, ToolStreamChunk, ToolContext } from '@jiku/types'
 import { getFilesystemService } from './factory.ts'
+import { recordFsRead, getFsRead, forgetFsRead, getFileByPath } from '@jiku-studio/db'
 
 /**
  * Build filesystem tools for a project.
@@ -20,9 +21,19 @@ const FS_READ_HINT =
 // Shown when write/mutate tools are available.
 // Key rule: do NOT write to disk unless the user explicitly wants a file saved.
 const FS_WRITE_HINT =
-  'Use fs_write / fs_move / fs_delete ONLY when the user explicitly asks to save, move, or delete ' +
-  'a file, or when the task inherently requires persisting output to disk (e.g. "save this as a report"). ' +
-  'For all other responses, reply in the conversation — do NOT write files unless asked.'
+  'Use fs_write / fs_edit / fs_move / fs_delete ONLY when the user explicitly asks to save, ' +
+  'modify, move, or delete a file, or when the task inherently requires persisting output to disk. ' +
+  'For all other responses, reply in the conversation — do NOT write files unless asked.\n\n' +
+  'READ-BEFORE-WRITE: fs_write and fs_edit require that you have fs_read the file earlier in this ' +
+  'conversation. Exception: fs_write for a brand-new file (path does not exist yet) is allowed ' +
+  'without a prior read. If the file was modified externally since your last read, the tool will ' +
+  'return STALE_FILE_STATE — call fs_read again to re-sync, then retry.\n\n' +
+  'TOOL CHOICE:\n' +
+  '  • fs_append — for append-only workflows (growing logs, message journals, event streams). ' +
+  'Cheapest, no read required, no anchor needed.\n' +
+  '  • fs_edit   — for partial changes to existing files (substring replacement). Requires prior fs_read.\n' +
+  '  • fs_write  — for brand-new files or full rewrites. For existing files, requires prior fs_read ' +
+  'and sends the whole content — wasteful for small edits.'
 
 /**
  * Per-extension hints injected into fs_read when a binary file is detected.
@@ -31,6 +42,42 @@ const FS_WRITE_HINT =
  * Key: lowercase extension without dot (e.g. "xlsx"). Value: human-readable hint.
  */
 export type BinaryFileHints = Map<string, string>
+
+/**
+ * Claude-Code-style read-before-write gate.
+ * Returns null if OK to proceed, otherwise returns an error payload the tool
+ * should return to the model verbatim.
+ */
+async function checkReadGate(
+  projectId: string,
+  conversationId: string | null | undefined,
+  path: string,
+  opts: { allowMissingRead: boolean },
+): Promise<{ error: string; code: 'MUST_READ_FIRST' | 'STALE_FILE_STATE'; hint?: string } | null> {
+  if (!conversationId) return null // no conversation context → skip gate (e.g. cron)
+
+  const current = await getFileByPath(projectId, path)
+  const tracked = await getFsRead(conversationId, path)
+
+  if (!tracked) {
+    if (opts.allowMissingRead && !current) return null // new-file create
+    return {
+      code: 'MUST_READ_FIRST',
+      error: `MUST_READ_FIRST: file "${path}" has not been fs_read in this conversation yet. Call fs_read first, then retry.`,
+      hint: 'Claude-Code-style safety: you must observe a file before mutating it.',
+    }
+  }
+
+  if (current && current.version !== tracked.version) {
+    return {
+      code: 'STALE_FILE_STATE',
+      error: `STALE_FILE_STATE: file "${path}" was modified externally since your last fs_read (you saw v${tracked.version}, now v${current.version}). Call fs_read again to re-sync, then retry.`,
+    }
+  }
+
+  // File was tracked but has been deleted on disk — allow write (creates new).
+  return null
+}
 
 export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFileHints): ToolDefinition[] {
   const tools: ToolDefinition[] = [
@@ -64,7 +111,14 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       meta: {
         id: 'fs_read',
         name: 'fs_read',
-        description: 'Read the content of a file from the project filesystem',
+        description:
+          'Read a file from the project filesystem. Supports line-range reads via `offset` + `limit`. ' +
+          'For large files the response is truncated to the first 2000 lines (configurable) and long ' +
+          'lines are truncated to 2000 chars — a hint in the response tells you how to page through. ' +
+          'Content is returned in `cat -n` format (each line prefixed with its 1-based line number), ' +
+          'so you can reference exact line numbers in fs_edit `old_string` anchors. ' +
+          'Always fs_read a file before fs_write or fs_edit — the session read-tracker uses it to ' +
+          'enforce read-before-write and to detect external modification (STALE_FILE_STATE).',
         group: 'filesystem',
       },
       prompt: FS_READ_HINT,
@@ -72,33 +126,48 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       modes: ['chat', 'task'],
       input: z.object({
         path: z.string().describe("Full file path, e.g. '/src/index.ts'"),
+        offset: z.number().int().min(1).optional().describe(
+          '1-based line number to start reading from. Default: 1 (beginning).',
+        ),
+        limit: z.number().int().min(1).max(5000).optional().describe(
+          'Maximum number of lines to return. Default: 2000. Cap: 5000.',
+        ),
       }),
-      execute: async (args: unknown) => {
-        const { path } = args as { path: string }
+      execute: async (args: unknown, ctx: ToolContext) => {
+        const { path, offset: rawOffset, limit: rawLimit } = args as {
+          path: string; offset?: number; limit?: number
+        }
+        const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
           const result = await fs.read(path)
           const content: string = result.content
 
+          // Register the read in the session tracker so subsequent writes/edits
+          // are allowed and can detect staleness.
+          if (conversationId) {
+            const file = await getFileByPath(projectId, path)
+            if (file) {
+              await recordFsRead({
+                conversation_id: conversationId,
+                path,
+                version: file.version,
+                content_hash: file.content_hash ?? null,
+              })
+            }
+          }
+
           // Binary files are stored with a __b64__: prefix.
-          // Returning large base64 blobs to the model wastes context tokens and
-          // can exceed the context window entirely. We intercept here and return
-          // structured metadata + a tool hint instead.
           if (content.startsWith('__b64__:')) {
             const ext       = path.split('.').pop()?.toLowerCase() ?? ''
             const base64    = content.slice('__b64__:'.length)
-            // Base64 is ~4/3 of the binary size, so decoded ≈ base64.length * 0.75
             const approxBytes = Math.round(base64.length * 0.75)
             const approxKB    = Math.round(approxBytes / 1024)
 
-            // Check if a specialised tool is registered for this extension.
-            // binaryHints is populated by the runtime manager from the active plugin registry.
             const specialisedTool = binaryHints?.get(ext)
 
             if (specialisedTool) {
-              // Always block raw binary when a dedicated tool exists — the tool
-              // knows how to handle the file efficiently without blowing context.
               return {
                 path,
                 type: 'binary',
@@ -113,8 +182,6 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
               }
             }
 
-            // No specialised tool — return content only if small enough.
-            // Threshold: 256 KB decoded (~340 KB base64 / ~85 K tokens).
             const MAX_BINARY_BYTES = 256 * 1024
             if (approxBytes > MAX_BINARY_BYTES) {
               return {
@@ -131,12 +198,56 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
               }
             }
 
-            // Small binary with no dedicated tool — return as-is.
-            // (Useful for small images passed to vision-capable models, etc.)
             return { path, content, version: result.version, cached: result.cached }
           }
 
-          return { path, content, version: result.version, cached: result.cached }
+          // Text file — paginate + line-number prefix + per-line truncation.
+          const MAX_LIMIT = 5000
+          const DEFAULT_LIMIT = 2000
+          const MAX_LINE_CHARS = 2000
+          const lines = content.split('\n')
+          const totalLines = lines.length
+          const offset = Math.max(1, rawOffset ?? 1)
+          const limit = Math.min(rawLimit ?? DEFAULT_LIMIT, MAX_LIMIT)
+          const startIdx = Math.min(offset - 1, totalLines)
+          const endIdx = Math.min(startIdx + limit, totalLines)
+          const slice = lines.slice(startIdx, endIdx)
+
+          let longLinesTruncated = 0
+          const padWidth = String(endIdx).length
+          const formatted = slice.map((ln, i) => {
+            const lineNo = startIdx + i + 1
+            let rendered = ln
+            if (ln.length > MAX_LINE_CHARS) {
+              rendered = ln.slice(0, MAX_LINE_CHARS) + `  …[+${ln.length - MAX_LINE_CHARS} chars truncated]`
+              longLinesTruncated++
+            }
+            return `${String(lineNo).padStart(padWidth, ' ')}\t${rendered}`
+          }).join('\n')
+
+          const truncated = endIdx < totalLines
+          const hints: string[] = []
+          if (truncated) {
+            hints.push(
+              `File has ${totalLines} lines; showing ${startIdx + 1}-${endIdx}. ` +
+              `To see more: fs_read({ path: "${path}", offset: ${endIdx + 1}, limit: ${limit} }).`,
+            )
+          }
+          if (longLinesTruncated > 0) {
+            hints.push(`${longLinesTruncated} line(s) were truncated at ${MAX_LINE_CHARS} chars.`)
+          }
+
+          return {
+            path,
+            content: formatted,
+            version: result.version,
+            cached: result.cached,
+            start_line: slice.length > 0 ? startIdx + 1 : 0,
+            end_line: endIdx,
+            total_lines: totalLines,
+            truncated,
+            ...(hints.length > 0 ? { hint: hints.join(' ') } : {}),
+          }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'File not found' }
         }
@@ -147,7 +258,10 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       meta: {
         id: 'fs_write',
         name: 'fs_write',
-        description: "Write content to a file in the project filesystem. Creates the file if it doesn't exist, overwrites if it does.",
+        description:
+          "Write (overwrite) content to a file in the project filesystem. Creates the file if " +
+          "it doesn't exist. For modifying part of an existing file, PREFER fs_edit. " +
+          "REQUIRES a prior fs_read in this conversation, except when creating a brand-new file.",
         group: 'filesystem',
       },
       prompt: FS_WRITE_HINT,
@@ -156,20 +270,201 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       input: z.object({
         path: z.string().describe("Full file path, e.g. '/src/utils/helper.ts'"),
         content: z.string().describe('File content to write'),
-        expected_version: z.number().int().optional().describe(
-          'Optimistic lock. Pass the version value from a previous fs_read response. ' +
-          'If the file was modified since, the write will be rejected with a conflict error.',
-        ),
       }),
-      execute: async (args: unknown) => {
-        const { path, content, expected_version } = args as { path: string; content: string; expected_version?: number }
+      execute: async (args: unknown, ctx: ToolContext) => {
+        const { path, content } = args as { path: string; content: string }
+        const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        const gate = await checkReadGate(projectId, conversationId, path, { allowMissingRead: true })
+        if (gate) return gate
+
         try {
-          const file = await fs.write(path, content, { expectedVersion: expected_version })
+          // Pass the tracked version as expected_version so the backend's
+          // optimistic lock gives a second line of defence.
+          const tracked = conversationId ? await getFsRead(conversationId, path) : null
+          const file = await fs.write(path, content, {
+            expectedVersion: tracked?.version,
+          })
+          // Refresh tracker with the new version so subsequent edits are allowed.
+          if (conversationId) {
+            await recordFsRead({
+              conversation_id: conversationId,
+              path,
+              version: file.version,
+              content_hash: file.content_hash ?? null,
+            })
+          }
           return { success: true, path: file.path, size_bytes: file.size_bytes, version: file.version }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Write failed' }
+        }
+      },
+    },
+
+    {
+      meta: {
+        id: 'fs_edit',
+        name: 'fs_edit',
+        description:
+          'Edit a file by replacing a specific substring. Preferred over fs_write for partial ' +
+          'changes — saves tokens and preserves the rest of the file verbatim. ' +
+          '`old_string` must appear EXACTLY ONCE in the file unless `replace_all` is true. ' +
+          'IMPORTANT: fs_read returns content in `cat -n` format (each line prefixed with a line ' +
+          'number + tab). Do NOT include those line-number prefixes in `old_string` / `new_string` — ' +
+          'match against the raw file content only. ' +
+          'REQUIRES a prior fs_read of the file in this conversation. If the file was modified ' +
+          'externally since your last read, returns STALE_FILE_STATE — re-read and retry.',
+        group: 'filesystem',
+      },
+      prompt: FS_WRITE_HINT,
+      permission: 'fs:write',
+      modes: ['chat', 'task'],
+      input: z.object({
+        path: z.string().describe("Full file path, e.g. '/src/utils/helper.ts'"),
+        old_string: z.string().describe(
+          'The exact text to replace. Include enough surrounding context to make it unique in ' +
+          'the file (indentation, neighbouring lines) unless you set replace_all.',
+        ),
+        new_string: z.string().describe('The replacement text. May be empty string to delete.'),
+        replace_all: z.boolean().default(false).describe(
+          'If true, replace every occurrence of old_string. If false (default), old_string must ' +
+          'appear exactly once.',
+        ),
+      }),
+      execute: async (args: unknown, ctx: ToolContext) => {
+        const { path, old_string, new_string, replace_all } = args as {
+          path: string; old_string: string; new_string: string; replace_all: boolean
+        }
+        const conversationId = ctx?.runtime?.conversation_id
+        const fs = await getFilesystemService(projectId)
+        if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        if (old_string === new_string) {
+          return { error: 'old_string and new_string are identical — nothing to change.' }
+        }
+
+        const gate = await checkReadGate(projectId, conversationId, path, { allowMissingRead: false })
+        if (gate) return gate
+
+        try {
+          const existing = await fs.read(path)
+          const content: string = existing.content
+
+          if (content.startsWith('__b64__:')) {
+            return { error: 'fs_edit cannot modify binary files. Use a specialised tool or fs_write.' }
+          }
+
+          // Count occurrences
+          let occurrences = 0
+          let idx = content.indexOf(old_string)
+          while (idx !== -1) {
+            occurrences++
+            idx = content.indexOf(old_string, idx + old_string.length)
+          }
+
+          if (occurrences === 0) {
+            return {
+              error: `old_string not found in "${path}". The file may have changed, or the snippet doesn't match exactly (check whitespace/indentation). fs_read the file again and retry.`,
+            }
+          }
+          if (occurrences > 1 && !replace_all) {
+            return {
+              error: `old_string appears ${occurrences} times in "${path}" — ambiguous. Either add more surrounding context to make it unique, or pass replace_all: true.`,
+              occurrences,
+            }
+          }
+
+          const updated = replace_all
+            ? content.split(old_string).join(new_string)
+            : content.replace(old_string, new_string)
+
+          const tracked = conversationId ? await getFsRead(conversationId, path) : null
+          const file = await fs.write(path, updated, { expectedVersion: tracked?.version })
+
+          if (conversationId) {
+            await recordFsRead({
+              conversation_id: conversationId,
+              path,
+              version: file.version,
+              content_hash: file.content_hash ?? null,
+            })
+          }
+
+          return {
+            success: true,
+            path: file.path,
+            replaced: replace_all ? occurrences : 1,
+            size_bytes: file.size_bytes,
+            version: file.version,
+          }
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'Edit failed' }
+        }
+      },
+    },
+
+    {
+      meta: {
+        id: 'fs_append',
+        name: 'fs_append',
+        description:
+          'Append content to the end of a file. Creates the file if it does not exist. ' +
+          'DOES NOT require a prior fs_read — append is purely additive, no chance of clobber. ' +
+          'Prefer this over fs_write / fs_edit for append-only workflows (message journals, logs, ' +
+          'event streams, incremental report generation) — saves a lot of tokens on large files. ' +
+          'After append, any prior session read-tracker entry for this path is cleared, so if you ' +
+          'later want to fs_edit the file you must fs_read it again first.',
+        group: 'filesystem',
+      },
+      prompt: FS_WRITE_HINT,
+      permission: 'fs:write',
+      modes: ['chat', 'task'],
+      input: z.object({
+        path: z.string().describe("Full file path, e.g. '/logs/events.jsonl'"),
+        content: z.string().describe('Content to append. Include your own trailing newline if you want line-delimited entries.'),
+      }),
+      execute: async (args: unknown, ctx: ToolContext) => {
+        const { path, content } = args as { path: string; content: string }
+        const conversationId = ctx?.runtime?.conversation_id
+        const fs = await getFilesystemService(projectId)
+        if (!fs) return { error: 'Filesystem is not configured for this project' }
+        try {
+          let combined: string
+          let previousSize = 0
+          const existing = await getFileByPath(projectId, path)
+          if (existing) {
+            // Read current content server-side (no model token cost) and
+            // concatenate. For very large files this still loads into memory —
+            // acceptable for our S3 text-file size cap (5 MB).
+            const current = await fs.read(path)
+            if (current.content.startsWith('__b64__:')) {
+              return { error: 'fs_append cannot append to binary files.' }
+            }
+            previousSize = Buffer.byteLength(current.content, 'utf-8')
+            combined = current.content + content
+          } else {
+            combined = content
+          }
+
+          const file = await fs.write(path, combined)
+
+          // Invalidate any stale tracker — the agent hasn't observed the new
+          // tail, so force a re-read before any future fs_edit / fs_write.
+          if (conversationId) await forgetFsRead(conversationId, path)
+
+          return {
+            success: true,
+            path: file.path,
+            appended_bytes: Buffer.byteLength(content, 'utf-8'),
+            previous_size_bytes: previousSize,
+            size_bytes: file.size_bytes,
+            version: file.version,
+            created: !existing,
+          }
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'Append failed' }
         }
       },
     },
@@ -188,12 +483,16 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         from: z.string().describe('Current file path'),
         to: z.string().describe('New file path'),
       }),
-      execute: async (args: unknown) => {
+      execute: async (args: unknown, ctx: ToolContext) => {
         const { from, to } = args as { from: string; to: string }
+        const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
           await fs.move(from, to)
+          // Tracker rows are keyed by path — drop the old path, the agent can
+          // fs_read the new path if it needs to mutate it.
+          if (conversationId) await forgetFsRead(conversationId, from)
           return { success: true, from, to }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Move failed' }
@@ -214,12 +513,14 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       input: z.object({
         path: z.string().describe('File path to delete'),
       }),
-      execute: async (args: unknown) => {
+      execute: async (args: unknown, ctx: ToolContext) => {
         const { path } = args as { path: string }
+        const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
         try {
           await fs.delete(path)
+          if (conversationId) await forgetFsRead(conversationId, path)
           return { success: true, path }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Delete failed' }
@@ -255,7 +556,6 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
           return { error: err instanceof Error ? err.message : 'Search failed' }
         }
       },
-      // Plan 15.1: Streaming search — yields progress per batch of matches
       async *executeStream(args: unknown): AsyncGenerator<ToolStreamChunk, unknown> {
         const { query, extension } = args as { query: string; extension?: string }
         const fs = await getFilesystemService(projectId)

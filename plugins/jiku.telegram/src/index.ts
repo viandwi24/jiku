@@ -899,7 +899,7 @@ class TelegramAdapter extends ConnectorAdapter {
     markdown: boolean,
     commonOpts: Record<string, unknown>,
   ): Promise<ConnectorSendResult> {
-    const TICK_MS = 2000
+    const TICK_MS = 1000
     const sent = await this.bot!.api.sendMessage(chatId, '⌛', commonOpts as any)
     const messageId = sent.message_id
 

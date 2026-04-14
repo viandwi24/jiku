@@ -1,3 +1,24 @@
+## Phase (2026-04-14) — Filesystem: read-before-write + stale detection + fs_edit — SHIPPED
+
+Adopted Claude-Code-style file protection: `fs_write` / `fs_edit` require a prior `fs_read` of the path in the same conversation, and reject on external modification. New `fs_edit` tool does substring replacement — preferred over `fs_write` for partial changes (saves tokens + preserves rest of file verbatim).
+
+Tracker persisted in new table `conversation_fs_reads` keyed by `(conversation_id, path)`; upsert on read, consult on mutate, drop on move/delete. Migration `0027_conversation_fs_reads.sql`.
+
+Relevant files:
+- `apps/studio/db/src/migrations/0027_conversation_fs_reads.sql`
+- `apps/studio/db/src/schema/conversation-fs-reads.ts`
+- `apps/studio/db/src/queries/conversation-fs-reads.ts` — `recordFsRead`, `getFsRead`, `forgetFsRead`, `pruneOldFsReads`
+- `apps/studio/server/src/filesystem/tools.ts` — `checkReadGate` helper, new `fs_edit`, updated `fs_read`/`fs_write`/`fs_move`/`fs_delete`
+- `docs/feats/filesystem.md`
+
+---
+
+## Phase (2026-04-14) — fix: spurious branch siblings in queued connector messages — SHIPPED
+
+`drainConnectorQueue` released `runningConversations` before the previous run's stream finished draining, so the next queued `runtimeManager.run()` saved its user message against a stale `active_tip_message_id`. Fix: await both the resolver and the observer SSE branch before releasing. File: `apps/studio/server/src/connectors/event-router.ts`.
+
+---
+
 ## Phase (2026-04-13) — Channels UI revision + event direction + raw_payload — SHIPPED
 
 Follow-up to the channels tab refactor:

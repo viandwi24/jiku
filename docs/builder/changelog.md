@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-04-14 — filesystem: paginated fs_read (cat-n format) + fs_append + version-bump bug fix
+
+Follow-up to the read-before-write work:
+- **Bug fix**: `upsertFile()` was not incrementing `version` on update, so optimistic locking was broken in practice (tracker always matched DB because both stayed at 1). Now `version` bumps on every write, `content_version` bumps only when `content_hash` changes. Service layer (`filesystem/service.ts`) now computes `sha256(content)` and passes it as `content_hash` to the query.
+- **fs_read pagination (Claude-Code `Read` parity)**: `offset` (1-based) + `limit` (default 2000, max 5000) params. Content is returned in `cat -n` format (line-number prefix + tab). Per-line truncation at 2000 chars. Response fields: `start_line`, `end_line`, `total_lines`, `truncated`, `hint` — hint tells the model exactly how to page through: `fs_read({ path, offset: end+1, limit })`. Tool description warns the model NOT to include line-number prefixes in `fs_edit` old_string.
+- **fs_append tool**: zero-overhead append. No read-gate (append = purely additive, no clobber). Server-side concatenation (no model tokens). After append, tracker row for that path is cleared — forces re-read if the agent later wants to `fs_edit`. Preferred over `fs_edit` for growing logs / message journals / event streams.
+- **FS_WRITE_HINT** rewritten as a tool-choice guide: `fs_append` → append-only, `fs_edit` → partial change, `fs_write` → new file or full rewrite.
+- Files: `apps/studio/db/src/queries/filesystem.ts`, `apps/studio/server/src/filesystem/{service.ts,tools.ts}`.
+
+## 2026-04-14 — filesystem: Claude-Code-style read-before-write + stale detection + fs_edit
+
+- New table `conversation_fs_reads (conversation_id, path, version, content_hash, read_at)` — session tracker of files the agent has observed. Cascades on conversation delete. Migration `0027_conversation_fs_reads.sql`.
+- `fs_read` upserts the tracker with the file's current `version` + `content_hash`.
+- `fs_write` / `fs_edit` now enforce: (a) file must have been `fs_read` earlier in this conversation (exception: `fs_write` for brand-new files), (b) tracker version must equal current DB version (otherwise → `STALE_FILE_STATE`).
+- New `fs_edit` tool — substring replacement (`old_string → new_string`, optional `replace_all`). Token-efficient for partial file changes — no more read+write cycle for small patches. Rejects binary files; `old_string` must be unique unless `replace_all: true`.
+- Tool descriptions + FS_WRITE_HINT updated to document the read-before-write contract and when to use `fs_edit` vs `fs_write`.
+- `fs_move` / `fs_delete` drop the tracker row for the old path so stale entries don't block future writes at the same path.
+- Files: `apps/studio/db/src/migrations/0027_conversation_fs_reads.sql`, `apps/studio/db/src/schema/conversation-fs-reads.ts`, `apps/studio/db/src/queries/conversation-fs-reads.ts`, `apps/studio/db/src/{schema,queries,index}.ts`, `apps/studio/server/src/filesystem/tools.ts`, `docs/feats/filesystem.md`.
+
+## 2026-04-14 — fix: spurious sibling branches when queueing connector messages
+
+- **Root cause:** `drainConnectorQueue` in `event-router.ts` called `next.resolve(runResult)` **without awaiting** it. The resolver is the only code that reads the streamed run output end-to-end, and the assistant message is only persisted when the stream finalizes. The `finally` block therefore released `runningConversations` and recursively drained the next queued message while the previous run's assistant row was still being written. The next `runtimeManager.run()` then saved its user message against a **stale `active_tip_message_id`** (the previous user message, not the yet-unsaved assistant reply), producing siblings under the same parent — i.e. spurious branches.
+- **Fix:** await the resolver's drain (wrapped in `Promise.resolve` since the queue types resolve as `void`) together with the observer SSE branch before releasing `runningConversations`. The next queued dequeue now always starts after the previous run's assistant message has landed.
+- Reproducible when a single Telegram chat sends ≥2 messages back-to-back faster than the agent replies. Non-queued path (first message) was already correct — it awaited `drainStream` fully before `finally`.
+- Files: `apps/studio/server/src/connectors/event-router.ts`.
+
 ## 2026-04-14 — harness: replace 2-phase narration with clawcode-parity single-phase loop
 
 - **Problem:** Previous harness adapter was 2-phase (forced narration via `tool_choice=none` → action via `tool_choice=auto`). The skip-phase-2 shortcut relied on a regex (`ACTION_INTENT_RE`) to classify narration as action-intent vs final-answer. Regex false-negatived on Indonesian meN- verb forms ("Mengirim…") causing cron-triggered runs to complete phase 1 but never reach phase 2 — the delivery tool call silently dropped. Regex-based natural-language classification was inherently fragile.

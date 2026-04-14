@@ -9,7 +9,9 @@ import {
   upsertUserIdentity,
   findUserByIdentity,
   getConnectorTargets,
+  getConnectorTargetsEnriched,
   getConnectorTargetByName,
+  getConnectorTargetsByName,
   getConnectorTargetById,
   getConnectorScopes,
   getConnectorById,
@@ -377,7 +379,12 @@ export function buildConnectorTools(projectId: string) {
       meta: {
         id: 'connector_list_targets',
         name: 'List Channel Targets',
-        description: 'List named channel targets — predefined destinations (groups, channels, DMs) you can send to by name without knowing chat IDs. Call this before connector_send_to_target.',
+        description:
+          'List named channel targets across the project — predefined destinations (groups, ' +
+          'channels, DMs) you can send to by name without knowing chat IDs. Each row also includes ' +
+          'the owning connector (id, plugin_id/adapter, display_name, status) so you know which ' +
+          'bot / platform delivers the message, and can disambiguate when multiple connectors ' +
+          'have targets with the same name. Call this before connector_send_to_target.',
         group: 'connector',
       },
       permission: '*',
@@ -387,16 +394,21 @@ export function buildConnectorTools(projectId: string) {
       }),
       execute: async (args) => {
         const { connector_id } = args as { connector_id?: string }
-        const targets = await getConnectorTargets(projectId, connector_id)
+        const rows = await getConnectorTargetsEnriched(projectId, connector_id)
         return {
-          targets: targets.map(t => ({
-            id: t.id,
-            connector_id: t.connector_id,
-            name: t.name,
-            display_name: t.display_name,
-            description: t.description,
-            ref_keys: t.ref_keys,
-            scope_key: t.scope_key,
+          targets: rows.map(({ target, connector }) => ({
+            id: target.id,
+            name: target.name,
+            display_name: target.display_name,
+            description: target.description,
+            ref_keys: target.ref_keys,
+            scope_key: target.scope_key,
+            connector: {
+              id: connector.id,
+              plugin_id: connector.plugin_id,
+              display_name: connector.display_name,
+              status: connector.status,
+            },
           })),
         }
       },
@@ -407,7 +419,12 @@ export function buildConnectorTools(projectId: string) {
         id: 'connector_send_to_target',
         side_effectful: true,
         name: 'Send to Channel Target',
-        description: 'Send a message to a named channel target. Use connector_list_targets first to see available targets.',
+        description:
+          'Send a message to a named channel target. If `connector_id` is omitted and the target ' +
+          'name matches exactly one connector in the project, the call proceeds. If the name is ' +
+          'ambiguous (same name on multiple connectors), the tool returns `AMBIGUOUS_TARGET` with a ' +
+          'list of candidate connectors — retry with explicit `connector_id`. Use connector_list_targets ' +
+          'first to see available targets + their connector metadata.',
         group: 'connector',
       },
       permission: '*',
@@ -415,7 +432,7 @@ export function buildConnectorTools(projectId: string) {
       input: z.object({
         target_name: z.string().describe('Target name from connector_list_targets, e.g. "morning-briefing"'),
         text: z.string().describe('Message text'),
-        connector_id: z.string().optional().describe('Connector ID (omit if target name is unique in the project)'),
+        connector_id: z.string().optional().describe('Connector ID. Required only when target name is ambiguous across connectors.'),
         markdown: z.boolean().default(true),
         simulate_typing: z.boolean().default(false).describe('When true, the adapter shows a "typing" effect by editing a placeholder. Off for notifications/broadcasts.'),
       }),
@@ -423,12 +440,43 @@ export function buildConnectorTools(projectId: string) {
         const { target_name, text, connector_id, markdown, simulate_typing } = args as {
           target_name: string; text: string; connector_id?: string; markdown: boolean; simulate_typing: boolean
         }
-        const target = await getConnectorTargetByName(projectId, target_name, connector_id)
-        if (!target) {
-          return { success: false, error: `Target "${target_name}" not found. Use connector_list_targets to see available targets.` }
+
+        const matches = await getConnectorTargetsByName(projectId, target_name, connector_id)
+
+        if (matches.length === 0) {
+          return {
+            success: false,
+            code: 'TARGET_NOT_FOUND',
+            error: `Target "${target_name}" not found${connector_id ? ` on connector ${connector_id}` : ''}. Use connector_list_targets to see available targets.`,
+          }
         }
+
+        if (matches.length > 1) {
+          return {
+            success: false,
+            code: 'AMBIGUOUS_TARGET',
+            error:
+              `AMBIGUOUS_TARGET: "${target_name}" exists on ${matches.length} connectors. ` +
+              `Retry with an explicit connector_id from the candidates list.`,
+            candidates: matches.map(({ connector, target }) => ({
+              target_id: target.id,
+              connector_id: connector.id,
+              connector_display_name: connector.display_name,
+              plugin_id: connector.plugin_id,
+              status: connector.status,
+            })),
+          }
+        }
+
+        const { target, connector } = matches[0]!
         const adapter = connectorRegistry.getAdapterForConnector(target.connector_id)
-        if (!adapter) return { success: false, error: 'Connector not active' }
+        if (!adapter) {
+          return {
+            success: false,
+            code: 'CONNECTOR_INACTIVE',
+            error: `Connector "${connector.display_name}" (${connector.plugin_id}) is not active (status=${connector.status}).`,
+          }
+        }
 
         const sendTarget: ConnectorTarget = {
           ref_keys: target.ref_keys as Record<string, string>,

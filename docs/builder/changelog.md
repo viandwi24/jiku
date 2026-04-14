@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-14 — connectors: enrich list_targets + ambiguity-safe send_to_target
+
+Multi-connector safety for named channel targets:
+- **`connector_list_targets`** now returns each target together with its owning connector (id, plugin_id, display_name, status) in a `connector` block, so the agent can pick the right bot without a follow-up `connector_list` call and can tell platforms apart when multiple are configured.
+- **`connector_send_to_target`** now detects ambiguity. When `connector_id` is omitted and the target name resolves to more than one connector, the tool returns `code: 'AMBIGUOUS_TARGET'` with a `candidates: [...]` list (connector_id, display_name, plugin_id, status). Previously it silently picked the first match — a latent "wrong bot delivers the message" bug. Distinct error codes also added: `TARGET_NOT_FOUND`, `CONNECTOR_INACTIVE`.
+- New query `getConnectorTargetsByName()` (plural) for the ambiguity check, and `getConnectorTargetsEnriched()` for the list endpoint.
+- Files: `apps/studio/db/src/queries/connector.ts`, `apps/studio/server/src/connectors/tools.ts`.
+
 ## 2026-04-14 — filesystem: paginated fs_read (cat-n format) + fs_append + version-bump bug fix
 
 Follow-up to the read-before-write work:

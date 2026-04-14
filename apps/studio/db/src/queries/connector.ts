@@ -653,6 +653,22 @@ export async function getConnectorTargets(projectId: string, connectorId?: strin
   return rows.map(r => r.target)
 }
 
+// Enriched variant — returns the target together with its connector metadata
+// so callers (agent tools, UI) don't need a second round-trip to know which
+// adapter / bot owns the target.
+export async function getConnectorTargetsEnriched(projectId: string, connectorId?: string) {
+  const conditions = [eq(connectors.project_id, projectId)]
+  if (connectorId) conditions.push(eq(connector_targets.connector_id, connectorId))
+
+  const rows = await db
+    .select({ target: connector_targets, connector: connectors })
+    .from(connector_targets)
+    .innerJoin(connectors, eq(connector_targets.connector_id, connectors.id))
+    .where(and(...conditions))
+    .orderBy(desc(connector_targets.created_at))
+  return rows
+}
+
 export async function getConnectorTargetById(id: string) {
   const rows = await db.select().from(connector_targets).where(eq(connector_targets.id, id)).limit(1)
   return rows[0] ?? null
@@ -672,6 +688,24 @@ export async function getConnectorTargetByName(projectId: string, name: string, 
     .where(and(...conditions))
     .limit(1)
   return rows[0]?.target ?? null
+}
+
+// Plural lookup — returns every target matching the name across the project
+// (optionally filtered by connector). Callers use this to detect ambiguity
+// (same name registered on multiple connectors) so the agent can be told to
+// disambiguate by passing connector_id.
+export async function getConnectorTargetsByName(projectId: string, name: string, connectorId?: string) {
+  const conditions = [
+    eq(connectors.project_id, projectId),
+    eq(connector_targets.name, name),
+  ]
+  if (connectorId) conditions.push(eq(connector_targets.connector_id, connectorId))
+
+  return db
+    .select({ target: connector_targets, connector: connectors })
+    .from(connector_targets)
+    .innerJoin(connectors, eq(connector_targets.connector_id, connectors.id))
+    .where(and(...conditions))
 }
 
 export async function getConnectorTargetsForConnector(connectorId: string) {

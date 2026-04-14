@@ -4,6 +4,12 @@
 
 Connectors allow agents to receive input from and send output to third-party platforms (Telegram, Discord, etc.) in a unified way. All runs go through `runtime.run()` — no special paths. Binding rules route incoming events to specific agents and adapter types.
 
+## Multi-connector safety for named targets (2026-04-14)
+
+- `connector_list_targets` enriches each target with `{ connector: { id, plugin_id, display_name, status } }` — one call gives the agent enough context to pick the right bot/platform without a follow-up `connector_list`.
+- `connector_send_to_target` detects ambiguity: if `connector_id` is omitted and the target name matches more than one connector, it returns `{ code: 'AMBIGUOUS_TARGET', candidates: [...] }` instead of silently using the first match. Other error codes: `TARGET_NOT_FOUND`, `CONNECTOR_INACTIVE`.
+- Backing queries: `getConnectorTargetsEnriched(projectId, connectorId?)` and `getConnectorTargetsByName(projectId, name, connectorId?)`.
+
 ## Channels UI revision (2026-04-13)
 
 - **Project channels page is tabbed**: `Connectors | Messages | Events`. Tab + filters live in URL search params (`?tab=events&connector_id=...`).

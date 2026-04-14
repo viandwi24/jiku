@@ -196,6 +196,20 @@ async function drainInboundQueue(): Promise<void> {
   }
 }
 
+/**
+ * Per-connector "last deactivate" timestamps.
+ *
+ * Why: Telegram's Bot API keeps a bot's long-poll slot reserved for ~30s after
+ * our process stops polling. Reactivating the same token inside that window
+ * results in `getUpdates` returning 409 Conflict — and grammy retries silently
+ * without our code noticing. The visible symptom is "bot started (polling)"
+ * in logs but zero inbound updates. We track last-deactivate per connectorId
+ * and, on reactivate, await the remainder of the 30s window before calling
+ * `bot.start()`.
+ */
+const lastDeactivateByConnector = new Map<string, number>()
+const REACTIVATE_WAIT_MS = 30_000
+
 function enqueueInboundEvent(run: () => Promise<void>): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     inboundQueue.push({ run, resolve, reject })
@@ -269,6 +283,8 @@ class TelegramAdapter extends ConnectorAdapter {
   private bot: Bot | null = null
   private projectId: string | null = null
   private connectorId: string | null = null  // UUID — needed for non-blocking raw event logging
+  private lastEventAt: number | null = null  // epoch ms of last inbound update (for health checks)
+  private pollingStopRequested = false      // set by onDeactivate so the reconnect loop exits cleanly
   private botUsername: string | null = null  // cached @username (lowercased, no '@') for mention detection
   private botUserId: number | null = null    // cached numeric id for text_mention + reply-to-bot detection
 
@@ -732,7 +748,16 @@ class TelegramAdapter extends ConnectorAdapter {
 
     this.projectId = ctx.projectId
     this.connectorId = ctx.connectorId
+    this.pollingStopRequested = false
+    this.lastEventAt = null
     this.bot = new Bot(token)
+
+    // Grammy internal error handler — without this, errors inside async
+    // update handlers default to unhandled rejection and can crash the node
+    // process (or, worse, silently kill the polling loop). Log + swallow.
+    this.bot.catch((err) => {
+      console.error('[telegram] grammy handler error:', err.error ?? err)
+    })
 
     this.bot.on('message', async (gramCtx: any) => {
       const msg = gramCtx.message
@@ -831,6 +856,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // Heartbeat for health endpoint — set BEFORE any await so even if DB is
+      // slow, the "last event" timestamp reflects true Telegram activity.
+      this.lastEventAt = Date.now()
       // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
       //    see inbound traffic in connector_events even if the routing queue
       //    stalls. Downstream handlers log subsequent status rows.
@@ -897,6 +925,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // Heartbeat for health endpoint — set BEFORE any await so even if DB is
+      // slow, the "last event" timestamp reflects true Telegram activity.
+      this.lastEventAt = Date.now()
       // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
       //    see inbound traffic in connector_events even if the routing queue
       //    stalls. Downstream handlers log subsequent status rows.
@@ -927,6 +958,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date((msg.edit_date ?? msg.date) * 1000),
         raw_payload: gramCtx.update,
       }
+      // Heartbeat for health endpoint — set BEFORE any await so even if DB is
+      // slow, the "last event" timestamp reflects true Telegram activity.
+      this.lastEventAt = Date.now()
       // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
       //    see inbound traffic in connector_events even if the routing queue
       //    stalls. Downstream handlers log subsequent status rows.
@@ -969,6 +1003,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(msg.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // Heartbeat for health endpoint — set BEFORE any await so even if DB is
+      // slow, the "last event" timestamp reflects true Telegram activity.
+      this.lastEventAt = Date.now()
       // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
       //    see inbound traffic in connector_events even if the routing queue
       //    stalls. Downstream handlers log subsequent status rows.
@@ -1093,6 +1130,9 @@ class TelegramAdapter extends ConnectorAdapter {
         timestamp: new Date(update.date * 1000),
         raw_payload: gramCtx.update,
       }
+      // Heartbeat for health endpoint — set BEFORE any await so even if DB is
+      // slow, the "last event" timestamp reflects true Telegram activity.
+      this.lastEventAt = Date.now()
       // 1) Always record arrival immediately, OUTSIDE the queue, so ops can
       //    see inbound traffic in connector_events even if the routing queue
       //    stalls. Downstream handlers log subsequent status rows.
@@ -1134,37 +1174,90 @@ class TelegramAdapter extends ConnectorAdapter {
       }
     }
 
-    // Telegram's getUpdates omits `my_chat_member`, `channel_post`, and
-    // `message_reaction` by default — must be explicitly opted in via
-    // allowed_updates. Without this, my_chat_member handler never fires and
-    // channel auto-registration silently does nothing.
-    this.bot.start({
-      drop_pending_updates: true,
-      allowed_updates: [
-        'message',
-        'edited_message',
-        'channel_post',
-        'edited_channel_post',
-        'my_chat_member',
-        'chat_member',
-        'message_reaction',
-      ],
-    }).catch((err: unknown) => {
-      console.error('[telegram] polling error:', err)
-    })
+    // If this connector was deactivated recently, wait out Telegram's ~30s
+    // poll-slot reservation so the first getUpdates doesn't come back 409.
+    if (this.connectorId) {
+      const lastDeact = lastDeactivateByConnector.get(this.connectorId)
+      if (lastDeact) {
+        const elapsed = Date.now() - lastDeact
+        const remain = REACTIVATE_WAIT_MS - elapsed
+        if (remain > 0) {
+          console.log(`[telegram] waiting ${Math.ceil(remain / 1000)}s for Telegram poll-slot release before starting`)
+          await new Promise<void>(r => setTimeout(r, remain))
+        }
+      }
+    }
 
-    console.log('[telegram] bot started (polling)')
+    // Auto-reconnect polling loop. `bot.start()` returns a promise that only
+    // resolves/rejects when polling terminates. Old code fire-and-forgot with
+    // `.catch(log)` — any rejection (409 Conflict, 401, network drop) meant
+    // permanent silence. Now we loop with exponential backoff until either
+    // polling runs normally or onDeactivate sets pollingStopRequested.
+    const allowed_updates = [
+      'message',
+      'edited_message',
+      'channel_post',
+      'edited_channel_post',
+      'my_chat_member',
+      'chat_member',
+      'message_reaction',
+    ] as const
+
+    const startedBot = this.bot
+    void (async () => {
+      let backoffMs = 1_000
+      const MAX_BACKOFF = 60_000
+      while (!this.pollingStopRequested && this.bot === startedBot) {
+        try {
+          await startedBot.start({
+            drop_pending_updates: true,
+            allowed_updates: allowed_updates as unknown as string[],
+          } as any)
+          // `start()` resolving normally means `bot.stop()` was called. Exit.
+          console.log('[telegram] polling loop exited cleanly')
+          return
+        } catch (err) {
+          if (this.pollingStopRequested) return
+          const isConflict = String(err).includes('409')
+          console.error(
+            `[telegram] polling error (retry in ${backoffMs}ms, 409=${isConflict}):`,
+            err,
+          )
+          if (isConflict) {
+            // Slot still held by a previous instance. `close()` asks Telegram to
+            // release it. Returns 429 early on — we don't care, just try.
+            await startedBot.api.close().catch(() => {})
+          }
+          await new Promise<void>(r => setTimeout(r, backoffMs))
+          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF)
+        }
+      }
+    })()
+
+    console.log('[telegram] bot started (polling loop running with auto-reconnect)')
   }
 
   async onDeactivate(): Promise<void> {
     if (this.bot) {
+      this.pollingStopRequested = true
+      if (this.connectorId) lastDeactivateByConnector.set(this.connectorId, Date.now())
       await this.bot.stop().catch(() => {})
       this.bot = null
       this.projectId = null
       this.connectorId = null
       this.botUsername = null
       this.botUserId = null
+      this.lastEventAt = null
       console.log('[telegram] bot stopped')
+    }
+  }
+
+  /** Health snapshot — used by `GET /connectors/:id/health`. */
+  getHealth(): { polling: boolean; last_event_at: string | null; bot_user_id: number | null } {
+    return {
+      polling: this.bot !== null && !this.pollingStopRequested,
+      last_event_at: this.lastEventAt ? new Date(this.lastEventAt).toISOString() : null,
+      bot_user_id: this.botUserId,
     }
   }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-04-14 — channels: restart button, health indicator, polling resilience, orphaned-identity reset
+
+- **Orphaned identity auto-reset** (`event-router.ts` Path B, DM scope): when the next inbound message arrives after a binding was deleted, the existing identity — now with `binding_id=NULL` and `status='approved'` — used to fall through silently with `drop_reason=no_binding`, producing zero bot reply and zero pairing request in the admin UI. Fix: detect this orphaned shape, UPDATE the identity to `status='pending'`, and send the `👋 access request sent` notification the same as if it were a brand-new DM. Admin now sees the pairing request reappear in the UI.
+- **Telegram polling auto-reconnect**: `onActivate` now wraps `bot.start()` in a backoff loop (1s → 60s max). On 409 Conflict (previous instance still holds the long-poll slot) we call `bot.api.close()` between retries to force Telegram to release the slot. On any other error we log + back off. Loop exits cleanly when `onDeactivate` sets `pollingStopRequested`. Old behavior was fire-and-forget `.catch(log)` — a single rejection meant permanent silent failure even though the process stayed "running".
+- **30s post-deactivate guard**: module-level `lastDeactivateByConnector` map. `onActivate` awaits the remainder of a 30s window since the last deactivate before calling `bot.start()`. Previously a fast deactivate→activate (e.g. from the new Restart button) would race against Telegram's ~30s server-side slot reservation and produce immediate 409s.
+- **`bot.catch(...)`**: installed grammy's middleware-level error handler so exceptions inside async update handlers are logged instead of bubbling as unhandled rejections.
+- **Restart endpoint** — `POST /connectors/:id/restart` — deactivate + activate in one call. Scoped to `channels:write`.
+- **Health endpoint** — `GET /connectors/:id/health` — returns `{ status, error_message, adapter: { polling, last_event_at, bot_user_id } | null }`. Adapters opt in by implementing `getHealth()`; Telegram adapter populates it from `this.bot`, `this.pollingStopRequested`, and a new `this.lastEventAt` heartbeat set on every inbound update.
+- **Channels UI**:
+  - New **Restart** button in the connector detail header (visible when `status='active'`), calls the restart endpoint, invalidates connector + health queries.
+  - New **HealthBadge** component polling `/health` every 15s while the connector is active. Labels:
+    - green — `polling aktif · last event {age} lalu`
+    - amber — `polling aktif · last event {age} lalu (stale)` when >5min
+    - amber — `polling aktif · belum ada event` when adapter reports polling but no updates yet
+    - red — `polling offline` when adapter reports polling=false
+  - `RefreshCw` icon for the restart button (spins while pending).
+- Files: `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/routes/connectors.ts`, `plugins/jiku.telegram/src/index.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`.
+
 ## 2026-04-14 — telegram: arrival log outside the queue, typing tick tuning
 
 - **Non-blocking arrival log**: new `logArrivalImmediate()` helper inserts a `connector_events` row with `status='received'` the moment an update arrives from grammy, BEFORE entering the inbound FIFO batch queue. Rationale: the processing queue can stall (rate-limit pressure, handler bug, DB deadlock), and when that happens operators lost all visibility — no rows in `connector_events` / `connector_messages` even though Telegram was delivering updates. Arrival is now observable independent of routing health.

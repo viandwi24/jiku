@@ -561,6 +561,7 @@ export async function routeConnectorEvent(
         // Path B: DM
         const externalUserId = event.sender.external_id
         let identity = await findIdentityByExternalId(connectorUuid, externalUserId)
+        let shouldNotify = false
         if (!identity) {
           identity = await createIdentity({
             connector_id: connectorUuid,
@@ -569,6 +570,17 @@ export async function routeConnectorEvent(
             display_name: event.sender.display_name ?? event.sender.username,
             status: 'pending',
           })
+          shouldNotify = true
+        } else if (!identity.binding_id && identity.status === 'approved') {
+          // Orphaned identity — the binding it belonged to was deleted. Reset to
+          // 'pending' so the admin UI picks it up again and the user gets a
+          // fresh approval request. Without this, messages silently drop with
+          // `no_binding` because the identity is approved but has nowhere to route.
+          await updateIdentity(identity.id, { status: 'pending' })
+          identity = { ...identity, status: 'pending' }
+          shouldNotify = true
+        }
+        if (shouldNotify) {
           const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
           if (adapter) {
             adapter.sendMessage(

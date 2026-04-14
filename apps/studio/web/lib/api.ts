@@ -414,6 +414,13 @@ export const api = {
     delete: (id: string) => request<{ ok: boolean }>(`/api/connectors/${id}`, { method: 'DELETE' }),
     activate: (id: string) => request<{ ok: boolean; connector: ConnectorItem }>(`/api/connectors/${id}/activate`, { method: 'POST' }),
     deactivate: (id: string) => request<{ ok: boolean; connector: ConnectorItem }>(`/api/connectors/${id}/deactivate`, { method: 'POST' }),
+    restart: (id: string) => request<{ ok: boolean; connector: ConnectorItem }>(`/api/connectors/${id}/restart`, { method: 'POST' }),
+    health: (id: string) => request<{
+      ok: boolean
+      status: string
+      error_message: string | null
+      adapter: { polling: boolean; last_event_at: string | null; bot_user_id: number | null } | null
+    }>(`/api/connectors/${id}/health`),
 
     bindings: {
       list: (connectorId: string) => request<{ bindings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/bindings`),

@@ -198,6 +198,55 @@ router.post('/connectors/:id/deactivate', authMiddleware, requireConnectorPermis
   }
 })
 
+/**
+ * POST /connectors/:id/restart
+ *
+ * Admin self-service recovery for stuck connectors. Deactivates the adapter
+ * (which stops any active polling / releases resources), then re-activates it.
+ * Adapters that hold server-side state — Telegram's long-poll slot — enforce
+ * their own post-deactivate wait inside `onActivate`, so callers don't need to
+ * sleep between the two steps.
+ */
+router.post('/connectors/:id/restart', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  const id = req.params['id']!
+  try {
+    await deactivateConnector(id).catch(err =>
+      console.warn(`[connector] restart: deactivate step failed (continuing): ${err}`)
+    )
+    await activateConnector(id)
+    const connector = await getConnectorById(id)
+    res.json({ ok: true, connector })
+  } catch (err) {
+    await updateConnector(id, { status: 'error', error_message: String(err) }).catch(() => {})
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/**
+ * GET /connectors/:id/health
+ *
+ * Lightweight liveness view. Adapters that implement `getHealth()` (Telegram)
+ * return their runtime state: polling active, last-event timestamp, bot id.
+ * For adapters without it, we return a minimal shape from the connector row.
+ */
+router.get('/connectors/:id/health', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  const id = req.params['id']!
+  try {
+    const connector = await getConnectorById(id)
+    if (!connector) return res.status(404).json({ error: 'Connector not found' })
+    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getHealth?: () => unknown } | null
+    const adapterHealth = adapter?.getHealth?.() ?? null
+    res.json({
+      ok: true,
+      status: connector.status,
+      error_message: connector.error_message,
+      adapter: adapterHealth,
+    })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
 // ─── Bindings CRUD ───────────────────────────────────────────────────────────
 
 /** GET /connectors/:id/bindings */

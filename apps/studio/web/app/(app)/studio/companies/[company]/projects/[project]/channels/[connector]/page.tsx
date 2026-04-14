@@ -18,12 +18,49 @@ import {
   SelectValue,
   Separator,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Check, Clock, Copy, Link2, Plus, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Ban, Check, Clock, Copy, Link2, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
 interface PageProps {
   params: Promise<{ company: string; project: string; connector: string }>
+}
+
+/**
+ * Small liveness indicator for the adapter's polling loop. Flags "no events
+ * in >5 min" as a warning — useful signal that the bot might be stuck even
+ * when status='active'. User's escape hatch is the Restart button.
+ */
+function HealthBadge({ adapter }: {
+  adapter: { polling: boolean; last_event_at: string | null; bot_user_id: number | null }
+}) {
+  const lastMs = adapter.last_event_at ? new Date(adapter.last_event_at).getTime() : null
+  const ageSec = lastMs ? Math.floor((Date.now() - lastMs) / 1000) : null
+  const stale = ageSec !== null && ageSec > 300
+  const never = lastMs === null
+  const color = !adapter.polling
+    ? 'text-destructive border-destructive/40'
+    : stale
+      ? 'text-amber-600 border-amber-500/40'
+      : 'text-green-600 border-green-500/40'
+  const label = !adapter.polling
+    ? 'polling offline'
+    : never
+      ? 'polling aktif · belum ada event'
+      : stale
+        ? `polling aktif · last event ${formatAge(ageSec!)} lalu (stale)`
+        : `polling aktif · last event ${formatAge(ageSec!)} lalu`
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <Badge variant="outline" className={color}>{label}</Badge>
+    </div>
+  )
+}
+
+function formatAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  return `${Math.floor(seconds / 3600)}h`
 }
 
 function BindingCard({
@@ -524,6 +561,24 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector', connectorId] }),
   })
 
+  const restartMutation = useMutation({
+    mutationFn: () => api.connectors.restart(connectorId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-health', connectorId] })
+    },
+  })
+
+  // Health poll — only while the connector is supposed to be active. 15s is
+  // a balance between detecting a stalled polling loop quickly and not
+  // spamming the DB.
+  const { data: healthData } = useQuery({
+    queryKey: ['connector-health', connectorId],
+    queryFn: () => api.connectors.health(connectorId),
+    enabled: connectorData?.connector.status === 'active',
+    refetchInterval: 15_000,
+  })
+
   const connector = connectorData?.connector
   const agents = agentsData?.agents ?? []
   const pairingRequests = pairingData?.pairing_requests ?? []
@@ -577,18 +632,35 @@ export default function ConnectorDetailPage({ params }: PageProps) {
           </Button>
         )}
         {connector.status === 'active' && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs gap-1 text-destructive border-destructive/40"
-            onClick={() => deactivateMutation.mutate()}
-            disabled={deactivateMutation.isPending}
-          >
-            <Square className="h-3 w-3" />
-            {deactivateMutation.isPending ? 'Stopping...' : 'Stop'}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              title="Stop then re-start the connector. Use this if the adapter appears stuck (no inbound events for several minutes)."
+              onClick={() => restartMutation.mutate()}
+              disabled={restartMutation.isPending}
+            >
+              <RefreshCw className={`h-3 w-3 ${restartMutation.isPending ? 'animate-spin' : ''}`} />
+              {restartMutation.isPending ? 'Restarting...' : 'Restart'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1 text-destructive border-destructive/40"
+              onClick={() => deactivateMutation.mutate()}
+              disabled={deactivateMutation.isPending}
+            >
+              <Square className="h-3 w-3" />
+              {deactivateMutation.isPending ? 'Stopping...' : 'Stop'}
+            </Button>
+          </>
         )}
       </div>
+      {/* Health indicator — only meaningful when the adapter reports runtime state. */}
+      {connector.status === 'active' && healthData?.adapter && (
+        <HealthBadge adapter={healthData.adapter} />
+      )}
       {connector.error_message && (
         <p className="text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded px-3 py-2">
           {connector.error_message}

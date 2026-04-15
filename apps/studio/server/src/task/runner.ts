@@ -72,39 +72,26 @@ export async function runTaskConversation(
     const cmd = await dispatchSlashCommand({
       projectId, agentId, input: goal, surface, userId: callerId,
     }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-    // Command + @file injection: bottom of system prompt for recency-bias
-    // weight. See chat.ts for rationale. refSegments first, commandSegment last.
-    const resolvedForScan = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
-    const commandSegment = (cmd.matched && cmd.resolvedInput)
-      ? [{
-          label: `Active Command — /${cmd.slug ?? ''}`,
-          content: [
-            `[Active Command — highest-priority instruction for this turn]`,
-            `Caller invoked \`/${cmd.slug}\` (literal trigger: ${JSON.stringify(goal)}).`,
-            `Follow the SOP body below as the caller's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP.`,
-            ``,
-            `--- COMMAND BODY START ---`,
-            cmd.resolvedInput,
-            `--- COMMAND BODY END ---`,
-          ].join('\n'),
-        }]
-      : undefined
+    // When a slash-command matches, dispatcher's resolvedInput already wraps
+    // the SOP body in <active_command> + literal trigger text. Use it as the
+    // actual task goal so the model sees the SOP inline — not as a weaker
+    // system-prompt segment that tends to be ignored.
+    const resolvedGoal = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
     const refScan = await scanReferences({
-      projectId, text: resolvedForScan, userId: callerId, surface,
+      projectId, text: resolvedGoal, userId: callerId, surface,
     }).catch(() => ({ hintBlock: null } as const))
     const refSegments = refScan.hintBlock
       ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
       : undefined
-    const extraSegments = [...(refSegments ?? []), ...(commandSegment ?? [])]
 
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
       caller,
       mode: 'task',
-      input: goal,
+      input: resolvedGoal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
-      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
+      extra_system_segments: (refSegments && refSegments.length > 0) ? refSegments : undefined,
       // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:
       // a cron-fired agent is allowed to create/update/delete cron tasks (dynamic / conditional scheduling).
       // The infinite-loop risk is handled by the [Cron Trigger] preamble in the stored prompt instead.

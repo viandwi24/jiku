@@ -431,7 +431,7 @@ export const api = {
         body: JSON.stringify(body),
       }),
     get: (id: string) => request<{ connector: ConnectorItem }>(`/api/connectors/${id}`),
-    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string; outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number } }>) =>
+    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string; outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }; log_mode: 'all' | 'active_binding_only' }>) =>
       request<{ connector: ConnectorItem }>(`/api/connectors/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -1821,6 +1821,8 @@ export interface ConnectorItem {
   error_message?: string | null
   /** Plan 25 — outbound approval gate. */
   outbound_approval?: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number } | null
+  /** Inbound logging gate: 'all' logs every event, 'active_binding_only' skips chats with no binding/target. */
+  log_mode?: 'all' | 'active_binding_only'
   created_at: string
   updated_at: string
 }
@@ -1923,6 +1925,10 @@ export interface ConnectorEventFilters {
   event_type?: string
   direction?: 'inbound' | 'outbound'
   status?: string
+  chat_id?: string
+  thread_id?: string
+  user_id?: string
+  content_search?: string
   from?: string  // ISO
   to?: string
   cursor?: string | null
@@ -1934,6 +1940,9 @@ export interface ConnectorMessageFilters {
   connector_id?: string
   direction?: 'inbound' | 'outbound'
   status?: string
+  chat_id?: string
+  thread_id?: string
+  content_search?: string
   from?: string
   to?: string
   cursor?: string | null

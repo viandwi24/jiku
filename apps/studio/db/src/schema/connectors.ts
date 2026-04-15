@@ -34,6 +34,14 @@ export const connectors = pgTable('connectors', {
     .$type<{ mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }>()
     .notNull()
     .default({ mode: 'none' }),
+  /**
+   * Inbound logging gate (events + messages tabs).
+   * 'all'                  → log every inbound event/message, regardless of binding match.
+   * 'active_binding_only'  → only log when a known binding/target matches the inbound
+   *                          (i.e. the chat/scope is already registered). Useful for
+   *                          bot accounts that sit in many unrelated groups.
+   */
+  log_mode:       text('log_mode').notNull().default('all'),
   created_at:     timestamp('created_at').notNull().defaultNow(),
   updated_at:     timestamp('updated_at').notNull().defaultNow(),
 }, t => [

@@ -1298,6 +1298,64 @@ export default function ConnectorDetailPage({ params }: PageProps) {
       </div>
 
       <OutboundApprovalSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
+      <LogModeSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
+    </div>
+  )
+}
+
+function LogModeSection({
+  connector, onChanged,
+}: {
+  connector: ConnectorItem
+  onChanged: () => void
+}) {
+  const initial = (connector.log_mode ?? 'all') as 'all' | 'active_binding_only'
+  const [mode, setMode] = useState<'all' | 'active_binding_only'>(initial)
+  const dirty = mode !== initial
+
+  const save = useMutation({
+    mutationFn: () => api.connectors.update(connector.id, { log_mode: mode }),
+    onSuccess: () => { toast.success('Log mode updated'); onChanged() },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">Inbound Log Mode</h2>
+        <p className="text-xs text-muted-foreground">
+          Control which inbound events and messages appear in the Events / Messages tabs.
+        </p>
+      </div>
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Mode</Label>
+            <Select value={mode} onValueChange={(v) => setMode(v as 'all' | 'active_binding_only')}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All — log every inbound (default)</SelectItem>
+                <SelectItem value="active_binding_only">Active binding only — skip chats with no binding/target</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {mode === 'all'
+                ? 'Bot logs every message from every chat it\'s in — including unrelated groups.'
+                : 'Bot only logs events from chats that already have a matching binding or registered target. Business logic (pairing drafts, identity creation) still runs — only the log row is skipped.'}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+            {dirty && (
+              <Button size="sm" variant="ghost" onClick={() => setMode(initial)}>
+                Reset
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -51,6 +51,7 @@ export async function updateConnector(id: string, data: Partial<{
   match_mode: string
   default_agent_id: string | null
   outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }
+  log_mode: 'all' | 'active_binding_only'
 }>) {
   const rows = await db
     .update(connectors)

@@ -58,26 +58,13 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
     userId,
   }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
 
-  // User input stays LITERAL — `/slug args` as typed. Command body is injected
-  // at the BOTTOM of the system prompt (last segment) — recency bias makes
-  // that the highest-weight position. Previously prepend (top) made the model
-  // treat body as a "framework rule" and ignore the actual instruction; bottom
-  // placement positions it as "the current task" right before the user message.
-  const input = rawInput
-  const commandSegment = (cmd.matched && cmd.resolvedInput)
-    ? [{
-        label: `Active Command — /${cmd.slug ?? ''}`,
-        content: [
-          `[Active Command — highest-priority instruction for this turn]`,
-          `User invoked \`/${cmd.slug}\` (literal message: ${JSON.stringify(rawInput)}).`,
-          `Follow the SOP body below as the user's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP. Persona tone still applies, but the SOP defines what to actually do.`,
-          ``,
-          `--- COMMAND BODY START ---`,
-          cmd.resolvedInput,
-          `--- COMMAND BODY END ---`,
-        ].join('\n'),
-      }]
-    : undefined
+  // When a slash-command matches, the dispatcher's `resolvedInput` already
+  // wraps the command SOP body in an <active_command> tag followed by the
+  // user's literal invocation text. We inject that directly as the user
+  // message so the model sees the SOP right next to the trigger text — no
+  // separate system-prompt segment (tried that; model treated it as a generic
+  // "rule" and ignored it for direct execution cases).
+  const input = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : rawInput
 
   // @file reference hint — scan against the resolved command body if a command
   // matched (so `@plans/foo.md` inside the body still resolves), else against
@@ -92,9 +79,9 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
     ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
     : undefined
 
-  // Combine per-turn segments. refSegments first (informational); commandSegment
-  // LAST so it lands closest to user message = strongest recency weight.
-  const extraSegmentsArr = [...(refSegments ?? []), ...(commandSegment ?? [])]
+  // Only informational segments now (file refs). Command body lives inside the
+  // user message (see `input` above).
+  const extraSegmentsArr = [...(refSegments ?? [])]
   const extraSegmentsArg = extraSegmentsArr.length > 0 ? extraSegmentsArr : undefined
 
   // --- Auto-reply intercept: check rules before LLM invocation ---

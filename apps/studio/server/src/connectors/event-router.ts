@@ -292,8 +292,7 @@ async function buildConnectorContextString(
     `back to this chat as a message via ${platform}. Write your reply as the message body itself. ` +
     `Do NOT narrate actions like "I will send a message..." — that narration would be sent verbatim ` +
     `to the user. Do NOT call connector_send to reply to THIS chat (that would double-send); ` +
-    `connector_send is only for messaging a DIFFERENT chat/target. If you have nothing to say ` +
-    `(e.g. command invocation that only sets state), output empty text and no message will be sent.`,
+    `connector_send is only for messaging a DIFFERENT chat/target.`
   )
   parts.push(`Platform: ${platform}`)
   if (connectorDisplayName) {
@@ -607,6 +606,30 @@ export async function routeConnectorEvent(
     connector.plugin_id === event.connector_id && matchesTrigger(event, binding as ConnectorBinding)
   )
 
+  // 1.5. Per-connector logging gate. `log_mode='active_binding_only'` suppresses
+  // event/message log writes for chats that are NOT tied to a known binding or
+  // a registered target. Business logic (pairing drafts, identity creation) still
+  // runs — only the persisted log rows are skipped, so bots that sit in many
+  // unrelated groups don't pollute the Events/Messages tabs with noise.
+  let logAllowed = true
+  if (connectorUuid) {
+    const { getConnectorById, getConnectorTargetByName } = await import('@jiku-studio/db')
+    const connectorRow = await getConnectorById(connectorUuid).catch(() => null)
+    const logMode = ((connectorRow as { log_mode?: string } | null)?.log_mode) ?? 'all'
+    if (logMode === 'active_binding_only') {
+      if (matchingBindings.length > 0) {
+        logAllowed = true
+      } else if (event.scope_key) {
+        const target = await getConnectorTargetByName(projectId, event.scope_key, connectorUuid).catch(() => null)
+        logAllowed = !!target
+      } else {
+        logAllowed = false
+      }
+    }
+  }
+  const gatedLogEv: typeof logEv = (pid, args) => (logAllowed ? logEv(pid, args) : Promise.resolve(null as unknown as Awaited<ReturnType<typeof logEv>>))
+  const gatedLogMsg: typeof logMsg = (pid, args) => (logAllowed ? logMsg(pid, args) : Promise.resolve(null as unknown as Awaited<ReturnType<typeof logMsg>>))
+
   // 1a. Always record inbound MESSAGE events in connector_messages with a
   // status that reflects the outcome, so the Messages UI + the
   // `connector_get_thread` agent tool can filter "handled by the agent" vs
@@ -621,7 +644,7 @@ export async function routeConnectorEvent(
   //
   // Non-message events live in connector_events (status vocabulary differs there).
   if (matchingBindings.length === 0 && connectorUuid && event.type === 'message') {
-    await logMsg(projectId, {
+    await gatedLogMsg(projectId, {
       connector_id: connectorUuid,
       direction: 'inbound',
       ref_keys: event.ref_keys,
@@ -655,7 +678,7 @@ export async function routeConnectorEvent(
           const lazyKey = `${connectorUuid}::${event.scope_key}`
           if (lazyCreateInFlight.has(lazyKey)) {
             console.log(`[connector] lazy group-pairing skip (in-flight) connector=${connectorUuid} scope=${event.scope_key}`)
-            await logEv(projectId, {
+            await gatedLogEv(projectId, {
               connector_id: connectorUuid,
               event_type: event.type,
               ref_keys: event.ref_keys,
@@ -715,7 +738,7 @@ export async function routeConnectorEvent(
           // existing bindings and find the just-created draft.
           lazyCreateInFlight.delete(`${connectorUuid}::${event.scope_key}`)
         }
-        await logEv(projectId, {
+        await gatedLogEv(projectId, {
           connector_id: connectorUuid,
           event_type: event.type,
           ref_keys: event.ref_keys,
@@ -757,7 +780,7 @@ export async function routeConnectorEvent(
             ).catch(() => {})
           }
         }
-        await logEv(projectId, {
+        await gatedLogEv(projectId, {
           connector_id: connectorUuid,
           identity_id: identity.id,
           event_type: event.type,
@@ -1207,25 +1230,15 @@ async function executeConversationAdapter(
       projectId, agentId, input: inputText, surface: 'connector',
       userId: identity?.external_id ?? null,
     }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
-    // Command body → bottom-of-system-prompt segment (see chat.ts for rationale).
-    const commandSegment = (cmdDispatch.matched && cmdDispatch.resolvedInput)
-      ? [{
-          label: `Active Command — /${cmdDispatch.slug ?? ''}`,
-          content: [
-            `[Active Command — highest-priority instruction for this turn]`,
-            `User invoked \`/${cmdDispatch.slug}\` (literal message: ${JSON.stringify(inputText)}).`,
-            `Follow the SOP body below as the user's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP.`,
-            ``,
-            `--- COMMAND BODY START ---`,
-            cmdDispatch.resolvedInput,
-            `--- COMMAND BODY END ---`,
-          ].join('\n'),
-        }]
-      : undefined
-
-    // Wrap the literal user text in an explicit tag — the model can't confuse
-    // it with the connector_context metadata (prompt-injection defence).
-    const wrappedInput = `<user_message>\n${inputText}\n</user_message>`
+    // Command body is injected directly into the user message via the
+    // dispatcher's resolvedInput (wraps the SOP in <active_command> before the
+    // literal invocation text). Previously routed through a system-prompt
+    // segment, but the model treated that as a generic rule and ignored the
+    // SOP — inlining with the user message makes it unambiguous.
+    const effectiveInputText = (cmdDispatch.matched && cmdDispatch.resolvedInput)
+      ? cmdDispatch.resolvedInput
+      : inputText
+    const wrappedInput = `<user_message>\n${effectiveInputText}\n</user_message>`
 
     // @file reference hint — same per-turn segment model. Scan the resolved
     // command body if a command matched, else raw input.
@@ -1266,9 +1279,7 @@ async function executeConversationAdapter(
           caller,
           mode: 'chat',
           input,
-          extra_system_segments: [...(refSegments ?? []), ...(commandSegment ?? [])].length > 0
-            ? [...(refSegments ?? []), ...(commandSegment ?? [])]
-            : undefined,
+          extra_system_segments: (refSegments && refSegments.length > 0) ? refSegments : undefined,
         }),
         registerObserverStream: (obsStream: ReadableStream<unknown>) => {
           const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
@@ -1331,9 +1342,7 @@ async function executeConversationAdapter(
       caller,
       mode: 'chat',
       input,
-      extra_system_segments: [...(refSegments ?? []), ...(commandSegment ?? [])].length > 0
-        ? [...(refSegments ?? []), ...(commandSegment ?? [])]
-        : undefined,
+      extra_system_segments: (refSegments && refSegments.length > 0) ? refSegments : undefined,
     })
 
     // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates

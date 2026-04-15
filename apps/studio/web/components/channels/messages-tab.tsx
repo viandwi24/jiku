@@ -22,6 +22,9 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
   const [connectorId, setConnectorId] = useState<string>(initialConnectorId ?? ALL)
   const [direction, setDirection] = useState<string>(ALL)
   const [status, setStatus] = useState<string>(ALL)
+  const [chatId, setChatId] = useState<string>('')
+  const [threadId, setThreadId] = useState<string>('')
+  const [contentSearch, setContentSearch] = useState<string>('')
   const [from, setFrom] = useState<string>('')
   const [to, setTo] = useState<string>('')
 
@@ -35,10 +38,13 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
     connector_id: connectorId === ALL ? undefined : connectorId,
     direction: (direction === ALL ? undefined : direction) as ConnectorMessageFilters['direction'],
     status: status === ALL ? undefined : status,
+    chat_id: chatId.trim() || undefined,
+    thread_id: threadId.trim() || undefined,
+    content_search: contentSearch.trim() || undefined,
     from: from ? new Date(from).toISOString() : undefined,
     to: to ? new Date(to).toISOString() : undefined,
     limit: 50,
-  }), [connectorId, direction, status, from, to])
+  }), [connectorId, direction, status, chatId, threadId, contentSearch, from, to])
 
   const { data: connectorsData } = useQuery({
     queryKey: ['connectors', projectId],
@@ -80,7 +86,7 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
   const items = [...liveItems, ...persisted.filter(i => !liveIds.has(i.id))]
 
   const connectors = connectorsData?.connectors ?? []
-  const hasFilter = connectorId !== ALL || direction !== ALL || status !== ALL || from || to
+  const hasFilter = connectorId !== ALL || direction !== ALL || status !== ALL || chatId || threadId || contentSearch || from || to
 
   return (
     <div className="space-y-3">
@@ -117,6 +123,24 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
           </SelectContent>
         </Select>
         <Input
+          value={chatId}
+          onChange={(e) => setChatId(e.target.value)}
+          className="h-8 w-[140px] text-xs font-mono"
+          placeholder="chat_id"
+        />
+        <Input
+          value={threadId}
+          onChange={(e) => setThreadId(e.target.value)}
+          className="h-8 w-[130px] text-xs font-mono"
+          placeholder="thread_id"
+        />
+        <Input
+          value={contentSearch}
+          onChange={(e) => setContentSearch(e.target.value)}
+          className="h-8 w-[180px] text-xs"
+          placeholder="Search content..."
+        />
+        <Input
           type="datetime-local"
           value={from}
           onChange={(e) => setFrom(e.target.value)}
@@ -132,7 +156,7 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
         />
         {hasFilter && (
           <Button size="sm" variant="ghost" className="h-7 text-xs gap-1"
-            onClick={() => { setConnectorId(ALL); setDirection(ALL); setStatus(ALL); setFrom(''); setTo('') }}
+            onClick={() => { setConnectorId(ALL); setDirection(ALL); setStatus(ALL); setChatId(''); setThreadId(''); setContentSearch(''); setFrom(''); setTo('') }}
           >
             <X className="h-3 w-3" /> Clear
           </Button>
@@ -160,15 +184,16 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
               <th className="text-left font-medium px-3 py-2 w-[150px]">Time</th>
               <th className="text-left font-medium px-3 py-2 w-[100px]">Direction</th>
               <th className="text-left font-medium px-3 py-2 w-[160px]">Connector</th>
+              <th className="text-left font-medium px-3 py-2 w-[180px]">Refs</th>
               <th className="text-left font-medium px-3 py-2">Content</th>
               <th className="text-left font-medium px-3 py-2 w-[90px]">Status</th>
             </tr>
           </thead>
           <tbody>
             {query.isLoading ? (
-              <tr><td colSpan={5} className="text-center py-8 text-xs text-muted-foreground">Loading messages...</td></tr>
+              <tr><td colSpan={6} className="text-center py-8 text-xs text-muted-foreground">Loading messages...</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-12 text-xs text-muted-foreground">
+              <tr><td colSpan={6} className="text-center py-12 text-xs text-muted-foreground">
                 <MessageSquare className="h-6 w-6 mx-auto mb-2 opacity-30" />
                 No messages match the current filters.
               </td></tr>
@@ -193,6 +218,13 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
                     </Badge>
                   </td>
                   <td className="px-3 py-2 text-xs">{m.connector_name}</td>
+                  <td className="px-3 py-2 text-xs">
+                    <RefsCell
+                      refs={m.ref_keys}
+                      onFilterChatId={(id) => setChatId(id)}
+                      onFilterThreadId={(id) => setThreadId(id)}
+                    />
+                  </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-0">
                     <div className="truncate">{m.content_snapshot ?? JSON.stringify(m.ref_keys)}</div>
                   </td>
@@ -243,6 +275,58 @@ export function MessagesTab({ projectId, initialConnectorId }: MessagesTabProps)
           )}
         </SheetContent>
       </Sheet>
+    </div>
+  )
+}
+
+interface RefsCellProps {
+  refs: Record<string, string> | null | undefined
+  onFilterChatId?: (id: string) => void
+  onFilterThreadId?: (id: string) => void
+}
+
+/**
+ * Renders platform ref_keys (chat_id, thread_id, message_id, user_id) as
+ * compact clickable chips. Clicking chat_id/thread_id sets the active filter.
+ */
+function RefsCell({ refs, onFilterChatId, onFilterThreadId }: RefsCellProps) {
+  if (!refs || Object.keys(refs).length === 0) {
+    return <span className="text-muted-foreground/50">—</span>
+  }
+  const chatId = refs['chat_id']
+  const threadId = refs['thread_id']
+  const messageId = refs['message_id']
+  const userId = refs['user_id']
+  return (
+    <div className="flex flex-col gap-0.5 font-mono text-[10px]">
+      {chatId && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onFilterChatId?.(chatId) }}
+          className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted text-left w-fit max-w-full"
+          title="Filter by chat_id"
+        >
+          <span className="text-muted-foreground/70 shrink-0">chat:</span>
+          <span className="truncate">{chatId}</span>
+        </button>
+      )}
+      {threadId && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onFilterThreadId?.(threadId) }}
+          className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted text-left w-fit max-w-full"
+          title="Filter by thread_id"
+        >
+          <span className="text-muted-foreground/70 shrink-0">thread:</span>
+          <span className="truncate">{threadId}</span>
+        </button>
+      )}
+      {messageId && !chatId && !threadId && (
+        <span className="text-muted-foreground/70 px-1 py-0.5 truncate">msg: {messageId}</span>
+      )}
+      {userId && !chatId && (
+        <span className="text-muted-foreground/70 px-1 py-0.5 truncate">user: {userId}</span>
+      )}
     </div>
   )
 }

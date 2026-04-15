@@ -431,7 +431,7 @@ export const api = {
         body: JSON.stringify(body),
       }),
     get: (id: string) => request<{ connector: ConnectorItem }>(`/api/connectors/${id}`),
-    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string }>) =>
+    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string; outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number } }>) =>
       request<{ connector: ConnectorItem }>(`/api/connectors/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -956,6 +956,39 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ mode }),
       }),
+  },
+
+  actionRequests: {
+    list: (projectId: string, params?: { status?: string; agent_id?: string; type?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.status) qs.set('status', params.status)
+      if (params?.agent_id) qs.set('agent_id', params.agent_id)
+      if (params?.type) qs.set('type', params.type)
+      if (params?.limit) qs.set('limit', String(params.limit))
+      const q = qs.toString()
+      return request<{ items: ActionRequestItem[] }>(
+        `/api/projects/${projectId}/action-requests${q ? `?${q}` : ''}`,
+      )
+    },
+    get: (id: string) =>
+      request<{ action_request: ActionRequestItem; events: ActionRequestEventItem[] }>(`/api/action-requests/${id}`),
+    respond: (id: string, body: { response: unknown }) =>
+      request<{ action_request: ActionRequestItem }>(`/api/action-requests/${id}/respond`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    drop: (id: string, body?: { reason?: string }) =>
+      request<{ action_request: ActionRequestItem }>(`/api/action-requests/${id}/drop`, {
+        method: 'POST',
+        body: JSON.stringify(body ?? {}),
+      }),
+    streamUrl: (projectId: string) => {
+      const headers = getAuthHeaders() as Record<string, string>
+      const token = headers['Authorization']?.replace('Bearer ', '') ?? ''
+      const params = new URLSearchParams()
+      if (token) params.set('token', token)
+      return `${BASE_URL}/api/projects/${projectId}/action-requests/stream?${params.toString()}`
+    },
   },
 
   mcpServers: {
@@ -1786,6 +1819,8 @@ export interface ConnectorItem {
   default_agent_id?: string | null
   status: 'active' | 'inactive' | 'error'
   error_message?: string | null
+  /** Plan 25 — outbound approval gate. */
+  outbound_approval?: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number } | null
   created_at: string
   updated_at: string
 }
@@ -2107,3 +2142,39 @@ export interface McpServerItem {
   updated_at: string
 }
 
+
+export interface ActionRequestItem {
+  id: string
+  project_id: string
+  agent_id: string | null
+  conversation_id: string | null
+  task_id: string | null
+  type: 'boolean' | 'choice' | 'input' | 'form'
+  title: string
+  description: string | null
+  context: Record<string, unknown>
+  spec: Record<string, unknown>
+  source_type: 'outbound_message' | 'agent_tool' | 'task_checkpoint' | 'manual'
+  source_ref: Record<string, unknown>
+  destination_type: 'outbound_approval' | 'task' | 'task_resume' | null
+  destination_ref: Record<string, unknown> | null
+  status: 'pending' | 'approved' | 'rejected' | 'answered' | 'dropped' | 'expired' | 'failed'
+  response: unknown
+  response_by: string | null
+  response_at: string | null
+  expires_at: string | null
+  execution_error: string | null
+  created_at: string
+  created_by: string | null
+  updated_at: string
+}
+
+export interface ActionRequestEventItem {
+  id: number
+  action_request_id: string
+  event_type: string
+  actor_id: string | null
+  actor_type: 'user' | 'agent' | 'system' | null
+  metadata: Record<string, unknown>
+  created_at: string
+}

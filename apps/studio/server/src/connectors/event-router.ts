@@ -6,6 +6,7 @@ import {
   updateIdentity,
   logConnectorEvent,
   logConnectorMessage,
+  getConnectorMessageByExternalRef,
   createConversation,
   redeemInviteCode,
   getConnectorById,
@@ -264,7 +265,7 @@ const LANG_TO_TIMEZONE: Record<string, string> = {
   he: 'Asia/Jerusalem',
 }
 
-function buildConnectorContextString(
+async function buildConnectorContextString(
   event: ConnectorEvent,
   binding: ConnectorBinding,
   identity: ConnectorIdentity,
@@ -272,7 +273,7 @@ function buildConnectorContextString(
   connectorId?: string,
   connectorDisplayName?: string,
   messageId?: string,
-): string {
+): Promise<string> {
   const parts: string[] = []
   parts.push('<connector_context>')
   parts.push(
@@ -367,8 +368,89 @@ function buildConnectorContextString(
     }
   }
 
+  // Plan 25 add-on — Reply chain. Adapters populate `metadata.reply_to` with
+  // the immediate parent (snapshot of platform reply-info). We walk up the
+  // chain via the connector_messages cache (we logged earlier inbound msgs).
+  // Capped at depth 5 to keep prompts bounded.
+  if (connectorId && event.metadata?.['reply_to']) {
+    const chain = await walkReplyChain(connectorId, chatId, event.metadata['reply_to'] as Record<string, unknown>, 5)
+    if (chain.length > 0) {
+      parts.push(`Reply chain (this message replies to a thread of ${chain.length} message${chain.length === 1 ? '' : 's'}, oldest first):`)
+      for (let i = 0; i < chain.length; i++) {
+        const r = chain[i]!
+        const arrow = i === chain.length - 1 ? '└─ replied-to (immediate parent)' : `├─ depth ${i + 1}`
+        const senderHint = r.sender_label ? ` from ${r.sender_label}` : ''
+        const idHint = r.message_id ? ` [msg_id=${r.message_id}]` : ''
+        const textPreview = r.text ? ` — ${truncatePreview(r.text, 300)}` : ''
+        parts.push(`  ${arrow}${senderHint}${idHint}${textPreview}`)
+      }
+      parts.push('Tip: use connector_get_message with the internal message_id (if logged) for full text+entities, or connector_run_action({"action_id":"get_chat_history",...}) to fetch a specific platform message_id.')
+    }
+  }
+
   parts.push('</connector_context>')
   return parts.join('\n')
+}
+
+interface ReplyChainEntry {
+  message_id: string | null
+  text: string | null
+  sender_label: string | null
+}
+
+/**
+ * Walk a reply chain by following `reply_to` pointers. Each step looks up the
+ * parent message in our `connector_messages` cache; when found, recurses into
+ * its own `raw_payload.metadata.reply_to`. Stops at depth limit, missing
+ * parent, or non-`same_chat` origin (cross-chat lookup not implemented yet).
+ */
+async function walkReplyChain(
+  connectorId: string,
+  currentChatId: string | undefined,
+  immediateParent: Record<string, unknown>,
+  maxDepth: number,
+): Promise<ReplyChainEntry[]> {
+  const chain: ReplyChainEntry[] = []
+  let cursor: Record<string, unknown> | null = immediateParent
+  let chatId = (cursor['chat_id'] as string | undefined) ?? currentChatId
+
+  for (let depth = 0; depth < maxDepth && cursor; depth++) {
+    const messageId = cursor['message_id'] as string | undefined ?? null
+    // Try DB lookup for the parent's text + its own reply pointer.
+    let text: string | null = (cursor['text'] as string | undefined) ?? (cursor['quote_text'] as string | undefined) ?? null
+    let nextParent: Record<string, unknown> | null = null
+    let senderLabel: string | null = null
+
+    if (messageId && chatId) {
+      const row = await getConnectorMessageByExternalRef(connectorId, chatId, messageId).catch(() => null)
+      if (row) {
+        if (!text) text = row.content_snapshot ?? null
+        // raw_payload may have its own metadata.reply_to (when adapter snapshotted it earlier)
+        const raw = row.raw_payload as { metadata?: { reply_to?: Record<string, unknown> } } | null
+        const parentReply = raw?.metadata?.reply_to
+        if (parentReply && typeof parentReply === 'object') nextParent = parentReply
+      }
+    }
+
+    const senderObj = cursor['sender'] as { username?: string; display_name?: string; id?: string } | undefined
+    if (senderObj) {
+      senderLabel = senderObj.username ? `@${senderObj.username}` : (senderObj.display_name ?? (senderObj.id ? `user_id=${senderObj.id}` : null))
+    }
+
+    chain.push({ message_id: messageId, text, sender_label: senderLabel })
+
+    if (!nextParent) break
+    cursor = nextParent
+    chatId = (cursor['chat_id'] as string | undefined) ?? chatId
+  }
+
+  // Reverse so oldest is first (chain[0] = oldest ancestor, chain[last] = immediate parent)
+  return chain.reverse()
+}
+
+function truncatePreview(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > n ? flat.slice(0, n) + '…' : flat
 }
 
 export function buildConnectorCaller(
@@ -1040,7 +1122,7 @@ async function executeConversationAdapter(
       raw_payload: event.raw_payload,
       status: 'handled',
     })
-    const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
+    const contextString = await buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
     const inputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')
       : `[${event.type}] ${JSON.stringify(event.content?.raw ?? event.ref_keys)}`
@@ -1101,7 +1183,7 @@ async function executeConversationAdapter(
       raw_payload: event.raw_payload,
       status: 'handled',
     })
-    const contextString = buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
+    const contextString = await buildConnectorContextString(event, binding, identity, eventId, connectorId, connectorDisplayName, inboundRow?.id)
 
     const inputText = event.type === 'message'
       ? (event.content?.text ?? '(no text content)')

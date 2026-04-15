@@ -38,6 +38,10 @@ import { toolStatesRouter } from './routes/tool-states.ts'
 import { auditRouter } from './routes/audit.ts'
 import { pluginPermissionsRouter } from './routes/plugin-permissions.ts'
 import { consoleRouter } from './console/router.ts'
+import { actionRequestsRouter } from './routes/action-requests.ts'
+import { sweepExpiredActionRequests } from './action-requests/service.ts'
+import { registerOutboundApprovalHandler } from './action-requests/destination-outbound.ts'
+import { registerTaskDestinationHandlers } from './action-requests/destination-task.ts'
 import { consoleRegistry } from './console/registry.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { startBrowserTabCleanup } from './browser/tab-manager.ts'
@@ -107,6 +111,7 @@ app.use('/api', toolStatesRouter)
 app.use('/api', auditRouter)
 app.use('/api', pluginPermissionsRouter)
 app.use('/api', consoleRouter)
+app.use('/api', actionRequestsRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -129,6 +134,10 @@ process.on('uncaughtException', (err) => {
 async function bootstrap() {
   await checkDbConnection()
   await seedPermissions()
+
+  // Plan 25 — register destination handlers before any AR can fire.
+  registerOutboundApprovalHandler()
+  registerTaskDestinationHandlers()
 
   const sharedLoader = new PluginLoader()
 
@@ -198,6 +207,19 @@ async function bootstrap() {
 
   // Filesystem S3 cleanup worker — processes deferred object deletions every 30s.
   startStorageCleanupWorker()
+
+  // Plan 25 — Action Request expiry sweep (every 30s).
+  const AR_EXPIRY_INTERVAL_MS = 30_000
+  async function runActionRequestExpiry() {
+    try {
+      const expired = await sweepExpiredActionRequests()
+      if (expired > 0) console.log(`[action-requests] expired ${expired} pending request(s)`)
+    } catch (err) {
+      console.warn('[action-requests] expiry sweep error:', err)
+    }
+  }
+  runActionRequestExpiry()
+  setInterval(runActionRequestExpiry, AR_EXPIRY_INTERVAL_MS)
 
   // Plan 19 — durable background job queue (reflection, dreaming, flush).
   registerAllJobHandlers()

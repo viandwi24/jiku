@@ -28,6 +28,7 @@ import {
 } from '@jiku-studio/db'
 import type { ConnectorTarget } from '@jiku/types'
 import { connectorRegistry } from './registry.ts'
+import { createActionRequest, ActionRequestError } from '../action-requests/service.ts'
 import { broadcastProjectEvent, broadcastProjectMessage } from './sse-hub.ts'
 
 // Keyset pagination cursor helpers — shared with the REST routes.
@@ -369,6 +370,78 @@ export function buildConnectorTools(projectId: string) {
         }
 
         const identity = resolveConnectorIdentity(connector_id)
+
+        // ── Plan 25 — outbound approval interceptor ─────────────────────────
+        // Read connector-level outbound_approval config. If mode requires
+        // approval, hold the message as an Action Request instead of sending.
+        const connectorRow = await getConnectorById(connector_id)
+        const outboundApproval = (connectorRow?.outbound_approval ?? { mode: 'none' }) as { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }
+        const skipApproval = params && (params['skip_approval'] === true)
+        const requireApproval = !skipApproval && (
+          outboundApproval.mode === 'always' ||
+          (outboundApproval.mode === 'tagged' && params?.['require_approval'] === true)
+        )
+        console.log(`[ar-interceptor] connector_send connector=${connector_id} approval_mode=${outboundApproval.mode} require=${requireApproval}`)
+        if (requireApproval) {
+          // Strip the meta flags before persisting payload — they're tool-control,
+          // not adapter params.
+          const cleanedParams: Record<string, unknown> | undefined = params
+            ? Object.fromEntries(Object.entries(params).filter(([k]) => k !== 'skip_approval' && k !== 'require_approval'))
+            : undefined
+          const preview = text.length > 500 ? text.slice(0, 500) + '…' : text
+          try {
+            const ar = await createActionRequest({
+              project_id: projectId,
+              type: 'boolean',
+              title: `Outbound message via ${connectorRow?.display_name ?? adapter.id}`,
+              description: 'Operator must approve before this message is sent.',
+              context: {
+                connector_id,
+                connector_name: connectorRow?.display_name,
+                target_ref_keys,
+                reply_to_ref_keys: reply_to_ref_keys ?? null,
+                content_preview: preview,
+                identity,
+              },
+              spec: {
+                approve_label: 'Send',
+                reject_label: 'Cancel',
+                approve_style: 'primary',
+                reject_style: 'destructive',
+              },
+              source_type: 'outbound_message',
+              source_ref: {
+                kind: 'outbound_message',
+                connector_id,
+                target: { ref_keys: target_ref_keys, reply_to_ref_keys },
+                content_preview: preview,
+              },
+              destination_type: 'outbound_approval',
+              destination_ref: {
+                kind: 'outbound_approval',
+                connector_id,
+                target: { ref_keys: target_ref_keys, reply_to_ref_keys },
+                content: { text, markdown, simulate_typing, params: cleanedParams },
+              },
+              expires_in_seconds: outboundApproval.default_expires_in_seconds ?? 3600,
+              actor_type: 'agent',
+            })
+            return {
+              success: true,
+              queued: true,
+              action_request_id: ar.id,
+              status: 'pending',
+              hint: 'Message is awaiting operator approval. Use action_request.wait({ action_request_id }) to block until decided, or continue with other work.',
+              identity,
+            }
+          } catch (err) {
+            if (err instanceof ActionRequestError) {
+              return { success: false, error: err.message, code: err.code }
+            }
+            throw err
+          }
+        }
+
         const sendResult = await adapter.sendMessage(
           { ref_keys: target_ref_keys, reply_to_ref_keys, connector_id },
           { text, markdown, simulate_typing, params },
@@ -497,6 +570,76 @@ export function buildConnectorTools(projectId: string) {
 
         const action = adapter.actions?.find(a => a.id === action_id)
         if (!action) return { success: false, error: `Unknown action "${action_id}". Call connector_list_actions to see available actions.` }
+
+        // ── Plan 25 — outbound approval interceptor (actions) ──────────────
+        // Adapter actions (forward, send_file, delete, etc.) carry the same
+        // outbound risk as connector_send and must respect the connector's
+        // outbound_approval mode. `tagged` mode opts in via params.require_approval.
+        const connectorRow = await getConnectorById(connector_id)
+        const outboundApproval = (connectorRow?.outbound_approval ?? { mode: 'none' }) as { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }
+        const skipApproval = params['skip_approval'] === true
+        const requireApproval = !skipApproval && (
+          outboundApproval.mode === 'always' ||
+          (outboundApproval.mode === 'tagged' && params['require_approval'] === true)
+        )
+        console.log(`[ar-interceptor] connector_run_action connector=${connector_id} action=${action_id} approval_mode=${outboundApproval.mode} require=${requireApproval}`)
+        if (requireApproval) {
+          const cleanedParams = Object.fromEntries(
+            Object.entries(params).filter(([k]) => k !== 'skip_approval' && k !== 'require_approval'),
+          )
+          try {
+            const identityForAR = resolveConnectorIdentity(connector_id)
+            const ar = await createActionRequest({
+              project_id: projectId,
+              type: 'boolean',
+              title: `Outbound action "${action_id}" via ${connectorRow?.display_name ?? adapter.id}`,
+              description: `Operator must approve before this connector action runs.`,
+              context: {
+                connector_id,
+                connector_name: connectorRow?.display_name,
+                action_id,
+                params: cleanedParams,
+                identity: identityForAR,
+              },
+              spec: {
+                approve_label: 'Run',
+                reject_label: 'Cancel',
+                approve_style: 'primary',
+                reject_style: 'destructive',
+              },
+              source_type: 'outbound_message',
+              source_ref: {
+                kind: 'outbound_message',
+                connector_id,
+                target: { ref_keys: (cleanedParams['target_ref_keys'] as Record<string, string>) ?? {} },
+                content_preview: `${action_id}(${JSON.stringify(cleanedParams).slice(0, 400)})`,
+              },
+              destination_type: 'outbound_approval',
+              destination_ref: {
+                // Polymorphic: presence of `action_id` tells the handler to
+                // dispatch via adapter.runAction instead of adapter.sendMessage.
+                kind: 'outbound_approval',
+                connector_id,
+                action_id,
+                params: cleanedParams,
+              } as never,
+              expires_in_seconds: outboundApproval.default_expires_in_seconds ?? 3600,
+              actor_type: 'agent',
+            })
+            return {
+              success: true,
+              queued: true,
+              action_request_id: ar.id,
+              status: 'pending',
+              hint: `Action "${action_id}" is awaiting operator approval. Use action_request_wait({ action_request_id }) to block until decided.`,
+            }
+          } catch (err) {
+            if (err instanceof ActionRequestError) {
+              return { success: false, error: err.message, code: err.code }
+            }
+            throw err
+          }
+        }
 
         try {
           const identity = resolveConnectorIdentity(connector_id)

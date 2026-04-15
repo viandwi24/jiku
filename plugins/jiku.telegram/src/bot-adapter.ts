@@ -717,6 +717,23 @@ class TelegramBotAdapter extends ConnectorAdapter {
           ...(msg.is_topic_message ? { is_topic_message: true } : {}),
           ...(botMentioned ? { bot_mentioned: true } : {}),
           ...(isReplyToBot ? { bot_replied_to: true } : {}),
+          // Plan 25 add-on — reply context (Bot API gives the parent message
+          // verbatim in reply_to_message; no extra fetch needed).
+          ...(msg.reply_to_message ? {
+            reply_to: {
+              origin: msg.reply_to_message.chat?.id === msg.chat.id ? 'same_chat' : 'other_chat',
+              message_id: String(msg.reply_to_message.message_id),
+              chat_id: msg.reply_to_message.chat ? String(msg.reply_to_message.chat.id) : null,
+              text: msg.reply_to_message.text ?? msg.reply_to_message.caption ?? null,
+              sender: msg.reply_to_message.from ? {
+                id: String(msg.reply_to_message.from.id),
+                username: msg.reply_to_message.from.username ?? null,
+                display_name: [msg.reply_to_message.from.first_name, msg.reply_to_message.from.last_name].filter(Boolean).join(' ') || null,
+                is_bot: msg.reply_to_message.from.is_bot ?? false,
+              } : null,
+              is_quote: false,
+            },
+          } : {}),
           ...mediaMetadata,
         },
         timestamp: new Date(msg.date * 1000),

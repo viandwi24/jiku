@@ -50,6 +50,7 @@ export async function updateConnector(id: string, data: Partial<{
   error_message: string | null
   match_mode: string
   default_agent_id: string | null
+  outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }
 }>) {
   const rows = await db
     .update(connectors)
@@ -550,6 +551,28 @@ export async function listConnectorDistinctEntities(opts: DistinctEntitiesOption
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
+
+/**
+ * Plan 25 add-on — lookup a previously-logged inbound message by its external
+ * platform refs (chat_id + message_id). Used to walk reply chains for the
+ * connector_context block. Returns null if not in cache.
+ */
+export async function getConnectorMessageByExternalRef(
+  connectorId: string,
+  chatId: string,
+  messageId: string,
+) {
+  const rows = await db
+    .select()
+    .from(connector_messages)
+    .where(and(
+      eq(connector_messages.connector_id, connectorId),
+      sql`${connector_messages.ref_keys}->>'chat_id' = ${chatId}`,
+      sql`${connector_messages.ref_keys}->>'message_id' = ${messageId}`,
+    ))
+    .limit(1)
+  return rows[0] ?? null
+}
 
 export async function logConnectorMessage(data: {
   connector_id: string

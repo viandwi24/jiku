@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-04-15 — Plan 25: Action Request Center (all 6 phases)
+
+**Added:**
+- New tables `action_requests` + `action_request_events` with strict state-machine
+  transitions (migrations `0035_plan25_action_requests.sql`, `0036_plan25_outbound_approval.sql`).
+- Service `apps/studio/server/src/action-requests/` with pluggable destination handlers
+  (`outbound_approval`, `task`, `task_resume`, plus null/sync-wait).
+- Routes `/api/projects/:pid/action-requests[/stream]`, `/api/action-requests/:id[/respond,/drop]`.
+- Per-AR + project-scoped in-process pubsub bus driving `action_request_wait` long-poll
+  and SSE UI updates.
+- Periodic 30s expiry sweep (in-bootstrap setInterval).
+- Agent tools `action_request_create`, `action_request_wait`, `action_request_list`
+  wired into all three `built_in_tools` assembly sites in `runtime/manager.ts`.
+- Outbound interceptor in `connector_send`: connector-level `outbound_approval.mode`
+  (`none` | `always` | `tagged`) holds messages as boolean ARs; `params.skip_approval`
+  bypass for system messages.
+- Task-checkpoint integration: `task_resume` handler injects synthetic `[Operator
+  decision]` message and re-invokes `runTaskConversation` against existing convId;
+  `task` handler spawns NEW task with response interpolated into `prompt_template`.
+- UI: `/studio/.../actions` page with 3 tabs (Active/Recent/Dropped), per-type response
+  forms (boolean buttons, choice buttons, input, multi-field form), SSE hookup,
+  pending-count sidebar badge, drop confirm.
+- UI: outbound-approval mode dropdown on connector detail page.
+- Permissions: `action_requests:read|respond|write` added to `PERMISSIONS` enum and
+  role presets (Owner/Admin/Manager get all three; Member gets `:read`).
+- Audit event types: `action_request.{created,viewed,responded,dropped,expired,executed,execution_failed}`.
+- Docs: `docs/feats/action-request.md` with architecture, types, destinations, flow
+  details, file map, and known limitations.
+
+**Pre-deploy:**
+- Apply migrations `0035_plan25_action_requests.sql`, `0036_plan25_outbound_approval.sql`.
+- No new env vars; no new external services.
+
 ## 2026-04-15 — Runs cancel: ownership gate + real stream abort
 
 **Changed:**

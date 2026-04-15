@@ -9,6 +9,7 @@ import {
   BookOpen,
   Bot,
   Brain,
+  CheckCircle2,
   ChevronLeft,
   ChevronsUpDown,
   Clock,
@@ -75,6 +76,7 @@ const NAV_SECTIONS: NavSection[] = [
     label: null,
     items: [
       { href: '', label: 'Dashboard', icon: LayoutDashboard, permission: null },
+      { href: '/actions', label: 'Action Center', icon: CheckCircle2, permission: 'action_requests:read', badgeKey: 'actions_pending' },
     ],
   },
   {
@@ -90,8 +92,8 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Tools',
     items: [
-      { href: '/channels',   label: 'Channels',   icon: Webhook,    permission: 'channels:read' },
-      { href: '/cron-tasks', label: 'Cron Tasks', icon: Clock,      permission: 'cron_tasks:read' },
+      { href: '/channels',   label: 'Channels',   icon: Webhook,      permission: 'channels:read' },
+      { href: '/cron-tasks', label: 'Cron Tasks', icon: Clock,        permission: 'cron_tasks:read' },
       { href: '/browser',    label: 'Browser',    icon: Globe,      permission: 'browser:read' },
       { href: '/disk',       label: 'Disk',       icon: FolderOpen, permission: 'disk:read' },
     ],
@@ -158,6 +160,13 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
     enabled: !!projectId,
   })
 
+  const { data: pendingActionsData } = useQuery({
+    queryKey: ['action-requests', projectId, 'pending'],
+    queryFn: () => api.actionRequests.list(projectId, { status: 'pending', limit: 100 }),
+    enabled: !!projectId && (!myPerms || myPerms.isSuperadmin || myPerms.permissions.includes('action_requests:read')),
+    refetchInterval: 30_000,
+  })
+
   const isSuperadmin = myPerms?.isSuperadmin ?? false
   const permSet = new Set(myPerms?.permissions ?? [])
   // While loading (myPerms undefined) show all; once loaded restrict by permissions
@@ -170,9 +179,11 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
   const canSeeSettings = !permsLoaded || isSuperadmin || permSet.has('settings:read')
 
   const activePluginCount = (projectPluginsData?.plugins ?? []).filter(p => p.enabled).length
+  const pendingActionsCount = pendingActionsData?.items.length
   const badges: Record<string, number | undefined> = {
     agents: agentsData?.agents.length,
     plugins: activePluginCount || undefined,
+    actions_pending: pendingActionsCount || undefined,
   }
 
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}`
@@ -234,6 +245,9 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
                     )}
                     {item.badgeKey === 'plugins' && badges.plugins !== undefined && (
                       <SidebarMenuBadge>{badges.plugins}</SidebarMenuBadge>
+                    )}
+                    {item.badgeKey === 'actions_pending' && badges.actions_pending !== undefined && (
+                      <SidebarMenuBadge>{badges.actions_pending}</SidebarMenuBadge>
                     )}
                   </SidebarMenuItem>
                 ))}

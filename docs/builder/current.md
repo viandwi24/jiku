@@ -1,3 +1,10 @@
+## Phase (2026-04-15) — Plan 25 Action Request Center ✅
+
+All 6 phases shipped from `docs/plans/25-action-request-center.md` in one session:
+data + API, UI, agent tools, outbound interceptor, task checkpoint, polish/docs. See
+`docs/feats/action-request.md` for architecture + file map and `changelog.md` for the
+detail list. Deploy: apply migrations 0035 + 0036 before server start.
+
 ## Phase (2026-04-15) — Permission hardening across features ✅
 
 End-to-end audit + fix pass across all 11 project features (Channels, Cron Tasks, Browser, Disk, Plugins, Console, Skills, Commands, Memory, Chats, Agents). Plus: cancel-run ownership gate + real stream abort.

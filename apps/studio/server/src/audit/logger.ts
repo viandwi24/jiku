@@ -68,6 +68,14 @@ export type AuditEventType =
   | 'credential.setup_completed'
   | 'credential.setup_failed'
   | 'credential.setup_cancelled'
+  // Plan 25 — Action Request Center
+  | 'action_request.created'
+  | 'action_request.viewed'
+  | 'action_request.responded'
+  | 'action_request.dropped'
+  | 'action_request.expired'
+  | 'action_request.executed'
+  | 'action_request.execution_failed'
 
 interface WriteEntry extends AuditContext {
   event_type: AuditEventType

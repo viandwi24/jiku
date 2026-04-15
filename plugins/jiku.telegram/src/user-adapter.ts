@@ -627,6 +627,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
       metadata: {
         chat_title: m.chat.title ?? m.chat.firstName,
         chat_type: chatType,
+        // Plan 25 add-on — reply context. mtcute exposes RepliedMessageInfo
+        // via `m.replyToMessage` (getter). Snapshot the useful fields so the
+        // event-router can inject a Reply chain into connector_context. The
+        // raw object's getters don't survive JSON serialization, so we copy
+        // explicit primitives here.
+        ...(extractMtcuteReply(m as unknown as { replyToMessage?: unknown })),
       },
       raw_payload: m,
       timestamp: m.date instanceof Date ? m.date : new Date((Number(m.date ?? 0)) * 1000),
@@ -1068,3 +1074,42 @@ class TelegramUserAdapter extends ConnectorAdapter {
 
 export const telegramUserAdapter = new TelegramUserAdapter()
 export { TelegramUserAdapter }
+
+/**
+ * Extract reply context from a mtcute Message into a plain JSON-safe object
+ * suitable for `event.metadata.reply_to`. Uses duck typing because mtcute's
+ * RepliedMessageInfo is a class with getters that don't survive JSON.
+ */
+function extractMtcuteReply(m: { replyToMessage?: unknown }): { reply_to?: Record<string, unknown> } {
+  const r = m.replyToMessage as
+    | {
+        id?: number | null
+        origin?: string
+        chat?: { id?: number | bigint } | null
+        sender?: { id?: number | bigint; username?: string; firstName?: string; displayName?: string } | null
+        quoteText?: string
+        isQuote?: boolean
+        threadId?: number | null
+      }
+    | null
+    | undefined
+  if (!r || typeof r !== 'object') return {}
+  const id = r.id ?? null
+  if (id === null && !r.sender) return {}  // nothing useful
+  const reply_to: Record<string, unknown> = {
+    origin: r.origin ?? 'same_chat',
+    is_quote: r.isQuote === true,
+  }
+  if (id !== null) reply_to['message_id'] = String(id)
+  if (r.chat?.id != null) reply_to['chat_id'] = String(r.chat.id)
+  if (r.threadId != null) reply_to['thread_id'] = String(r.threadId)
+  if (r.sender) {
+    reply_to['sender'] = {
+      id: r.sender.id != null ? String(r.sender.id) : null,
+      username: r.sender.username ?? null,
+      display_name: r.sender.displayName ?? r.sender.firstName ?? null,
+    }
+  }
+  if (r.quoteText) reply_to['quote_text'] = r.quoteText
+  return { reply_to }
+}

@@ -1296,6 +1296,83 @@ export default function ConnectorDetailPage({ params }: PageProps) {
           </CardContent>
         </Card>
       </div>
+
+      <OutboundApprovalSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
+    </div>
+  )
+}
+
+// ─── Plan 25 — Outbound approval gate ─────────────────────────────────────────
+function OutboundApprovalSection({
+  connector, onChanged,
+}: {
+  connector: ConnectorItem
+  onChanged: () => void
+}) {
+  const initialMode = connector.outbound_approval?.mode ?? 'none'
+  const initialExpiry = connector.outbound_approval?.default_expires_in_seconds ?? 3600
+  const [mode, setMode] = useState<'none' | 'always' | 'tagged'>(initialMode)
+  const [expiry, setExpiry] = useState<number>(initialExpiry)
+
+  const dirty = mode !== initialMode || expiry !== initialExpiry
+
+  const save = useMutation({
+    mutationFn: () => api.connectors.update(connector.id, {
+      outbound_approval: { mode, default_expires_in_seconds: expiry },
+    }),
+    onSuccess: () => { toast.success('Outbound approval updated'); onChanged() },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">Outbound Approval</h2>
+        <p className="text-xs text-muted-foreground">
+          Hold outbound messages from this connector in the Action Center until an operator approves them.
+        </p>
+      </div>
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Mode</Label>
+            <Select value={mode} onValueChange={(v) => setMode(v as 'none' | 'always' | 'tagged')}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None — send immediately (default)</SelectItem>
+                <SelectItem value="always">Always — every outbound message needs approval</SelectItem>
+                <SelectItem value="tagged">Tagged — only when agent sets params.require_approval = true</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {mode !== 'none' && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">Default expiry (seconds)</Label>
+              <Input
+                type="number"
+                value={expiry}
+                onChange={(e) => setExpiry(Math.max(60, Number(e.target.value) || 0))}
+                min={60}
+                max={604800}
+                className="h-8 text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">Pending requests auto-expire after this many seconds. Min 60, max 604800 (7 days).</p>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+            {dirty && (
+              <Button size="sm" variant="ghost" onClick={() => { setMode(initialMode); setExpiry(initialExpiry) }}>
+                Reset
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

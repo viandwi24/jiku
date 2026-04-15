@@ -129,6 +129,14 @@ const PERMISSION_GROUPS: { label: string; perms: { key: string; label: string }[
       { key: PERMISSIONS.CONSOLE_READ, label: 'View plugin / connector consoles' },
     ],
   },
+  {
+    label: 'Action Center',
+    perms: [
+      { key: PERMISSIONS.ACTION_REQUESTS_READ,    label: 'View action requests' },
+      { key: PERMISSIONS.ACTION_REQUESTS_RESPOND, label: 'Respond to action requests (approve / reject / answer / drop)' },
+      { key: PERMISSIONS.ACTION_REQUESTS_WRITE,   label: 'Create action requests manually' },
+    ],
+  },
 ]
 
 // ─── Role Editor Dialog ────────────────────────────────────────────────────────

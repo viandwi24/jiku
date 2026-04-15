@@ -23,6 +23,17 @@ export const connectors = pgTable('connectors', {
   default_agent_id: uuid('default_agent_id').references(() => agents.id, { onDelete: 'set null' }),
   status:         text('status').notNull().default('inactive'),
   error_message:  text('error_message'),
+  /**
+   * Plan 25 — outbound approval gate. Shape:
+   *   { mode: 'none' | 'always' | 'tagged', default_expires_in_seconds?: number }
+   * 'none'    → connector_send executes immediately (legacy).
+   * 'always'  → every connector_send is held as an Action Request first.
+   * 'tagged'  → only sends with `params.require_approval=true` are held.
+   */
+  outbound_approval: jsonb('outbound_approval')
+    .$type<{ mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }>()
+    .notNull()
+    .default({ mode: 'none' }),
   created_at:     timestamp('created_at').notNull().defaultNow(),
   updated_at:     timestamp('updated_at').notNull().defaultNow(),
 }, t => [

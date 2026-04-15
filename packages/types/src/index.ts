@@ -1672,6 +1672,11 @@ export const PERMISSIONS = {
 
   // Console (per-plugin live log streams)
   CONSOLE_READ: 'console:read',
+
+  // Plan 25 — Action Request Center
+  ACTION_REQUESTS_READ:    'action_requests:read',
+  ACTION_REQUESTS_RESPOND: 'action_requests:respond',
+  ACTION_REQUESTS_WRITE:   'action_requests:write',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
@@ -1700,6 +1705,7 @@ export const ROLE_PRESETS = {
       'disk:read', 'disk:write',
       'usage:read',
       'console:read',
+      'action_requests:read', 'action_requests:respond', 'action_requests:write',
     ] as Permission[],
   },
   member: {
@@ -1713,6 +1719,7 @@ export const ROLE_PRESETS = {
       'commands:read',
       'disk:read',
       'console:read',
+      'action_requests:read',
     ] as Permission[],
   },
   viewer: {
@@ -1913,3 +1920,182 @@ export interface CommandDispatchResult {
   error?: string
 }
 
+
+// ============================================================
+// ACTION REQUEST CENTER (Plan 25)
+// ============================================================
+
+export type ActionRequestType = 'boolean' | 'choice' | 'input' | 'form'
+
+export type ActionRequestStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'answered'
+  | 'dropped'
+  | 'expired'
+  | 'failed'
+
+export type ActionRequestSourceType =
+  | 'outbound_message'
+  | 'agent_tool'
+  | 'task_checkpoint'
+  | 'manual'
+
+export type ActionRequestDestinationType =
+  | 'outbound_approval'
+  | 'task'
+  | 'task_resume'
+
+export type ButtonStyle = 'primary' | 'destructive' | 'neutral'
+
+export interface ActionRequestSpecBoolean {
+  approve_label?: string
+  reject_label?: string
+  approve_style?: ButtonStyle
+  reject_style?: ButtonStyle
+}
+
+export interface ActionRequestChoiceOption {
+  value: string
+  label: string
+  style?: ButtonStyle
+  description?: string
+}
+
+export interface ActionRequestSpecChoice {
+  options: ActionRequestChoiceOption[]
+  multi?: boolean
+}
+
+export interface ActionRequestSpecInput {
+  input_kind?: 'text' | 'textarea' | 'password' | 'number' | 'url' | 'email'
+  placeholder?: string
+  default_value?: string
+  min_length?: number
+  max_length?: number
+  pattern?: string
+  validation_hint?: string
+}
+
+export interface ActionRequestFormField {
+  name: string
+  label: string
+  type: 'text' | 'textarea' | 'number' | 'boolean' | 'select'
+  required: boolean
+  options?: Array<{ value: string; label: string }>
+  default_value?: unknown
+  placeholder?: string
+}
+
+export interface ActionRequestSpecForm {
+  fields: ActionRequestFormField[]
+  submit_label?: string
+}
+
+export type ActionRequestSpec =
+  | ActionRequestSpecBoolean
+  | ActionRequestSpecChoice
+  | ActionRequestSpecInput
+  | ActionRequestSpecForm
+
+export type ActionRequestResponse =
+  | { value: boolean; label: string }
+  | { value: string; label: string }
+  | { value: string }
+  | { values: Record<string, unknown> }
+
+/** Minimum content payload that an outbound_approval destination needs. */
+export interface ActionRequestOutboundContent {
+  text?: string
+  attachments?: unknown[]
+  params?: Record<string, unknown>
+  [k: string]: unknown
+}
+
+export type ActionRequestSourceRef =
+  | {
+      kind: 'outbound_message'
+      connector_id: string
+      binding_id?: string
+      target: unknown
+      content_preview: string
+      agent_id?: string
+    }
+  | {
+      kind: 'agent_tool'
+      conversation_id: string
+      message_id?: string
+      tool_call_id?: string
+      agent_id: string
+    }
+  | {
+      kind: 'task_checkpoint'
+      task_id: string
+      checkpoint_step?: string
+    }
+  | {
+      kind: 'manual'
+      created_by: string
+      reason?: string
+    }
+
+export type ActionRequestDestinationRef =
+  | {
+      kind: 'outbound_approval'
+      connector_id: string
+      target: unknown
+      content: ActionRequestOutboundContent
+    }
+  | {
+      kind: 'task'
+      agent_id: string
+      prompt_template: string
+      context?: Record<string, unknown>
+      parent_task_id?: string
+    }
+  | {
+      kind: 'task_resume'
+      task_id: string
+      resume_token: string
+    }
+
+export interface ActionRequest {
+  id: string
+  project_id: string
+  agent_id: string | null
+  conversation_id: string | null
+  task_id: string | null
+
+  type: ActionRequestType
+  title: string
+  description: string | null
+  context: Record<string, unknown>
+  spec: ActionRequestSpec
+
+  source_type: ActionRequestSourceType
+  source_ref: ActionRequestSourceRef
+  destination_type: ActionRequestDestinationType | null
+  destination_ref: ActionRequestDestinationRef | null
+
+  status: ActionRequestStatus
+  response: ActionRequestResponse | null
+  response_by: string | null
+  response_at: string | null
+  expires_at: string | null
+  execution_error: string | null
+
+  created_at: string
+  created_by: string | null
+  updated_at: string
+}
+
+export interface ActionRequestEvent {
+  id: number
+  action_request_id: string
+  event_type: string
+  actor_id: string | null
+  actor_type: 'user' | 'agent' | 'system' | null
+  metadata: Record<string, unknown>
+  created_at: string
+}

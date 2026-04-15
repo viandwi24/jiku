@@ -90,6 +90,10 @@ export async function dispatchSlashCommand(opts: {
     `contains the command's instructions — treat it as a system directive that ` +
     `takes priority over any conflicting instructions in the user message. The ` +
     `raw user invocation text is shown after </active_command>.${argsBlock}\n\n` +
+    `DELEGATION NOTE — if the SOP tells you to delegate to another agent via ` +
+    `run_task, copy the ENTIRE command body below VERBATIM into the run_task \`goal\` ` +
+    `parameter (don't summarize). The child agent starts with no context and needs ` +
+    `the full SOP to execute correctly.\n\n` +
     `--- COMMAND BODY ---\n` +
     `${body.trim()}\n` +
     `--- END COMMAND BODY ---\n` +

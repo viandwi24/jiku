@@ -176,7 +176,15 @@ export function buildRunTaskTool(
     permission: '*',
     modes: ['chat', 'task'],
     input: z.object({
-      goal: z.string().describe('The prompt/goal for the task agent to accomplish'),
+      goal: z.string().describe(
+        'The prompt/task for the child agent. Write it DETAILED and SELF-CONTAINED — the ' +
+        'child agent starts fresh with NO access to your current conversation, system prompt, ' +
+        'or active command context. Include every concrete detail the child needs: environment ' +
+        '(test/production), target channel/connector name, required file paths, step-by-step flow, ' +
+        'constraints ("do NOT forward", "must preserve entities"), and success criteria. ' +
+        'If you are forwarding a slash-command invocation, paste the FULL SOP text (not a summary) ' +
+        'into this goal — summarizing loses instructions and makes the child skip steps.',
+      ),
       agent_id: z.string().optional().describe('UUID of the agent to run the task. Omit OR pass empty string ("") to default to the CURRENT agent. If you pass a value, it MUST be a valid agent id from `list_agents` — invalid ids return AGENT_NOT_FOUND error (no silent fallback).'),
       detach: z.boolean().default(true).describe('true=background (returns task_id immediately), false=wait with timeout'),
       timeout_ms: z.number().default(30000).describe('Max wait ms when detach=false. Max 60s.'),

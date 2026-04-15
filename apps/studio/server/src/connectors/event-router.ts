@@ -287,6 +287,14 @@ async function buildConnectorContextString(
   )
 
   const platform = event.connector_id.replace('jiku.connector.', '')
+  parts.push(
+    `IMPORTANT — Reply delivery: Your final plain-text response will be automatically delivered ` +
+    `back to this chat as a message via ${platform}. Write your reply as the message body itself. ` +
+    `Do NOT narrate actions like "I will send a message..." — that narration would be sent verbatim ` +
+    `to the user. Do NOT call connector_send to reply to THIS chat (that would double-send); ` +
+    `connector_send is only for messaging a DIFFERENT chat/target. If you have nothing to say ` +
+    `(e.g. command invocation that only sets state), output empty text and no message will be sent.`,
+  )
   parts.push(`Platform: ${platform}`)
   if (connectorDisplayName) {
     parts.push(`Connector: ${connectorDisplayName}${connectorId ? ` (id=${connectorId})` : ''}`)

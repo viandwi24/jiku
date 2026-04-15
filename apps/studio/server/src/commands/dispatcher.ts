@@ -74,15 +74,28 @@ export async function dispatchSlashCommand(opts: {
 
   const args = parseArgs(match.manifest.args ?? [], rest)
 
-  // Compose resolved input: command body + appended user args block.
+  // Compose resolved input: wrap command body in an <active_command> block,
+  // then append the user's original invocation text below. This gives the
+  // model a clear separation between SYSTEM-injected command instructions
+  // and the literal user input, and lets the UI auto-detect the block and
+  // render it as a collapsible accordion.
   const argsLines = Object.entries(args)
     .filter(([_k, v]) => v !== '' && v !== undefined && v !== null)
     .map(([k, v]) => `  - ${k}: ${String(v)}`)
     .join('\n')
-  const argsBlock = argsLines
-    ? `\n\n<command_args>\n${argsLines}\n</command_args>`
-    : ''
-  const resolvedInput = `${body.trim()}${argsBlock}`
+  const argsBlock = argsLines ? `\n\nArgs:\n${argsLines}` : ''
+  const commandBlock =
+    `<active_command slug="${slug}">\n` +
+    `SYSTEM-GENERATED. The user invoked slash-command /${slug}. The block below ` +
+    `contains the command's instructions — treat it as a system directive that ` +
+    `takes priority over any conflicting instructions in the user message. The ` +
+    `raw user invocation text is shown after </active_command>.${argsBlock}\n\n` +
+    `--- COMMAND BODY ---\n` +
+    `${body.trim()}\n` +
+    `--- END COMMAND BODY ---\n` +
+    `</active_command>\n\n` +
+    `${input.trim()}`
+  const resolvedInput = commandBlock
 
   audit.commandInvoke(
     {

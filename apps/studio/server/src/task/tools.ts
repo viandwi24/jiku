@@ -177,20 +177,40 @@ export function buildRunTaskTool(
     modes: ['chat', 'task'],
     input: z.object({
       goal: z.string().describe('The prompt/goal for the task agent to accomplish'),
-      agent_id: z.string().optional().describe('ID of the agent to run the task. Defaults to current agent. Use list_agents to discover available agents.'),
+      agent_id: z.string().optional().describe('UUID of the agent to run the task. Omit OR pass empty string ("") to default to the CURRENT agent. If you pass a value, it MUST be a valid agent id from `list_agents` — invalid ids return AGENT_NOT_FOUND error (no silent fallback).'),
       detach: z.boolean().default(true).describe('true=background (returns task_id immediately), false=wait with timeout'),
       timeout_ms: z.number().default(30000).describe('Max wait ms when detach=false. Max 60s.'),
     }),
     execute: async (input: unknown, ctx) => {
       const parsed = input as { goal: string; agent_id?: string; detach: boolean; timeout_ms: number }
       const timeoutMs = Math.min(parsed.timeout_ms ?? 30000, TASK_TIMEOUT_MAX_MS)
-      const targetAgentId = parsed.agent_id ?? agentId
+
+      // Resolve target agent: if caller passed empty string OR omitted, default
+      // to the CURRENT agent (the one running the tool). If caller passed a
+      // non-empty UUID, validate it exists before spawning — otherwise we'd
+      // silently spawn against a non-existent agent and the user sees a
+      // confusing "agent_id tidak terdeteksi" hallucination from the model.
+      const rawAgentId = (parsed.agent_id ?? '').trim()
+      const targetAgentId = rawAgentId.length > 0 ? rawAgentId : agentId
+
+      if (rawAgentId.length > 0) {
+        const { getAgentById } = await import('@jiku-studio/db')
+        const exists = await getAgentById(targetAgentId).catch(() => null)
+        if (!exists) {
+          return {
+            status: 'error',
+            code: 'AGENT_NOT_FOUND',
+            message: `Agent with id "${targetAgentId}" not found in this project.`,
+            hint: 'Call `list_agents` to see available agent ids in this project, then retry with a valid `agent_id`. Or omit `agent_id` to delegate to yourself (the current agent).',
+          }
+        }
+      }
 
       // Check delegation permission when targeting a different agent
       if (targetAgentId !== agentId) {
         const permError = await checkTaskDelegationPermission(agentId, targetAgentId)
         if (permError) {
-          return { status: 'error', message: permError }
+          return { status: 'error', code: 'DELEGATION_FORBIDDEN', message: permError, hint: 'Check the target agent\'s task_allowed_agents config — your current agent may not be on the allow-list.' }
         }
       }
 

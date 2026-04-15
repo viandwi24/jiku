@@ -210,7 +210,15 @@ export abstract class ConnectorAdapter {
   readonly requiresInteractiveSetup?: boolean
 
   abstract onActivate(ctx: ConnectorContext): Promise<void>
-  abstract onDeactivate(): Promise<void>
+  /**
+   * Tear down a previously-activated connector instance. The optional
+   * `connectorId` argument lets adapters with per-credential state (Telegram
+   * bot adapter holding one Bot per credential) deactivate the RIGHT instance.
+   * Adapters that ignore the argument fall back to the legacy "deactivate
+   * the only known instance" behaviour — fine for single-credential adapters.
+   * Server (`activation.ts`) always passes the connectorId being deactivated.
+   */
+  abstract onDeactivate(connectorId?: string): Promise<void>
   abstract parseEvent(raw: unknown): ConnectorEvent | null
   abstract sendMessage(target: ConnectorTarget, content: ConnectorContent): Promise<ConnectorSendResult>
 
@@ -231,7 +239,7 @@ export abstract class ConnectorAdapter {
    * Execute a platform-specific action by id.
    * Called by the connector_run_action tool.
    */
-  runAction?(actionId: string, params: Record<string, unknown>): Promise<unknown>
+  runAction?(actionId: string, params: Record<string, unknown>, connectorId?: string): Promise<unknown>
 
   /**
    * Plan 22 — Compute scope_key for a parsed event.
@@ -273,7 +281,7 @@ export abstract class ConnectorAdapter {
    *
    * Adapter MAY return null pre-activation. Default returns null.
    */
-  getIdentity?(): ConnectorIdentity | null
+  getIdentity?(connectorId?: string): ConnectorIdentity | null
 
   /**
    * Plan 24 — Interactive setup: declare the wizard steps the credential

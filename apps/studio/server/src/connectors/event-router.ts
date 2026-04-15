@@ -70,7 +70,7 @@ async function tryRedeemInviteCode(event: ConnectorEvent, connectorUuid: string)
   const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
   if (adapter) {
     adapter.sendMessage(
-      { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+      { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorUuid },
       { text: '✅ Access granted! You can now chat with the agent.' },
     ).catch(() => {})
   }
@@ -423,6 +423,48 @@ export async function routeConnectorEvent(
     }
   }
 
+  // Auto-register inbound chat as connector_target if not yet known.
+  // Adapter-agnostic — works for bot, userbot, and any future connector that
+  // routes via this event-router. Idempotent (skips if same name exists).
+  // Race-guarded with `targetCreateInFlight` (same pattern as lazy group
+  // pairing) to avoid duplicates when multiple events for the same chat
+  // arrive in the same inbound batch.
+  if (connectorUuid && event.scope_key && event.type === 'message' && event.ref_keys['chat_id']) {
+    const targetKey = `${connectorUuid}::${event.scope_key}`
+    if (!targetCreateInFlight.has(targetKey)) {
+      targetCreateInFlight.add(targetKey)
+      void (async () => {
+        try {
+          const { getConnectorTargetByName, createConnectorTarget } = await import('@jiku-studio/db')
+          const existing = await getConnectorTargetByName(projectId, event.scope_key!, connectorUuid).catch(() => null)
+          if (!existing) {
+            const refKeys: Record<string, string> = {}
+            if (event.ref_keys['chat_id']) refKeys['chat_id'] = event.ref_keys['chat_id']
+            if (event.ref_keys['thread_id']) refKeys['thread_id'] = event.ref_keys['thread_id']
+            const chatTitle = (event.metadata?.['chat_title'] as string | undefined) ?? null
+            const threadTitle = (event.metadata?.['thread_title'] as string | undefined) ?? null
+            const displayName = threadTitle && chatTitle
+              ? `${chatTitle} → ${threadTitle}`
+              : chatTitle ?? event.scope_key!
+            await createConnectorTarget({
+              connector_id: connectorUuid,
+              name: event.scope_key!,
+              display_name: displayName,
+              ref_keys: refKeys,
+              scope_key: event.scope_key!,
+              description: `Auto-registered from inbound on ${new Date().toISOString().slice(0, 10)}`,
+            })
+            console.log(`[connector] auto-registered target connector=${connectorUuid} name=${event.scope_key} display="${displayName}"`)
+          }
+        } catch (err) {
+          console.warn('[connector] auto-register target failed:', err)
+        } finally {
+          targetCreateInFlight.delete(targetKey)
+        }
+      })()
+    }
+  }
+
   // Plan 22 revision — /reset command intercept (detach current scope/identity from its conversation).
   // Conversation row is preserved in DB (history intact); next message creates a new one.
   if (connectorUuid && event.type === 'message' && /^\/reset(\s|$)/i.test((event.content?.text ?? '').trim())) {
@@ -515,8 +557,39 @@ export async function routeConnectorEvent(
         // Path A: group / channel / topic
         try {
           const { getBindings, createBinding, updateBinding } = await import('@jiku-studio/db')
+          // Atomic in-process guard: when N inbound events arrive for the
+          // SAME scope_key within the same batch (5/batch via inbound queue),
+          // all N read `existing` BEFORE the first insert lands → all N
+          // create a draft → N duplicate drafts. Guard with a Set keyed on
+          // (connectorUuid, scope_key); first event wins, others skip.
+          const lazyKey = `${connectorUuid}::${event.scope_key}`
+          if (lazyCreateInFlight.has(lazyKey)) {
+            console.log(`[connector] lazy group-pairing skip (in-flight) connector=${connectorUuid} scope=${event.scope_key}`)
+            await logEv(projectId, {
+              connector_id: connectorUuid,
+              event_type: event.type,
+              ref_keys: event.ref_keys,
+              payload: event as unknown as Record<string, unknown>,
+              raw_payload: event.raw_payload,
+              status: 'pending_approval',
+              drop_reason: 'no_binding',
+              processing_ms: Date.now() - start,
+            })
+            return 'pending_approval'
+          }
+          lazyCreateInFlight.add(lazyKey)
+
           const existing = await getBindings(connectorUuid).catch(() => [])
           const hasDraftForScope = existing.some(b => b.scope_key_pattern === event.scope_key)
+          // Diagnostic: when this lazy-create path runs but does NOT create a
+          // draft, log loudly. The "group binding deleted but no fresh pairing
+          // request appears" symptom usually means an older draft (or stale
+          // disabled binding) still has the same scope_key_pattern — so this
+          // branch concludes "draft already exists" even though admin can't
+          // see it because the existing one already has agent_id assigned
+          // (excluded from getPendingGroupPairings filter). The Identities
+          // debug page now exposes ALL such rows so admin can spot + delete.
+          console.log(`[connector] lazy group-pairing check connector=${connectorUuid} scope=${event.scope_key}: existing_bindings=${existing.length}, hasDraftForScope=${hasDraftForScope}, matching_scope_pattern=${existing.filter(b => b.scope_key_pattern === event.scope_key).map(b => `id=${b.id} enabled=${b.enabled} agent_id=${(b.output_config as Record<string, unknown> | null)?.agent_id ?? 'none'}`).join(' | ') || 'NONE'}`)
           if (!hasDraftForScope) {
             const chatTitle = (event.metadata?.['chat_title'] as string | undefined) ?? event.scope_key
             const chatType = (event.metadata?.['chat_type'] as string | undefined) ?? 'group'
@@ -542,10 +615,15 @@ export async function routeConnectorEvent(
             // createBinding defaults enabled=true — a draft should be disabled
             // until admin picks an agent.
             await updateBinding(draft.id, { enabled: false })
-            console.log(`[connector] auto-registered group pairing draft from message event: ${event.scope_key}`)
+            console.log(`[connector] auto-registered group pairing draft id=${draft.id} from message event: scope=${event.scope_key}`)
           }
         } catch (err) {
           console.warn('[connector] failed to lazy-create group pairing draft:', err)
+        } finally {
+          // Release the in-flight guard now that the create attempt finished
+          // (success OR failure). Subsequent events for same scope can re-check
+          // existing bindings and find the just-created draft.
+          lazyCreateInFlight.delete(`${connectorUuid}::${event.scope_key}`)
         }
         await logEv(projectId, {
           connector_id: connectorUuid,
@@ -584,7 +662,7 @@ export async function routeConnectorEvent(
           const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
           if (adapter) {
             adapter.sendMessage(
-              { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+              { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorUuid },
               { text: '👋 Your access request has been sent. Please wait for admin approval.' },
             ).catch(() => {})
           }
@@ -701,12 +779,20 @@ export async function routeConnectorEvent(
         })
       }
       if (isNewIdentity) {
-        const adapter = connectorRegistry.getAdapterForConnector(connector.id)
-        if (adapter) {
-          adapter.sendMessage(
-            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
-            { text: '👋 Your access request has been sent. Please wait for admin approval.' },
-          ).catch(() => {})
+        // Notify ONLY for private DM. In group/channel scopes the message
+        // would land in the group itself — every joining member would see
+        // a "Your access request has been sent" line which is noisy +
+        // confusing for non-target members. Group/channel pairing flow is
+        // silent (admin sees the request in the UI panel only).
+        const isDmScope = !event.scope_key && typedBinding.source_type === 'private'
+        if (isDmScope) {
+          const adapter = connectorRegistry.getAdapterForConnector(connector.id)
+          if (adapter) {
+            adapter.sendMessage(
+              { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connector.id },
+              { text: '👋 Your access request has been sent. Please wait for admin approval.' },
+            ).catch(() => {})
+          }
         }
       }
       result = 'pending_approval'
@@ -823,6 +909,21 @@ export async function routeConnectorEvent(
 
 // In-memory set of conversation IDs currently being processed
 const runningConversations = new Set<string>()
+
+/**
+ * In-flight guard for lazy group-pairing creation. When N inbound events for
+ * the same (connector, scope_key) arrive in the same batch, only the first
+ * gets to insert a draft — others skip. Released after the insert completes
+ * (success OR failure). Keyed `${connectorUuid}::${scope_key}`.
+ */
+const lazyCreateInFlight = new Set<string>()
+
+/**
+ * In-flight guard for auto target registration. Same race as group-pairing
+ * lazy create — N inbound events for same chat in one batch could otherwise
+ * create N duplicate target rows. First wins, rest skip. Released in finally.
+ */
+const targetCreateInFlight = new Set<string>()
 
 async function executeConversationAdapter(
   event: ConnectorEvent,
@@ -966,7 +1067,7 @@ async function executeConversationAdapter(
         }
         if (responseText && connectorAdapter) {
           connectorAdapter.sendMessage(
-            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+            { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorId },
             { text: responseText, markdown: true, simulate_typing: true },
           ).catch(() => {})
         }
@@ -982,7 +1083,7 @@ async function executeConversationAdapter(
   connectorAdapter?.sendTyping?.({ ref_keys: event.ref_keys }).catch(() => {})
   const typingInterval = connectorAdapter?.sendTyping
     ? setInterval(() => {
-        connectorAdapter.sendTyping!({ ref_keys: event.ref_keys }).catch(() => {})
+        connectorAdapter.sendTyping!({ ref_keys: event.ref_keys, connector_id: connectorId }).catch(() => {})
       }, 4000)
     : null
 
@@ -1016,16 +1117,18 @@ async function executeConversationAdapter(
       projectId, agentId, input: inputText, surface: 'connector',
       userId: identity?.external_id ?? null,
     }).catch(() => ({ matched: false, resolvedInput: undefined, slug: undefined } as { matched: boolean; resolvedInput?: string; slug?: string }))
-    // Command body → HARD-RULE prepend (see chat.ts for rationale).
-    const commandPrepend = (cmdDispatch.matched && cmdDispatch.resolvedInput)
+    // Command body → bottom-of-system-prompt segment (see chat.ts for rationale).
+    const commandSegment = (cmdDispatch.matched && cmdDispatch.resolvedInput)
       ? [{
           label: `Active Command — /${cmdDispatch.slug ?? ''}`,
           content: [
-            `[Active Command — HARD RULE for this turn]`,
-            `External user invoked the slash command \`/${cmdDispatch.slug}\` (literal message: ${JSON.stringify(inputText)}).`,
-            `EXECUTE the SOP body below as if the user had typed it directly. Do NOT treat as background context.`,
+            `[Active Command — execute this turn]`,
+            `User invoked \`/${cmdDispatch.slug}\` (literal message: ${JSON.stringify(inputText)}).`,
+            `Follow the SOP body below as the user's instruction for this turn.`,
             ``,
+            `--- COMMAND BODY START ---`,
             cmdDispatch.resolvedInput,
+            `--- COMMAND BODY END ---`,
           ].join('\n'),
         }]
       : undefined
@@ -1073,8 +1176,9 @@ async function executeConversationAdapter(
           caller,
           mode: 'chat',
           input,
-          extra_system_prepend: commandPrepend,
-          extra_system_segments: refSegments,
+          extra_system_segments: [...(refSegments ?? []), ...(commandSegment ?? [])].length > 0
+            ? [...(refSegments ?? []), ...(commandSegment ?? [])]
+            : undefined,
         }),
         registerObserverStream: (obsStream: ReadableStream<unknown>) => {
           const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
@@ -1137,8 +1241,9 @@ async function executeConversationAdapter(
       caller,
       mode: 'chat',
       input,
-      extra_system_prepend: commandPrepend,
-      extra_system_segments: refSegments,
+      extra_system_segments: [...(refSegments ?? []), ...(commandSegment ?? [])].length > 0
+        ? [...(refSegments ?? []), ...(commandSegment ?? [])]
+        : undefined,
     })
 
     // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates
@@ -1222,7 +1327,7 @@ async function executeConversationAdapter(
       // (Agent-initiated sends via tools default to false; the agent can pass
       // simulate_typing:true explicitly when it wants the effect.)
       const sendResult = await connectorAdapter.sendMessage(
-        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys },
+        { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorId },
         { text: responseText, markdown: true, simulate_typing: true },
       )
       await logMsg(projectId, {

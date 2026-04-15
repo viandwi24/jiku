@@ -112,8 +112,17 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
   const credsNeedingSetup = projectCreds.filter(c => {
     const ad = adaptersById.get(c.adapter_id)
     if (!ad?.requires_interactive_setup) return false
-    // Consider setup incomplete if there are no masked secret fields yet.
-    return Object.keys(c.fields_masked ?? {}).length === 0
+    // Setup wizard required when the credential's "auto-filled" markers are
+    // missing — the wizard's job is to fill them. For Telegram User adapter
+    // that marker is `session_string` (in masked fields) OR `user_id` (in
+    // metadata); without either, no wizard has ever completed against this
+    // credential. We check both so any auto-filled key from the spec is OK.
+    const fields = c.fields_masked ?? {}
+    const meta = (c.metadata as Record<string, unknown> | undefined) ?? {}
+    const hasSession = !!fields['session_string'] || !!meta['session_string']
+    const hasUserId = !!meta['user_id'] || !!fields['user_id']
+    // If neither marker exists, setup is incomplete → show the alert.
+    return !hasSession && !hasUserId
   })
 
   return (
@@ -163,6 +172,13 @@ export default function ProjectCredentialsPage({ params }: PageProps) {
         onEdit={setEditTarget}
         onDelete={(id) => deleteMutation.mutate(id)}
         onTest={(id) => testMutation.mutate(id)}
+        onSetup={(c) => setSetupTarget({ id: c.id, adapter_id: c.adapter_id })}
+        isSetupEligible={(c) => !!adaptersById.get(c.adapter_id)?.requires_interactive_setup}
+        isSetupCompleted={(c) => {
+          const meta = (c.metadata as Record<string, unknown> | undefined) ?? {}
+          const fields = c.fields_masked ?? {}
+          return !!fields['session_string'] || !!meta['session_string'] || !!meta['user_id'] || !!fields['user_id']
+        }}
         emptyText="No project credentials yet."
       />
 

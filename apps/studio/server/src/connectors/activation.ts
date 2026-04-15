@@ -59,7 +59,7 @@ export async function activateConnector(connectorId: string): Promise<void> {
 export async function deactivateConnector(connectorId: string): Promise<void> {
   const adapter = connectorRegistry.getAdapterForConnector(connectorId)
   if (adapter) {
-    await adapter.onDeactivate().catch(err =>
+    await adapter.onDeactivate(connectorId).catch(err =>
       console.warn(`[connector] deactivate error (${connectorId}):`, err)
     )
   }

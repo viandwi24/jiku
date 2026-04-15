@@ -28,9 +28,25 @@ import type { ConnectorSetupSpec, ConnectorSetupStepResult } from '@jiku/types'
 const router = Router()
 router.use(authMiddleware)
 
+/**
+ * Resolve the connector adapter that owns a given credential. Looks up by the
+ * adapter's `credentialAdapterId` (NOT its `id`) — credentials store the
+ * `adapter_id` of the credential row, which corresponds to the adapter's
+ * declared `credentialAdapterId` (e.g. 'telegram', 'telegram-user'), while
+ * the registry keys adapters by the connector_id (e.g. 'jiku.telegram.bot',
+ * 'jiku.telegram.user'). Walk the registry to find the matching one.
+ */
 function resolveAdapterForCredential(credential: { adapter_id: string | null }) {
-  const adapterId = credential.adapter_id ?? ''
-  return connectorRegistry.get(adapterId)
+  const credAdapterId = credential.adapter_id ?? ''
+  if (!credAdapterId) return undefined
+  // First try direct id match (legacy adapters where id === credentialAdapterId).
+  const direct = connectorRegistry.get(credAdapterId)
+  if (direct) return direct
+  // Then walk by credentialAdapterId.
+  for (const adapter of connectorRegistry.list()) {
+    if (adapter.credentialAdapterId === credAdapterId) return adapter
+  }
+  return undefined
 }
 
 router.post(
@@ -42,7 +58,10 @@ router.post(
 
     const cred = await getCredentialById(credentialId)
     if (!cred) { res.status(404).json({ error: 'Credential not found' }); return }
-    if (cred.project_id !== projectId && cred.project_id !== null) {
+    // Credentials use scope+scope_id (no project_id column). Project-scoped
+    // creds must match this project; company-scoped pass through (caller's
+    // permission was already validated by `requirePermission` middleware).
+    if (cred.scope === 'project' && cred.scope_id !== projectId) {
       res.status(403).json({ error: 'Credential does not belong to this project' })
       return
     }
@@ -106,9 +125,14 @@ router.post(
       return
     }
 
-    // Refresh decrypted credential fields into the session — adapter reads
-    // these (e.g. api_id, api_hash, phone_number) instead of importing db.
-    session.credential_fields = cred.fields ? decryptFields(cred.fields) : {}
+    // Refresh credential data into the session — adapter reads these
+    // (e.g. api_id, api_hash, phone_number) instead of importing db. Merge
+    // BOTH columns: encrypted secrets (api_id, api_hash) AND plain metadata
+    // (phone_number, user_id, etc). Adapter doesn't need to care which
+    // column a field lives in — it just sees a flat `credential_fields`.
+    const decrypted = cred.fields_encrypted ? decryptFields(cred.fields_encrypted) : {}
+    const meta = (cred.metadata as Record<string, string> | null) ?? {}
+    session.credential_fields = { ...meta, ...decrypted }
 
     let result: ConnectorSetupStepResult
     try {
@@ -133,20 +157,54 @@ router.post(
     )
 
     if (result.ok && 'complete' in result && result.complete) {
-      // Persist the returned fields into the credential. Merge into existing
-      // fields so partial setup writes (session_string + user_id + ...) coexist
-      // with whatever the user already configured manually.
-      const existing = cred.fields ? decryptFields(cred.fields) : {}
-      const merged: Record<string, string> = { ...existing }
+      // Split returned fields by adapter's credentialSchema: ones marked
+      // `'secret|...'` go into `fields_encrypted` (AES-GCM), the rest land in
+      // plain `metadata`. Without this split, non-secret display fields
+      // (user_id, username, is_premium) would be stored encrypted unnecessarily
+      // AND they wouldn't be queryable / inspectable from the metadata column
+      // — UI badges that read metadata would miss them.
+      const { zodSchemaToAdapterFields } = await import('../credentials/adapters.ts')
+      const adapterFieldsSpec = adapter.credentialSchema
+        ? zodSchemaToAdapterFields(adapter.credentialSchema)
+        : { fields: [], metadata: [] }
+      // AdapterField uses `key` (not `name`) — getting this wrong means every
+      // field falls into the `else` branch and gets stored in plain metadata
+      // INCLUDING session_string. That made onActivate fail with "No
+      // session_string" right after a "successful" wizard.
+      const secretNames = new Set(adapterFieldsSpec.fields.map(f => f.key))
+      const metaNames = new Set(adapterFieldsSpec.metadata.map(f => f.key))
+
+      // Existing values per column, merge-then-overwrite.
+      const existingFields = cred.fields_encrypted ? decryptFields(cred.fields_encrypted) : {}
+      const existingMeta = (cred.metadata as Record<string, string> | null) ?? {}
+      const mergedFields: Record<string, string> = { ...existingFields }
+      const mergedMeta: Record<string, string> = { ...existingMeta }
+
       for (const [k, v] of Object.entries(result.fields)) {
-        merged[k] = v === null || v === undefined ? '' : String(v)
+        const stringified = v === null || v === undefined ? '' : String(v)
+        if (secretNames.has(k)) {
+          mergedFields[k] = stringified
+        } else if (metaNames.has(k)) {
+          mergedMeta[k] = stringified
+        } else {
+          // Unknown key — adapter returned a field that's not in its own
+          // credentialSchema. Store in metadata + warn (not fatal — adapter
+          // might be ahead of its declared schema).
+          console.warn(`[connector-setup] adapter "${adapter.id}" returned field "${k}" not declared in credentialSchema — storing in metadata`)
+          mergedMeta[k] = stringified
+        }
       }
-      await updateCredential(credentialId, { fields: encryptFields(merged) })
+
+      console.log(`[connector-setup] persisting credential=${credentialId} adapter=${adapter.id} secret_keys=[${Object.keys(mergedFields).join(',')}] metadata_keys=[${Object.keys(mergedMeta).join(',')}]`)
+      await updateCredential(credentialId, {
+        fields_encrypted: encryptFields(mergedFields),
+        metadata: mergedMeta,
+      })
       connectorSetupSessions.delete(sessionId)
       audit.credentialSetupCompleted(
         { ...auditContext(req), project_id: projectId },
         credentialId,
-        { session_id: sessionId, step_id: body.step_id, persisted_field_count: Object.keys(result.fields).length },
+        { session_id: sessionId, step_id: body.step_id, persisted_field_count: Object.keys(result.fields).length, secret_count: Object.keys(result.fields).filter(k => secretNames.has(k)).length },
       )
       res.json(result)
       return

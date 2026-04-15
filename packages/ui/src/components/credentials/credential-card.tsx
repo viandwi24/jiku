@@ -3,7 +3,7 @@
 import { Badge } from '../ui/badge.tsx'
 import { Button } from '../ui/button.tsx'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu.tsx'
-import { MoreHorizontal, Trash2, Pencil, Zap } from 'lucide-react'
+import { MoreHorizontal, Trash2, Pencil, Zap, Wand2 } from 'lucide-react'
 import { cn } from '../../lib/utils.ts'
 
 export interface CredentialCardItem {
@@ -24,9 +24,17 @@ interface CredentialCardProps {
   onEdit?: (credential: CredentialCardItem) => void
   onDelete?: (id: string) => void
   onTest?: (id: string) => void
+  /**
+   * Show a "Setup" / "Re-run setup" action in the dropdown. Pass the handler
+   * for credentials whose adapter requires interactive setup (e.g. Telegram
+   * userbot OTP wizard). Item is hidden when undefined.
+   */
+  onSetup?: (credential: CredentialCardItem) => void
+  /** When true, label the action "Re-run Setup" — credential already configured. */
+  setupCompleted?: boolean
 }
 
-export function CredentialCard({ credential, readonly, onEdit, onDelete, onTest }: CredentialCardProps) {
+export function CredentialCard({ credential, readonly, onEdit, onDelete, onTest, onSetup, setupCompleted }: CredentialCardProps) {
   return (
     <div className="flex items-center justify-between px-4 py-3 border-b last:border-b-0">
       <div className="flex items-center gap-3 min-w-0">
@@ -52,9 +60,14 @@ export function CredentialCard({ credential, readonly, onEdit, onDelete, onTest 
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {onSetup && (
+              <DropdownMenuItem onClick={() => onSetup(credential)}>
+                <Wand2 className="w-3.5 h-3.5 mr-2" /> {setupCompleted ? 'Re-Setup' : 'Setup'}
+              </DropdownMenuItem>
+            )}
             {onTest && (
               <DropdownMenuItem onClick={() => onTest(credential.id)}>
-                <Zap className="w-3.5 h-3.5 mr-2" /> Test Connection
+                <Zap className="w-3.5 h-3.5 mr-2" /> Test
               </DropdownMenuItem>
             )}
             {onEdit && (

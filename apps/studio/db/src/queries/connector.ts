@@ -186,6 +186,20 @@ export async function deleteBinding(id: string) {
 
 // ─── Identities ───────────────────────────────────────────────────────────────
 
+/**
+ * Debug / admin endpoint feed — return ALL identities for a connector,
+ * regardless of status (pending / approved / blocked / orphan) or binding
+ * state. Lets the operator see history of pairing requests + force-reset
+ * stuck rows. Sorted newest first.
+ */
+export async function getAllIdentitiesForConnector(connectorId: string) {
+  return db
+    .select()
+    .from(connector_identities)
+    .where(eq(connector_identities.connector_id, connectorId))
+    .orderBy(desc(connector_identities.created_at))
+}
+
 export async function getIdentitiesForBinding(bindingId: string) {
   return db
     .select()

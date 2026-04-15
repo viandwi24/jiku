@@ -693,7 +693,14 @@ export class JikuRuntimeManager {
     // Plan 22 revision — always append Company & Team structure for project-scoped runs.
     // Cheap (≈2 indexed queries) and gives the agent cross-user awareness without
     // registering a global plugin.
-    const extraSegments: Array<{ label: string; content: string }> = [...(params.extra_system_segments ?? [])]
+    //
+    // Order: framework-supplied segments (team, project) come FIRST, then
+    // caller-supplied (`params.extra_system_segments`) come LAST. Recency bias
+    // in LLMs makes the LAST thing before the user message the highest-weighted
+    // instruction. Per-turn segments like Active Command + @file hint live in
+    // params.extra_system_segments and benefit from being the very last block
+    // of the system prompt.
+    const extraSegments: Array<{ label: string; content: string }> = []
     try {
       const { buildTeamStructureSegment } = await import('./team-structure.ts')
       const teamSeg = await buildTeamStructureSegment(projectId)
@@ -708,6 +715,10 @@ export class JikuRuntimeManager {
     } catch (err) {
       console.warn('[runtime] Failed to build project context segment:', err)
     }
+    // Caller-supplied segments LAST — closest to user message = highest recency
+    // weight. Active Command body lands here intentionally so the model treats
+    // the SOP as "current ask", not a background framework rule.
+    extraSegments.push(...(params.extra_system_segments ?? []))
     // Capability hint — must be PREPENDED before base_prompt so it overrides agent persona
     // ("I can't schedule"). Models commonly default to refusal even when the tool is registered;
     // base_prompt persona dominates plugin segments. Putting the rule at the very top of the

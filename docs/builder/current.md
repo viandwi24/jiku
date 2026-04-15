@@ -1,3 +1,12 @@
+## Phase (2026-04-15) — Telegram production safety hardening ✅
+
+Final audit before production run. Three fixes shipped:
+1. Bot adapter `runAction` — every `bot.api.*` call wrapped with `enqueueForChat + withTelegramRetry` (closed flood + 429-loop risk).
+2. `runAction` signature now threads `connectorId` through (kit + tools + both Telegram adapters) — closes multi-tenant cross-bot leak for action calls.
+3. Action surface narrowed to message + media only. Removed from bot: send_reaction, delete_message, pin/unpin, get_chat_members, create_invite_link, set_chat_description, ban_member. Removed from userbot: join_chat, leave_chat, delete_message, send_reaction, pin/unpin. See ADR-090/091/092.
+
+No known-remaining blockers for production. `runAction` in connectors/tools forwards `connector_id`. `botFor()`/`clientFor()`/`queueFor()` resolve per-credential state.
+
 ## Phase (2026-04-14) — Plan 24 (Telegram Userbot via MTProto) — ALL 5 PHASES SHIPPED
 
 Five-phase plan from `docs/plans/24-telegram-userbot-mtproto.md`. Single-session full implementation.

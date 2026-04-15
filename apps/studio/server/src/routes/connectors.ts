@@ -14,6 +14,7 @@ import {
   deleteBinding,
   getIdentitiesForBinding,
   getPairingRequestsForConnector,
+  getAllIdentitiesForConnector,
   getPendingGroupPairings,
   getBlockedIdentitiesForConnector,
   getIdentityById,
@@ -234,8 +235,8 @@ router.get('/connectors/:id/health', authMiddleware, requireConnectorPermission(
   try {
     const connector = await getConnectorById(id)
     if (!connector) return res.status(404).json({ error: 'Connector not found' })
-    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getHealth?: () => unknown } | null
-    const adapterHealth = adapter?.getHealth?.() ?? null
+    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getHealth?: (cid?: string) => unknown } | null
+    const adapterHealth = adapter?.getHealth?.(id) ?? null
     res.json({
       ok: true,
       status: connector.status,
@@ -261,10 +262,23 @@ router.get('/connectors/:id/identity', authMiddleware, requireConnectorPermissio
   try {
     const connector = await getConnectorById(id)
     if (!connector) return res.status(404).json({ error: 'Connector not found' })
-    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getIdentity?: () => unknown } | null
-    if (!adapter) return res.json({ ok: true, identity: null, reason: 'connector_not_active' })
-    if (typeof adapter.getIdentity !== 'function') return res.json({ ok: true, identity: null, reason: 'adapter_not_identity_capable' })
-    return res.json({ ok: true, identity: adapter.getIdentity() ?? null })
+
+    // Resolve credential metadata (name + adapter_id) so the UI badge can show
+    // BOTH the platform identity (bot username) AND which credential row is in
+    // use — important when one project has multiple credentials of same type.
+    let credential: { id: string; name: string | null; adapter_id: string | null } | null = null
+    if (connector.credential_id) {
+      try {
+        const { getCredentialById } = await import('@jiku-studio/db')
+        const cred = await getCredentialById(connector.credential_id)
+        if (cred) credential = { id: cred.id, name: cred.name ?? null, adapter_id: cred.adapter_id ?? null }
+      } catch { /* best-effort */ }
+    }
+
+    const adapter = connectorRegistry.getAdapterForConnector(id) as unknown as { getIdentity?: (cid?: string) => unknown } | null
+    if (!adapter) return res.json({ ok: true, identity: null, credential, reason: 'connector_not_active' })
+    if (typeof adapter.getIdentity !== 'function') return res.json({ ok: true, identity: null, credential, reason: 'adapter_not_identity_capable' })
+    return res.json({ ok: true, identity: adapter.getIdentity(id) ?? null, credential })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
@@ -342,6 +356,51 @@ router.patch('/connectors/:id/bindings/:bid/identities/:iid', authMiddleware, re
 })
 
 // ─── Pairing Requests ────────────────────────────────────────────────────────
+
+/**
+ * GET /connectors/:id/identities — debug feed of ALL identities (pending,
+ * approved, blocked, orphan) regardless of binding state. UI uses this for
+ * "Pairing & Identity History" panel — see what's stuck, force-reset to
+ * pending, force-delete to wipe + restart pairing flow.
+ */
+router.get('/connectors/:id/identities', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {
+  try {
+    const rows = await getAllIdentitiesForConnector(req.params['id']!)
+    res.json({ identities: rows })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/**
+ * POST /connectors/:id/identities/:iid/reset — set status='pending' + clear
+ * binding_id. Lets admin re-trigger the pairing approval flow without waiting
+ * for the user to send another inbound message.
+ */
+router.post('/connectors/:id/identities/:iid/reset', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const identity = await updateIdentity(req.params['iid']!, { status: 'pending', binding_id: null })
+    if (!identity) { res.status(404).json({ error: 'Identity not found' }); return }
+    res.json({ ok: true, identity })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+/**
+ * DELETE /connectors/:id/identities/:iid — hard delete the identity row. Use
+ * when force-reset isn't enough (e.g. corrupt external_ref_keys). Next inbound
+ * from this user creates a fresh pending identity.
+ */
+router.delete('/connectors/:id/identities/:iid', authMiddleware, requireConnectorPermission('channels:write'), async (req, res) => {
+  try {
+    const { deleteIdentity } = await import('@jiku-studio/db')
+    await deleteIdentity(req.params['iid']!)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
 
 /** GET /connectors/:id/pairing-requests — list pending identities with no binding */
 router.get('/connectors/:id/pairing-requests', authMiddleware, requireConnectorPermission('channels:read'), async (req, res) => {

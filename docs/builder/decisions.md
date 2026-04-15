@@ -1,5 +1,29 @@
 # Decisions
 
+## ADR-090 — Telegram connector actions limited to message + media management
+
+**Context:** Audit before production found bot-adapter `runAction` exposed group/channel administration tools (`ban_member`, `set_chat_description`, `create_invite_link`, `get_chat_members`) plus destructive message ops (`delete_message`, `pin_message`, `unpin_message`, `send_reaction`). Userbot exposed the same destructive ops plus `join_chat`/`leave_chat` which trigger Telegram spam flags when bursted. A prompt-injected agent with access to these actions could silently ban users, rewrite channel descriptions, or mass-unpin — high blast radius, low observability. The scope of Jiku's Telegram usage is conversational message automation, not group administration.
+
+**Decision:** Restrict both adapters to message + media management only. Keep: send text (via sendMessage), send_photo, send_file, send_media_group, send_url_media, send_to_scope, forward_message, copy_message, edit_message (own messages only), get_chat_info (read-only), fetch_media. Userbot additionally keeps read-only helpers (get_chat_history, get_dialogs, search_messages, get_user_info) plus low-risk UX helpers (mark_read, set_typing). Delete, reaction, pin/unpin, ban, invite-link, description, admin listing, and join/leave are removed from the action registry entirely — not gated, not opt-in: not present.
+
+**Consequences:** Agents cannot perform Telegram group administration through Jiku. If an operator needs those actions later, they should be reintroduced behind explicit per-action opt-in at the credential level and surfaced as high-risk in the UI — not as default capabilities. Reactions removed is a UX loss for some flows (engagement signals) but acceptable given the injection risk.
+
+## ADR-091 — `runAction` threads `connectorId` through for multi-tenant routing
+
+**Context:** Both Telegram adapters are singletons in the registry and hold per-credential state in a Map (`instances`, `userInstances`). The outbound send paths pass `target.connector_id` and resolve via `botFor()`/`clientFor()`, but `runAction(actionId, params)` had no connector context — it fell back to `this.bot`/`this.client` (last-activated). With two credentials active, tool calls could silently hit the wrong identity.
+
+**Decision:** Extend `ConnectorAdapter.runAction` signature with optional `connectorId?: string`. `connectors/tools.ts` passes the tool's `connector_id` arg through. Both Telegram adapters resolve bot/client/queue via the per-connector Map before executing. Legacy adapters that ignore the argument retain existing behaviour.
+
+**Consequences:** Tight multi-tenant correctness for all action branches without reshaping the adapter contract. Adapters that want full isolation now have a well-defined hook; adapters with single-credential scope can ignore it.
+
+## ADR-092 — `runAction` enforces queue + retry on every API call
+
+**Context:** Bot adapter's queue (`enqueueForChat`) and 429 retry (`withTelegramRetry`) wrapped only `sendMessageInner`. Every other `runAction` branch called `bot.api.*` directly — no per-chat spacing, no 429 backoff. A loop of agent-driven edits or reactions could flood Telegram and spiral 429s without honouring `retry_after`.
+
+**Decision:** Every outbound Bot API call in `runAction` goes through `enqueueForChat(chatId, () => withTelegramRetry(fn, label))`. Scope-less reads (fetch_media's `getFile`) skip the chat queue but still run under `withTelegramRetry`. Userbot already routed all actions through `queue.enqueue`; the only gap there (`runAction` using scalar `this.queue`) is closed by ADR-091.
+
+**Consequences:** Adding a new action requires wrapping it in the same helper — the pattern is explicit in the switch body. Modest per-call latency on bursts is acceptable given the flood-protection value.
+
 ## ADR-089 — Commands access-mode gate is uniform across all surfaces (supersedes §surface bypass in the Commands feature)
 
 **Context:** While wiring the Commands system, I introduced a "chat surface bypasses the allow-list" shortcut — rationale was UX: "chat is user-triggered, user knows what they're doing, forcing an allow-list is friction." The Telegram connector surface was simultaneously deferred entirely (ADR-085). The result was asymmetric and confusing: `command_access_mode='manual'` with empty allow-list rejected Telegram calls (correct) but silently accepted chat calls (wrong — the config said manual). Config was a lie.

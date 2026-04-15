@@ -447,7 +447,12 @@ export const api = {
       adapter: { polling: boolean; last_event_at: string | null; bot_user_id: number | null } | null
     }>(`/api/connectors/${id}/health`),
     getIdentity: (id: string) =>
-      request<{ ok: boolean; identity: { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null; reason?: string }>(`/api/connectors/${id}/identity`),
+      request<{
+        ok: boolean
+        identity: { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null
+        credential: { id: string; name: string; adapter_id: string } | null
+        reason?: string
+      }>(`/api/connectors/${id}/identity`),
 
     bindings: {
       list: (connectorId: string) => request<{ bindings: ConnectorBinding[] }>(`/api/connectors/${connectorId}/bindings`),
@@ -486,6 +491,14 @@ export const api = {
       reject: (connectorId: string, identityId: string) =>
         request<{ identity: ConnectorIdentity }>(`/api/connectors/${connectorId}/pairing-requests/${identityId}/reject`, { method: 'POST' }),
     },
+
+    // Debug panel — all identities ever seen by this connector (any status).
+    listAllIdentities: (connectorId: string) =>
+      request<{ identities: Array<{ id: string; connector_id: string; binding_id: string | null; external_ref_keys: Record<string, string> | null; display_name: string | null; status: 'pending' | 'approved' | 'blocked'; created_at: string; approved_at: string | null; last_seen_at: string | null }> }>(`/api/connectors/${connectorId}/identities`),
+    resetIdentity: (connectorId: string, identityId: string) =>
+      request<{ ok: boolean; identity: unknown }>(`/api/connectors/${connectorId}/identities/${identityId}/reset`, { method: 'POST' }),
+    forceDeleteIdentity: (connectorId: string, identityId: string) =>
+      request<{ ok: boolean }>(`/api/connectors/${connectorId}/identities/${identityId}`, { method: 'DELETE' }),
 
     // Blocked identities — rejected DM pairings or stuck rows. Admin can unblock
     // (send back to pending queue) or hard-delete.

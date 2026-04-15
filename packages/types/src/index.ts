@@ -1161,6 +1161,15 @@ export interface ConnectorTarget {
   reply_to_ref_keys?: Record<string, string>
   /** Plan 22 — Override target scope (e.g. kirim ke topic tertentu dalam group) */
   scope_key?: string
+  /**
+   * Multi-tenant isolation — connector UUID this target belongs to. Adapter
+   * with multiple active credentials (e.g. two Telegram bots in different
+   * projects) uses this to look up the RIGHT bot/session instance to send
+   * with. When omitted, adapter falls back to last-activated instance — that
+   * fallback is the legacy behaviour and SHOULD be considered deprecated.
+   * All studio-side callers MUST set this.
+   */
+  connector_id?: string
 }
 
 /**

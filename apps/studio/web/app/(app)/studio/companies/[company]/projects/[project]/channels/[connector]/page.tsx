@@ -5,24 +5,41 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ConnectorBinding, ConnectorIdentity, ConnectorInviteCode, ConnectorItem, ConnectorTargetItem } from '@/lib/api'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Badge,
   Button,
   Card,
   CardContent,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
   Label,
+  RadioGroup,
+  RadioGroupItem,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
   Separator,
+  Textarea,
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Bot, Check, Clock, Copy, Link2, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Ban, Bot, Check, Clock, Copy, Link2, Pencil, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -74,9 +91,11 @@ function formatAge(seconds: number): string {
  */
 function IdentityBadge({
   identity,
+  credential,
   reason,
 }: {
   identity: { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null
+  credential: { id: string; name: string; adapter_id: string } | null
   reason?: string
 }) {
   // Adapter doesn't support identity introspection — hide entirely.
@@ -103,39 +122,65 @@ function IdentityBadge({
 
   return (
     <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-0.5 text-xs font-medium">
-            <Bot className="h-3 w-3 text-muted-foreground" />
-            <span>Running as </span>
-            <span className="font-mono">
-              {identity.username
-                ? (identity.username.startsWith('@') ? identity.username : `@${identity.username}`)
-                : identity.name}
-            </span>
+      <div className="inline-flex flex-col gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-0.5 text-xs font-medium w-fit">
+              <Bot className="h-3 w-3 text-muted-foreground" />
+              <span>Running as </span>
+              <span className="font-mono">
+                {identity.username
+                  ? (identity.username.startsWith('@') ? identity.username : `@${identity.username}`)
+                  : identity.name}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">
+            <div className="space-y-0.5">
+              <div>{label}</div>
+              {identity.user_id && (
+                <div className="text-muted-foreground">
+                  user_id: <span className="font-mono">{identity.user_id}</span>
+                </div>
+              )}
+              {kind && (
+                <div className="text-muted-foreground">
+                  kind: <span className="font-mono">{kind}</span>
+                </div>
+              )}
+              {typeof isPremium === 'boolean' && (
+                <div className="text-muted-foreground">
+                  is_premium: <span className="font-mono">{String(isPremium)}</span>
+                </div>
+              )}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+        {credential ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="inline-flex items-center gap-1 pl-2 text-[11px] text-muted-foreground w-fit cursor-help">
+                <span>Credential:</span>
+                <span className="font-mono">{credential.name}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              <div className="space-y-0.5">
+                <div>
+                  credential_id: <span className="font-mono">{credential.id}</span>
+                </div>
+                <div className="text-muted-foreground">
+                  adapter: <span className="font-mono">{credential.adapter_id}</span>
+                </div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="inline-flex items-center gap-1 pl-2 text-[11px] text-muted-foreground w-fit italic">
+            Credential: (unknown)
           </div>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="text-xs">
-          <div className="space-y-0.5">
-            <div>{label}</div>
-            {identity.user_id && (
-              <div className="text-muted-foreground">
-                user_id: <span className="font-mono">{identity.user_id}</span>
-              </div>
-            )}
-            {kind && (
-              <div className="text-muted-foreground">
-                kind: <span className="font-mono">{kind}</span>
-              </div>
-            )}
-            {typeof isPremium === 'boolean' && (
-              <div className="text-muted-foreground">
-                is_premium: <span className="font-mono">{String(isPremium)}</span>
-              </div>
-            )}
-          </div>
-        </TooltipContent>
-      </Tooltip>
+        )}
+      </div>
     </TooltipProvider>
   )
 }
@@ -144,11 +189,23 @@ function BindingCard({
   binding,
   base,
   onDelete,
+  onSave,
 }: {
   binding: ConnectorBinding
   base: string
   onDelete: () => void
+  onSave: (updates: { display_name?: string | null; member_mode?: 'require_approval' | 'allow_all' }) => void
 }) {
+  const [editOpen, setEditOpen] = useState(false)
+  const [displayName, setDisplayName] = useState(binding.display_name ?? '')
+  const [memberMode, setMemberMode] = useState<'require_approval' | 'allow_all'>(binding.member_mode ?? 'require_approval')
+
+  const openEdit = () => {
+    setDisplayName(binding.display_name ?? '')
+    setMemberMode(binding.member_mode ?? 'require_approval')
+    setEditOpen(true)
+  }
+
   return (
     <div className="flex items-center justify-between py-3 px-4 rounded-lg border bg-card group">
       <div className="space-y-0.5">
@@ -161,6 +218,15 @@ function BindingCard({
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={openEdit}
+          title="Edit binding"
+        >
+          <Pencil className="h-3 w-3" />
+        </Button>
         <Button size="sm" variant="ghost" className="h-7 text-xs" asChild>
           <Link href={`${base}/bindings/${binding.id}`}>
             <Settings2 className="h-3 w-3" />
@@ -176,12 +242,84 @@ function BindingCard({
           <Trash2 className="h-3 w-3" />
         </Button>
       </div>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit binding</DialogTitle>
+            <DialogDescription>Update display name and member admission mode. For deeper config use Detail.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor={`binding-name-${binding.id}`}>Display name</Label>
+              <Input
+                id={`binding-name-${binding.id}`}
+                value={displayName}
+                onChange={e => setDisplayName(e.target.value)}
+                placeholder={`Binding ${binding.id.slice(0, 8)}`}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Member mode</Label>
+              <RadioGroup value={memberMode} onValueChange={v => setMemberMode(v as 'require_approval' | 'allow_all')}>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="require_approval" id={`mm-req-${binding.id}`} />
+                  <Label htmlFor={`mm-req-${binding.id}`} className="font-normal">Require approval (new members wait for admin)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="allow_all" id={`mm-all-${binding.id}`} />
+                  <Label htmlFor={`mm-all-${binding.id}`} className="font-normal">Allow all (auto-approve new members)</Label>
+                </div>
+              </RadioGroup>
+              <p className="text-[11px] text-muted-foreground">Ignored for DM bindings.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                const trimmed = displayName.trim()
+                onSave({
+                  display_name: trimmed === '' ? null : trimmed,
+                  member_mode: memberMode,
+                })
+                setEditOpen(false)
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
-function TargetRow({ target, onDelete }: { target: ConnectorTargetItem; onDelete: () => void }) {
+function TargetRow({
+  target,
+  onDelete,
+  onSave,
+}: {
+  target: ConnectorTargetItem
+  onDelete: () => void
+  onSave: (updates: { name?: string; display_name?: string | null; description?: string | null }) => void
+}) {
   const chatId = (target.ref_keys as Record<string, string>)?.['chat_id'] ?? ''
+  const [editOpen, setEditOpen] = useState(false)
+  const [name, setName] = useState(target.name)
+  const [displayName, setDisplayName] = useState(target.display_name ?? '')
+  const [description, setDescription] = useState(target.description ?? '')
+
+  const openEdit = () => {
+    setName(target.name)
+    setDisplayName(target.display_name ?? '')
+    setDescription(target.description ?? '')
+    setEditOpen(true)
+  }
+
+  const canSave = name.trim().length > 0
+
   return (
     <div className="flex items-center justify-between py-2 px-3 rounded-lg border bg-card group">
       <div className="space-y-0.5 min-w-0 flex-1">
@@ -195,14 +333,86 @@ function TargetRow({ target, onDelete }: { target: ConnectorTargetItem; onDelete
           {target.description && <span className="truncate">· {target.description}</span>}
         </div>
       </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-7 w-7 p-0 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-        onClick={onDelete}
-      >
-        <Trash2 className="h-3 w-3" />
-      </Button>
+      <div className="flex items-center gap-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={openEdit}
+          title="Edit target"
+        >
+          <Pencil className="h-3 w-3" />
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3 w-3" />
+        </Button>
+      </div>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit target</DialogTitle>
+            <DialogDescription>Rename this target or update its display name and description. ref_keys and scope are immutable here.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor={`target-name-${target.id}`}>Name (slug)</Label>
+              <Input
+                id={`target-name-${target.id}`}
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="morning-briefing"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`target-dname-${target.id}`}>Display name</Label>
+              <Input
+                id={`target-dname-${target.id}`}
+                value={displayName}
+                onChange={e => setDisplayName(e.target.value)}
+                placeholder="Morning briefing channel"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`target-desc-${target.id}`}>Description</Label>
+              <Textarea
+                id={`target-desc-${target.id}`}
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Optional description"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button
+              size="sm"
+              disabled={!canSave}
+              onClick={() => {
+                const updates: { name?: string; display_name?: string | null; description?: string | null } = {}
+                const trimmedName = name.trim()
+                if (trimmedName !== target.name) updates.name = trimmedName
+                const trimmedDname = displayName.trim()
+                const currentDname = target.display_name ?? ''
+                if (trimmedDname !== currentDname) updates.display_name = trimmedDname === '' ? null : trimmedDname
+                const trimmedDesc = description.trim()
+                const currentDesc = target.description ?? ''
+                if (trimmedDesc !== currentDesc) updates.description = trimmedDesc === '' ? null : trimmedDesc
+                onSave(updates)
+                setEditOpen(false)
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -516,6 +726,16 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-bindings', connectorId] }),
   })
 
+  const updateBindingMutation = useMutation({
+    mutationFn: ({ bindingId, updates }: { bindingId: string; updates: Partial<ConnectorBinding> }) =>
+      api.connectors.bindings.update(connectorId, bindingId, updates),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-bindings', connectorId] })
+      toast.success('Binding updated')
+    },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
   const { data: pairingData } = useQuery({
     queryKey: ['connector-pairing', connectorId],
     queryFn: () => api.connectors.pairingRequests.list(connectorId),
@@ -581,6 +801,35 @@ export default function ConnectorDetailPage({ params }: PageProps) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-blocked', connectorId] }),
   })
 
+  // Pairing & Identity History (debug panel) — ALL identities regardless of status.
+  const { data: allIdentitiesData, refetch: refetchAllIdentities, isFetching: allIdentitiesFetching } = useQuery({
+    queryKey: ['connector-identities', connectorId],
+    queryFn: () => api.connectors.listAllIdentities(connectorId),
+    refetchInterval: 30_000,
+  })
+
+  const resetIdentityMutation = useMutation({
+    mutationFn: (identityId: string) => api.connectors.resetIdentity(connectorId, identityId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-identities', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-pairing', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-blocked', connectorId] })
+      toast.success('Identity reset to pending')
+    },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
+  const forceDeleteIdentityMutation = useMutation({
+    mutationFn: (identityId: string) => api.connectors.forceDeleteIdentity(connectorId, identityId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-identities', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-pairing', connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-blocked', connectorId] })
+      toast.success('Identity deleted')
+    },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
   const { data: inviteCodesData } = useQuery({
     queryKey: ['connector-invite-codes', connectorId],
     queryFn: () => api.connectors.inviteCodes.list(connectorId),
@@ -626,6 +875,16 @@ export default function ConnectorDetailPage({ params }: PageProps) {
   const deleteTargetMutation = useMutation({
     mutationFn: (targetId: string) => api.connectors.targets.delete(connectorId, targetId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connector-targets', connectorId] }),
+  })
+
+  const updateTargetMutation = useMutation({
+    mutationFn: ({ targetId, updates }: { targetId: string; updates: Record<string, unknown> }) =>
+      api.connectors.targets.update(connectorId, targetId, updates),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector-targets', connectorId] })
+      toast.success('Target updated')
+    },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
   })
 
   const activateMutation = useMutation({
@@ -676,6 +935,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
   const bindings = (bindingsData?.bindings ?? []).filter(b => !draftIds.has(b.id))
   const inviteCodes = inviteCodesData?.invite_codes ?? []
   const targets = targetsData?.targets ?? []
+  const allIdentities = allIdentitiesData?.identities ?? []
 
   if (isLoading) return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   if (!connector) return <div className="p-6 text-sm text-destructive">Connector not found</div>
@@ -750,7 +1010,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
             <HealthBadge adapter={healthData.adapter} />
           )}
           {identityData && (
-            <IdentityBadge identity={identityData.identity} reason={identityData.reason} />
+            <IdentityBadge identity={identityData.identity} credential={identityData.credential} reason={identityData.reason} />
           )}
         </div>
       )}
@@ -804,6 +1064,20 @@ export default function ConnectorDetailPage({ params }: PageProps) {
           <Separator />
         </>
       )}
+
+      {/* Pairing & Identity History (debug panel) */}
+      <>
+        <IdentityHistorySection
+          identities={allIdentities}
+          isFetching={allIdentitiesFetching}
+          onRefresh={() => refetchAllIdentities()}
+          onReset={(identityId) => resetIdentityMutation.mutate(identityId)}
+          onForceDelete={(identityId) => forceDeleteIdentityMutation.mutate(identityId)}
+          resetPending={resetIdentityMutation.isPending}
+          deletePending={forceDeleteIdentityMutation.isPending}
+        />
+        <Separator />
+      </>
 
       {/* Blocked / Rejected identities — cleanup workspace */}
       {blockedIdentities.length > 0 && (
@@ -939,6 +1213,10 @@ export default function ConnectorDetailPage({ params }: PageProps) {
                 key={t.id}
                 target={t}
                 onDelete={() => { if (confirm(`Delete target "${t.name}"?`)) deleteTargetMutation.mutate(t.id) }}
+                onSave={(updates) => {
+                  if (Object.keys(updates).length === 0) return
+                  updateTargetMutation.mutate({ targetId: t.id, updates })
+                }}
               />
             ))}
           </div>
@@ -975,6 +1253,7 @@ export default function ConnectorDetailPage({ params }: PageProps) {
                     deleteBindingMutation.mutate(binding.id)
                   }
                 }}
+                onSave={(updates) => updateBindingMutation.mutate({ bindingId: binding.id, updates })}
               />
             ))}
           </div>
@@ -1000,6 +1279,235 @@ export default function ConnectorDetailPage({ params }: PageProps) {
             </pre>
           </CardContent>
         </Card>
+      </div>
+    </div>
+  )
+}
+
+// ─── Pairing & Identity History ────────────────────────────────────────────
+interface IdentityHistoryRow {
+  id: string
+  connector_id: string
+  binding_id: string | null
+  external_ref_keys: Record<string, string> | null
+  display_name: string | null
+  status: 'pending' | 'approved' | 'blocked'
+  created_at: string
+  approved_at: string | null
+  last_seen_at: string | null
+}
+
+function IdentityHistorySection({
+  identities,
+  isFetching,
+  onRefresh,
+  onReset,
+  onForceDelete,
+  resetPending,
+  deletePending,
+}: {
+  identities: IdentityHistoryRow[]
+  isFetching: boolean
+  onRefresh: () => void
+  onReset: (identityId: string) => void
+  onForceDelete: (identityId: string) => void
+  resetPending: boolean
+  deletePending: boolean
+}) {
+  const [confirmReset, setConfirmReset] = useState<IdentityHistoryRow | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<IdentityHistoryRow | null>(null)
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-medium flex items-center gap-1.5">
+            <Users className="h-4 w-4" />
+            Pairing &amp; Identity History
+            <Badge variant="secondary" className="ml-1">{identities.length}</Badge>
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            All identities ever seen by this connector — pending, approved, blocked, and orphans (binding deleted).
+            Use Force Reset to re-trigger the pairing flow without waiting for inbound; Delete to wipe corrupt rows.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1"
+          onClick={onRefresh}
+          disabled={isFetching}
+        >
+          <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} /> Refresh
+        </Button>
+      </div>
+
+      {identities.length === 0 ? (
+        <div className="text-xs text-muted-foreground py-6 text-center border rounded-lg bg-card">
+          No identities yet — bot hasn't seen any inbound messages from users.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {identities.map(row => (
+            <IdentityHistoryRowView
+              key={row.id}
+              row={row}
+              onReset={() => setConfirmReset(row)}
+              onForceDelete={() => setConfirmDelete(row)}
+              resetPending={resetPending}
+              deletePending={deletePending}
+            />
+          ))}
+        </div>
+      )}
+
+      <AlertDialog open={!!confirmReset} onOpenChange={(o) => { if (!o) setConfirmReset(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Force reset identity?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This clears the binding and sets status to <code>pending</code>. The user will re-enter the pairing flow on their next inbound message (or you can approve them from the pending queue).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmReset) onReset(confirmReset.id)
+                setConfirmReset(null)
+              }}
+            >
+              Force Reset
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => { if (!o) setConfirmDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Hard-delete identity?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will hard-delete the row. Next inbound from this user creates a fresh pending identity. Continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (confirmDelete) onForceDelete(confirmDelete.id)
+                setConfirmDelete(null)
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+function IdentityHistoryRowView({
+  row,
+  onReset,
+  onForceDelete,
+  resetPending,
+  deletePending,
+}: {
+  row: IdentityHistoryRow
+  onReset: () => void
+  onForceDelete: () => void
+  resetPending: boolean
+  deletePending: boolean
+}) {
+  const isOrphan = row.binding_id === null && row.status === 'approved'
+  const effectiveStatus: 'pending' | 'approved' | 'blocked' | 'orphan' = isOrphan ? 'orphan' : row.status
+
+  const badgeClass =
+    effectiveStatus === 'pending'
+      ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+      : effectiveStatus === 'approved'
+        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+        : effectiveStatus === 'blocked'
+          ? 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+          : 'bg-muted text-muted-foreground border-border'
+
+  const username = row.external_ref_keys?.['username']
+  const userId = row.external_ref_keys?.['user_id']
+  const displayName = row.display_name ?? username ?? userId ?? row.id
+  const bindingShort = row.binding_id ? `${row.binding_id.slice(0, 8)}…` : '—'
+
+  const copyBinding = () => {
+    if (!row.binding_id) return
+    navigator.clipboard.writeText(row.binding_id).catch(() => {})
+    toast.success('Binding ID copied')
+  }
+
+  const resetDisabled = resetPending || (row.status === 'pending' && row.binding_id === null)
+
+  return (
+    <div className="flex items-center justify-between py-2.5 px-4 rounded-lg border bg-card gap-3">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <Badge variant="outline" className={`${badgeClass} shrink-0 capitalize`}>
+          {effectiveStatus}
+        </Badge>
+        <div className="min-w-0 space-y-0.5">
+          <p className="text-sm font-medium truncate">{displayName}</p>
+          <p className="text-[11px] text-muted-foreground font-mono truncate">
+            {username ? `@${username} · ` : ''}{userId ? `user_id=${userId}` : ''}
+          </p>
+          <p className="text-[11px] text-muted-foreground font-mono truncate flex items-center gap-1">
+            <span>binding={bindingShort}</span>
+            {row.binding_id && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={copyBinding}
+                      className="hover:text-foreground"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy binding id</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+            <span>· created {new Date(row.created_at).toLocaleString()}</span>
+            {row.last_seen_at && <span>· last seen {new Date(row.last_seen_at).toLocaleString()}</span>}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={onReset}
+                disabled={resetDisabled}
+              >
+                <RefreshCw className="h-3 w-3" /> Force Reset
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Clear binding, set status=pending</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 w-7 p-0 text-destructive border-destructive/40"
+          onClick={onForceDelete}
+          disabled={deletePending}
+          title="Hard-delete identity row"
+        >
+          <Trash2 className="h-3 w-3" />
+        </Button>
       </div>
     </div>
   )

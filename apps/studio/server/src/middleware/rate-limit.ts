@@ -29,7 +29,7 @@ const common: Partial<Options> = {
 export const globalRateLimit = rateLimit({
   ...common,
   windowMs: 60 * 1000,
-  max: 300,
+  max: 350,
   keyGenerator: userOrIp,
   handler: jsonHandler('Too many requests'),
 })
@@ -38,7 +38,7 @@ export const globalRateLimit = rateLimit({
 export const chatRateLimit = rateLimit({
   ...common,
   windowMs: 60 * 1000,
-  max: 20,
+  max: 30,
   keyGenerator: userOrIp,
   handler: jsonHandler('Chat rate limit exceeded. Please wait before sending another message.'),
 })
@@ -47,7 +47,7 @@ export const chatRateLimit = rateLimit({
 export const authRateLimit = rateLimit({
   ...common,
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 15,
   keyGenerator: ipOnly,
   handler: jsonHandler('Too many authentication attempts. Please try again later.'),
 })
@@ -60,7 +60,7 @@ export const authRateLimit = rateLimit({
 export const credentialRateLimit = rateLimit({
   ...common,
   windowMs: 60 * 1000,
-  max: 120,
+  max: 150,
   keyGenerator: userOrIp,
   handler: jsonHandler('Credential operation rate limit exceeded.'),
 })
@@ -69,7 +69,7 @@ export const credentialRateLimit = rateLimit({
 export const uploadRateLimit = rateLimit({
   ...common,
   windowMs: 60 * 1000,
-  max: 10,
+  max: 15,
   keyGenerator: userOrIp,
   handler: jsonHandler('Upload rate limit exceeded.'),
 })

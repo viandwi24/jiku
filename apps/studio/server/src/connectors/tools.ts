@@ -54,9 +54,10 @@ function decodeCursor(v: string): { created_at: Date; id: string } | null {
  */
 function resolveConnectorIdentity(connectorId: string): { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null {
   try {
-    const adapter = connectorRegistry.getAdapterForConnector(connectorId) as { getIdentity?: () => { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null } | null
+    const adapter = connectorRegistry.getAdapterForConnector(connectorId) as { getIdentity?: (id?: string) => { name: string; username?: string | null; user_id?: string | null; metadata?: Record<string, unknown> } | null } | null
     if (!adapter || typeof adapter.getIdentity !== 'function') return null
-    return adapter.getIdentity() ?? null
+    // Pass the connectorId so multi-tenant adapters return the RIGHT identity.
+    return adapter.getIdentity(connectorId) ?? null
   } catch { return null }
 }
 
@@ -369,7 +370,7 @@ export function buildConnectorTools(projectId: string) {
 
         const identity = resolveConnectorIdentity(connector_id)
         const sendResult = await adapter.sendMessage(
-          { ref_keys: target_ref_keys, reply_to_ref_keys },
+          { ref_keys: target_ref_keys, reply_to_ref_keys, connector_id },
           { text, markdown, simulate_typing, params },
         )
         // Always wrap the adapter result with the debug envelope so caller
@@ -458,12 +459,12 @@ export function buildConnectorTools(projectId: string) {
       }),
       execute: async (args) => {
         const { connector_id } = args as { connector_id: string }
-        const adapter = connectorRegistry.getAdapterForConnector(connector_id) as { getQueueStatus?: () => unknown } | null
+        const adapter = connectorRegistry.getAdapterForConnector(connector_id) as { getQueueStatus?: (cid?: string) => unknown } | null
         if (!adapter) return { error: 'Connector not active' }
         if (typeof adapter.getQueueStatus !== 'function') {
           return { connector_id, queue_supported: false, message: 'This connector does not implement queue management. Standard adapter rate-limit applies (no introspection).' }
         }
-        return { connector_id, identity: resolveConnectorIdentity(connector_id), queue_supported: true, status: adapter.getQueueStatus() }
+        return { connector_id, identity: resolveConnectorIdentity(connector_id), queue_supported: true, status: adapter.getQueueStatus(connector_id) }
       },
     }),
 
@@ -499,7 +500,7 @@ export function buildConnectorTools(projectId: string) {
 
         try {
           const identity = resolveConnectorIdentity(connector_id)
-          const result = await adapter.runAction(action_id, params)
+          const result = await adapter.runAction(action_id, params, connector_id)
           // Log outbound event so it shows up in the channels Events tab
           const evRow = await logConnectorEvent({
             connector_id,
@@ -760,7 +761,9 @@ export function buildConnectorTools(projectId: string) {
           }
         }
         const identity = resolveConnectorIdentity(target.connector_id)
-        const sendResult = await adapter.sendMessage(sendTarget, { text, markdown, simulate_typing, params })
+        // Multi-tenant: stamp connector_id on the target so the adapter picks
+        // the right bot (one credential per project, multiple in the process).
+        const sendResult = await adapter.sendMessage({ ...sendTarget, connector_id: target.connector_id }, { text, markdown, simulate_typing, params })
 
         // Log outbound to messages + events tables — same observability that
         // `connector_send` already does. Without this, `connector_send_to_target`

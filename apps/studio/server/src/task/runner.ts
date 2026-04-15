@@ -72,19 +72,20 @@ export async function runTaskConversation(
     const cmd = await dispatchSlashCommand({
       projectId, agentId, input: goal, surface, userId: callerId,
     }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
-    // Command + @file injection: same model as chat route — user goal stays
-    // literal, resolved command body becomes HARD-RULE prepend, file-mention
-    // hint stays as informational segment. See chat.ts for rationale.
+    // Command + @file injection: bottom of system prompt for recency-bias
+    // weight. See chat.ts for rationale. refSegments first, commandSegment last.
     const resolvedForScan = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : goal
-    const commandPrepend = (cmd.matched && cmd.resolvedInput)
+    const commandSegment = (cmd.matched && cmd.resolvedInput)
       ? [{
           label: `Active Command — /${cmd.slug ?? ''}`,
           content: [
-            `[Active Command — HARD RULE for this turn]`,
-            `Caller invoked the slash command \`/${cmd.slug}\` (literal trigger: ${JSON.stringify(goal)}).`,
-            `EXECUTE the SOP body below as if the caller had typed it directly. Do NOT treat as background context.`,
+            `[Active Command — execute this turn]`,
+            `Caller invoked \`/${cmd.slug}\` (literal trigger: ${JSON.stringify(goal)}).`,
+            `Follow the SOP body below as the caller's instruction for this turn.`,
             ``,
+            `--- COMMAND BODY START ---`,
             cmd.resolvedInput,
+            `--- COMMAND BODY END ---`,
           ].join('\n'),
         }]
       : undefined
@@ -94,6 +95,7 @@ export async function runTaskConversation(
     const refSegments = refScan.hintBlock
       ? [{ label: 'File mentions (this turn only)', content: refScan.hintBlock }]
       : undefined
+    const extraSegments = [...(refSegments ?? []), ...(commandSegment ?? [])]
 
     const result = await runtimeManager.run(projectId, {
       agent_id: agentId,
@@ -102,8 +104,7 @@ export async function runTaskConversation(
       input: goal,
       conversation_id: conversationId,
       extra_built_in_tools: [progressTool],
-      extra_system_prepend: commandPrepend,
-      extra_system_segments: refSegments,
+      extra_system_segments: extraSegments.length > 0 ? extraSegments : undefined,
       // suppress_tool_ids is kept as an opt-in escape hatch but NOT applied for cron triggers:
       // a cron-fired agent is allowed to create/update/delete cron tasks (dynamic / conditional scheduling).
       // The infinite-loop risk is handled by the [Cron Trigger] preamble in the stored prompt instead.

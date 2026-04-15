@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-15 — Telegram production safety hardening
+
+**Changed:**
+- Bot adapter `runAction` now wraps every outbound `bot.api.*` call with `enqueueForChat(chatId, () => withTelegramRetry(...))` so each action honours per-chat spacing + 429 `retry_after`. Previously only `sendMessageInner` was guarded; `edit_message`, `send_photo/file`, `forward_message`, `copy_message`, `get_chat_info`, and `fetch_media` could flood or loop on 429.
+- `runAction` signature in `@jiku/kit` (and both Telegram adapters) gained optional `connectorId: string` third arg; `connectors/tools.ts` forwards `connector_id` through. Bot adapter resolves via `botFor(connectorId)`, userbot adapter via `clientFor/queueFor(connectorId)` — closes multi-tenant gap where concurrent credentials could mis-route tool calls to the wrong account.
+- **Removed dangerous actions** from both adapters. Scope is now strictly message + media management. Removed from bot: `send_reaction`, `delete_message`, `pin_message`, `unpin_message`, `get_chat_members`, `create_invite_link`, `set_chat_description`, `ban_member`. Removed from userbot: `join_chat`, `leave_chat`, `delete_message`, `send_reaction`, `pin_message`, `unpin_message`. Kept: send text/file/photo/media_group/url_media, forward, copy, edit (own msg), get_chat_info, fetch_media, plus userbot read-only (get_chat_history, get_dialogs, search_messages, get_user_info, mark_read, set_typing).
+
+**Files touched:** `plugins/jiku.telegram/src/bot-adapter.ts`, `plugins/jiku.telegram/src/user-adapter.ts`, `packages/kit/src/index.ts`, `apps/studio/server/src/connectors/tools.ts`
+
 ## 2026-04-14 — Plan 24 Phases 2-5: Telegram MTProto userbot adapter (full ship)
 
 **Changed:** Single-session implementation of all remaining Plan 24 phases. The userbot ships end-to-end: plugin registers two adapters from the same module, the user adapter walks an interactive OTP+2FA setup wizard via the Phase 1 foundation, runtime connects via `@mtcute/bun`, eight platform actions are exposed through `connector_run_action`, and a mandatory rate-limit + queue layer wraps every outbound API call.

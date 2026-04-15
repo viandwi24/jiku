@@ -68,9 +68,9 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
     ? [{
         label: `Active Command — /${cmd.slug ?? ''}`,
         content: [
-          `[Active Command — execute this turn]`,
+          `[Active Command — highest-priority instruction for this turn]`,
           `User invoked \`/${cmd.slug}\` (literal message: ${JSON.stringify(rawInput)}).`,
-          `Follow the SOP body below as the user's instruction for this turn. The body's text is the actual ask — your previous persona / framework rules still apply, but THIS is what to do now.`,
+          `Follow the SOP body below as the user's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP. Persona tone still applies, but the SOP defines what to actually do.`,
           ``,
           `--- COMMAND BODY START ---`,
           cmd.resolvedInput,

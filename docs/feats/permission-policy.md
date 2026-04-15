@@ -53,6 +53,14 @@ Format: `resource:action`
 | `members:read` | View project members |
 | `members:write` | Invite/remove members, assign roles |
 | `roles:write` | Create, edit, delete roles |
+| `cron_tasks:read` / `cron_tasks:write` | View / create+edit cron tasks |
+| `skills:read` / `skills:write` | View / create+edit skills |
+| `commands:read` / `commands:write` | View / create+edit slash commands |
+| `browser:read` / `browser:write` | View / configure browser profiles |
+| `disk:read` / `disk:write` | Browse+download / upload+delete+edit project filesystem |
+| `usage:read` | View LLM usage metrics |
+| `console:read` | View plugin/connector console streams |
+| `runs:cancel` | Cancel running task/heartbeat runs (chat cancels are always owner-only — ADR-094) |
 
 ### Backend middleware
 

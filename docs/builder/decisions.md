@@ -1,5 +1,27 @@
 # Decisions
 
+## ADR-094 — Chat-run cancels are owner-only; `runs:cancel` only covers task/heartbeat
+
+**Context:** The cancel endpoint (`POST /conversations/:id/cancel`) was gated by `runs:read`, which meant any project member who could view the Runs page could cancel anyone else's running conversation — including a colleague's personal chat with an agent. That's an abuse vector (malice or mistake) with no legitimate team use case: chat streams are one-to-one, the initiator is the only rightful owner. Task/heartbeat runs are different — they're autonomous, often cron-triggered with `caller_id=null`, and ops genuinely needs a way to stop runaway ones without requiring superadmin.
+
+**Decision:** Split cancel authorization by `conversation.type`:
+- `type='chat'` → `conv.caller_id === userId` OR `isSuperadmin`. Holding `runs:cancel` is NOT sufficient — no team permission can stop another user's personal chat.
+- `type='task'` / `'heartbeat'` → owner OR superadmin OR `runs:cancel` permission.
+
+New permission `RUNS_CANCEL` added to enum, role-editor UI, role presets (Manager/Admin/Owner get it; Member/Viewer don't). Migration `0034_runs_cancel_permission.sql` backfills existing preset roles.
+
+**Consequences:** Members can always cancel their own chat (normal UX). Teammates cannot stop a chat they're observing. Ops gets a dedicated perm for task management. Owner-only rule is enforced even against `runs:cancel` to keep the semantics predictable ("chat cancel is never a team action"). UI surfaces the distinction in the role editor description so admins don't expect `runs:cancel` to unlock chat cancel.
+
+## ADR-095 — Cancel signals the runtime via AbortController, not just a DB flip
+
+**Context:** The prior cancel implementation just wrote `run_status='cancelled' + finished_at=now()` to the DB. The actual LLM stream continued executing to completion — the chat route's finally-block subsequently overwrote the row with the real end status, or (worse) the user saw a "cancelled" status in Runs while messages kept streaming in. DB-only cancel is a lie.
+
+**Decision:** `streamRegistry.startRun()` returns an `AbortSignal` + `isAborted()` sourced from a per-run `AbortController`. New method `streamRegistry.abort(conversationId)` fires the controller + broadcasts an SSE `aborted` event. The chat route listens on the signal and calls `reader.cancel()` to unwind the underlying `ReadableStream`; the reader's finally block then writes `run_status='cancelled'` to DB (defense in depth against the endpoint's own earlier flip being overwritten). Cancel endpoint order: DB flip first (prevents race with finally block), then `abort()`.
+
+Task/heartbeat runners don't currently register with `streamRegistry` — out of scope for this iteration. For now they still rely on DB-label + runner's next poll iteration observing it. Inline comment in `runs.ts` notes the gap.
+
+**Consequences:** Chat cancel now stops the stream for real — no "ghost" messages after hitting Stop. Task cancel semantics remain best-effort until those runners are integrated too; a full fix requires adding task registration to `streamRegistry` and teaching `task/runner.ts` to listen on the abort signal. Until then, docs + UI should not claim task cancel is instant. The `ReadableStream.cancel()` chain may reject in-flight LLM requests mid-chunk; observed this is handled by the SDK's error propagation and does not crash the process.
+
 ## ADR-093 — Console is a plugin-wide ephemeral log feature, not a persistent audit trail
 
 **Context:** Plugins (starting with Telegram bot + userbot) need an operator-visible log of what the instance is actually doing — inbound traffic, outbound sends, activation lifecycle, flood/retry events. `connector_events` table already exists for auditable per-event records; it's the wrong shape for free-form diagnostic lines and would bloat fast. `console.log` on the server is invisible to users. Needed: a lightweight, in-process log stream that can be read live from the Studio UI, without persistence requirements beyond the current server session.

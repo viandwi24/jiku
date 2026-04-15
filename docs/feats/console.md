@@ -23,6 +23,15 @@ Primary consumer: Telegram bot + userbot adapters, surfaced in the Channels → 
 
 `<plugin_id>:<scope>:<instance_id>` — e.g. `jiku.telegram.bot:connector:7c4e2...`. Shared across backend + frontend. For Telegram, helpers `botConsoleId(connectorId)` and `userConsoleId(connectorId)` are exported from the plugin.
 
+## UI surfaces
+
+Three places a user can see a console:
+1. **Project-level page** (`/console`): lists every active console scoped to the current project's connectors, with live indicator + filter. Sidebar entry under "Config". Gated by `console:read`. Picking a session renders the panel on the right.
+2. **Connector detail page** (`/channels/[id]`): embeds the console inline as a terminal-styled block (black bg / green text via `<ConsolePanel variant="terminal" />`). No Sheet / Drawer — always visible when the page is open.
+3. **Programmatic** via `<ConsolePanel consoleId="..." />` — any other page can drop the panel in.
+
+`<ConsolePanel>` props: `consoleId` (required), `title?`, `height?` (number or CSS string, default 420), `variant: 'default' | 'terminal'`. Snapshot + SSE + history pagination are all internal.
+
 ## Wiring a new plugin
 
 1. In the adapter class, add `attachConsole(api: PluginConsoleAPI)` and a `private con(id): PluginConsoleLogger | null` resolver.

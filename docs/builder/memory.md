@@ -1,5 +1,25 @@
 # Memory
 
+## Every feature needs permission enforcement at four layers
+
+A feature is "gated" only when all four are in place: (1) server `requirePermission(...)` on every route, (2) UI page `withPermissionGuard(Page, 'feature:read')` so direct URL access is blocked, (3) sidebar item uses the right permission key so the menu hides, (4) UI write buttons gated by `can('feature:write')` so `:read`-only users don't see create/edit/delete buttons. Missing any one leaves a hole — server-only gating lets people see menu items that 403 on click (bad UX); UI-only gating is defeated by `curl`. Grep `requirePermission\|withPermissionGuard\|useProjectPermission\|can\(` during audit.
+
+## Adding a permission: enum + migration + role editor + sidebar + routes, in that order
+
+Six coordinated edits: (1) `PERMISSIONS` in `packages/types/src/index.ts`, (2) `ROLE_PRESETS` Manager/Member, (3) migration `NNNN_*.sql` backfilling Owner/Admin/Manager via `array_cat + unnest + WHERE p <> ALL` (idempotent — see 0019, 0033, 0034), (4) `PERMISSION_GROUPS` in `settings/permissions/page.tsx`, (5) sidebar `NAV_SECTIONS` uses the new key, (6) route guards `requirePermission('foo:read')` on GET, `'foo:write'` on mutate. Use `requireAnyPermission(...)` for endpoints legitimately readable by multiple permission sets (e.g. `/filesystem/config` readable by `disk:read` OR `settings:read`). Skipping any step leaves the feature broken for existing users after deploy.
+
+## Bulk `replace_all` on permission strings is dangerous — `:read` routes ≠ `:write` routes
+
+When renaming permissions across a route file, `Edit replace_all` unifies ALL routes under one key — including POST/PATCH/DELETE that should be `:write`. Caught this on `filesystem.ts` where every mutate route ended up requiring only `disk:read`. Always do two replaces: `('x:write')` → `('new:write')` first, then `('x:read')` → `('new:read')`. Or review each router.* line individually.
+
+## Chat cancel is owner-only by design; team `runs:cancel` only covers task/heartbeat
+
+`POST /conversations/:id/cancel` branches on `conv.type`. Chat: only `caller_id === userId` or superadmin — no team permission can cancel another user's personal chat (ADR-094). Task/heartbeat: owner OR superadmin OR `runs:cancel`. Cancel also calls `streamRegistry.abort(conversationId)` which threads through `AbortController` → `reader.cancel()` so the LLM stream stops for real, not just the DB label (ADR-095). Task/heartbeat runners aren't registered in streamRegistry yet — if adding new run types, decide up front whether they should register so abort works for them too.
+
+## Console ids are free-form; route-level permission gating isn't feasible
+
+`/api/console/:id/*` routes use `authMiddleware` only, not `requirePermission`. Reason: console ids are strings like `<plugin_id>:connector:<uuid>` without a `:pid` segment, so the project can't be resolved at the middleware layer. Gate is enforced at the UI layer instead: sidebar hidden by `console:read`, page wrapped in `withPermissionGuard(*, 'console:read')`. Any authenticated Studio user who knows a console id can read its stream — ids are not treated as secrets. If that assumption changes (e.g. sensitive logs), parse the connector UUID from the id and resolve project inside the route.
+
 ## Drizzle schema must mirror migration ALTER TABLE — silently-dropped fields turn into empty SET clauses
 
 When a migration adds a column via `ALTER TABLE ... ADD COLUMN`, the corresponding `pgTable(...)` declaration in `apps/studio/db/src/schema/*.ts` MUST be updated too. Drizzle's type-safe `.set({ new_col: val })` FILTERS out fields that aren't in the schema object. If that's the only field you're setting, the emitted SQL becomes `UPDATE "table" SET WHERE id=$1` — literal empty SET — and Postgres rejects with `42601: syntax error at or near "where"`. We hit this on `agents.command_access_mode` (migration 0030 ALTER'd; schema file wasn't updated until a user tried to PATCH the field). Whenever adding a migration that touches existing tables, grep `schema/*.ts` for the table and add the column there in the same commit.

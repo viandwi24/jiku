@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-04-15 — Runs cancel: ownership gate + real stream abort
+
+**Changed:**
+- `POST /conversations/:id/cancel` previously gated by `runs:read` (any viewer could stop anyone's run). Now chat runs require `conv.caller_id === userId` OR superadmin — personal streams can't be cancelled by teammates. Task/heartbeat runs accept owner, superadmin, or new `runs:cancel` perm.
+- New permission `RUNS_CANCEL` (`runs:cancel`) in enum + `ROLE_PRESETS.manager`. Migration `0034_runs_cancel_permission.sql` backfills Owner/Admin/Manager.
+- Role editor UI exposes the toggle with explicit note that chat cancels stay owner-only regardless.
+- `streamRegistry` now carries an `AbortController` per run. New method `abort(conversationId)` fires the controller + broadcasts SSE `aborted` event. Chat reader loop listens on `abortSignal` → `reader.cancel()` unwinds. Finally-block writes `run_status='cancelled'` to DB (covers race with the endpoint's own flip). So cancel actually stops the LLM stream now, not just the DB label.
+- Task/heartbeat runners still not registered in streamRegistry — abort just writes the DB label and the runner picks it up on next poll iteration. Comment notes this.
+
+**Files touched:** `packages/types/src/index.ts`, `apps/studio/db/src/migrations/0034_runs_cancel_permission.sql` (new), `apps/studio/server/src/routes/runs.ts`, `apps/studio/server/src/routes/chat.ts`, `apps/studio/server/src/runtime/stream-registry.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/permissions/page.tsx`
+
+## 2026-04-15 — Permission audit across all features
+
+**Changed:** End-to-end audit of every sidebar feature's permission enforcement at four layers: server route guards, UI page guards, sidebar keys, and UI write-button gating. Follow-up fixes after the earlier permission-coverage expansion.
+
+- `filesystem.ts`: 6 write routes (POST `/files`, POST `/files/folder`, PATCH `/files/move`, DELETE `/files`, DELETE `/files/folder`, POST `/files/upload`) were set to `disk:read` by a prior bulk replace — restored to `disk:write`.
+- Browser page guard: `agents:read` → `browser:read`.
+- Cron Tasks / Skills / Commands pages were missing `withPermissionGuard` entirely — added.
+- UI write gating: Skills + Commands + Cron Tasks hide Create / Delete / Archive / Restore buttons for `:read`-only users. `FileExplorer` + `FileDetailPanel` gained `canWrite` prop consumed by Disk + Skills + Commands editors (hides New file / New folder / Upload / Rename / Delete / Save; CodeEditor becomes read-only). EntryDropdown hides Rename + Tool permission + Delete when read-only.
+- Disk GET `/filesystem/config` + POST `/filesystem/test` now accept `disk:read` OR `settings:read` via `requireAnyPermission` — fixes "Virtual Disk not configured" false-positive for readers. Storage Config tab hidden for users without `settings:read`.
+- Built-in **image viewer** adapter for `.png/.jpg/.jpeg/.gif/.webp/.svg/.bmp/.avif`. Uses signed inline proxy URL. Zoom 25-800%.
+- Memory routes verified — DELETE/PATCH use manual `loadPerms` + explicit check (equivalent to `requirePermission`).
+
+**Files touched:** `apps/studio/server/src/routes/filesystem.ts`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/{browser,cron-tasks,skills,commands,disk}/page.tsx`, `apps/studio/web/components/filesystem/{file-explorer,file-detail-panel,adapters/index}.tsx`, `apps/studio/web/components/filesystem/adapters/image-adapter.tsx` (new)
+
+## 2026-04-15 — Sidebar restructured into grouped sections
+
+**Changed:** `NAV_ITEMS` flat array → `NAV_SECTIONS` with `label: string | null` grouping. Sections: (no-header) Dashboard, AI (Agents / Chats / Memory / Skills / Commands), Tools (Channels / Cron Tasks / Browser / Disk), History (Runs / Usage), Config (Plugins / Console / Settings). Renders with `SidebarGroup` + `SidebarGroupLabel`. Plugin sidebar slots render last — `PluginSidebarSlot` already renders its own SidebarGroup so the parent no longer wraps it (fixes double-header).
+
+**Files touched:** `apps/studio/web/components/sidebar/project-sidebar.tsx`
+
 ## 2026-04-15 — Permission coverage expansion (Skills, Commands, Browser, Disk, Usage, Console)
 
 **Changed:** Six feature groups that previously piggy-backed on `agents:*` or `settings:*` now have dedicated permission keys. This lets role admins grant/revoke each feature independently instead of lumping them into over-broad grants.

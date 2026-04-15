@@ -106,7 +106,7 @@ function buildDeliveryBlock(delivery?: CronDeliverySpec): string {
     lines.push(`- connector_send({ connector_id: "${delivery.connector_id}", target_ref_keys: { chat_id: "${delivery.chat_id}"${threadHint} }, text: <message>, markdown: true })`)
   }
   lines.push('')
-  lines.push('FORBIDDEN: do NOT respond with "aku tidak bisa mengakses sistem pengiriman" or similar. The tools above ARE in your toolset right now — call one of them. If you cannot call it, the run is a failure.')
+  lines.push('The tools above are in your toolset — use one of them to deliver the message. Do not reply that you cannot access the delivery system; prefer calling the tool over refusing.')
   lines.push('Skip this block ONLY if the Instruction explicitly says the task is silent / internal (file write, DB mutation, no notification expected).')
   return lines.join('\n')
 }

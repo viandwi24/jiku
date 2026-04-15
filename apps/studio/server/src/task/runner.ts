@@ -79,9 +79,9 @@ export async function runTaskConversation(
       ? [{
           label: `Active Command — /${cmd.slug ?? ''}`,
           content: [
-            `[Active Command — execute this turn]`,
+            `[Active Command — highest-priority instruction for this turn]`,
             `Caller invoked \`/${cmd.slug}\` (literal trigger: ${JSON.stringify(goal)}).`,
-            `Follow the SOP body below as the caller's instruction for this turn.`,
+            `Follow the SOP body below as the caller's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP.`,
             ``,
             `--- COMMAND BODY START ---`,
             cmd.resolvedInput,

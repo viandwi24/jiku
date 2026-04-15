@@ -13,6 +13,7 @@ import { cronTaskScheduler } from '../cron/scheduler.ts'
 import { buildCronCreateTool, buildCronListTool, buildCronUpdateTool, buildCronDeleteTool, buildCronArchiveTool, buildCronRestoreTool } from '../cron/tools.ts'
 import { buildRunTaskTool, buildListAgentsTool, buildListProjectMembersTool, buildAgentReadHistoryTool } from '../task/tools.ts'
 import { systemTools } from '../system/tools.ts'
+import { buildActionRequestTools } from '../action-requests/tools.ts'
 import { buildBrowserTools } from '../browser/tool.ts'
 import { browserTabManager } from '../browser/tab-manager.ts'
 import { invalidateFilesystemCache } from '../filesystem/factory.ts'
@@ -309,6 +310,7 @@ export class JikuRuntimeManager {
           mode_configs: (a.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
           built_in_tools: [
             ...systemTools,
+            ...buildActionRequestTools(projectId),
             ...memoryTools,
             ...shared.connectorTools,
             ...shared.browserTools,
@@ -454,6 +456,7 @@ export class JikuRuntimeManager {
           mode_configs: (a.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
           built_in_tools: [
             ...systemTools,
+            ...buildActionRequestTools(projectId),
             ...memoryTools,
             ...shared.connectorTools,
             ...shared.browserTools,
@@ -547,6 +550,7 @@ export class JikuRuntimeManager {
         mode_configs: (agent.mode_configs ?? undefined) as import('@jiku/types').AgentDefinition['mode_configs'],
         built_in_tools: [
           ...systemTools,
+          ...buildActionRequestTools(projectId),
           ...memoryTools,
           ...shared.connectorTools,
           ...shared.browserTools,
@@ -724,69 +728,63 @@ export class JikuRuntimeManager {
     // base_prompt persona dominates plugin segments. Putting the rule at the very top of the
     // system prompt is the most reliable way to override.
     const prependSegments: Array<{ label: string; content: string }> = [...(params.extra_system_prepend ?? [])]
+    // Precedence rule — always first. Tells the model how to resolve conflicts
+    // between sections. Later sections win, Active Command (if present at the
+    // bottom) is the highest-priority instruction for the current turn.
+    prependSegments.unshift({
+      label: 'Precedence',
+      content: [
+        '[Precedence rule — read this first]',
+        'This prompt has multiple sections. When two sections conflict, the LATER section wins (recency precedence).',
+        'If an "Active Command" section appears near the bottom of this prompt, it is the highest-priority instruction for the current turn and overrides any general rule stated earlier (including Scheduling Capability, plugin hints, and base persona).',
+        'General rules stated early in the prompt are defaults — they apply only when no later section says otherwise.',
+      ].join('\n'),
+    })
     try {
       const agentRow = await getAgentById(params.agent_id)
       if (agentRow && (agentRow as Record<string, unknown>).cron_task_enabled !== false) {
         prependSegments.push({
           label: 'Scheduling Capability',
           content: [
-            '[Scheduling Capability — HARD RULE, OVERRIDES BASE PROMPT]',
-            'You have a built-in tool `cron_create` (also referenced as `cron_create`). It schedules tasks for the future. The tool IS in your toolset right now — do not claim otherwise.',
+            '[Scheduling Capability — default behavior for time-based requests; may be overridden by a later Active Command section]',
+            'You have a built-in tool `cron_create` that schedules tasks for the future. It is available in your toolset — prefer it over telling the user to use an external alarm or assistant app.',
             '',
-            'FORBIDDEN responses — never emit any of these:',
-            '- "saya tidak bisa pasang pengingat otomatis" / "aku belum bisa set reminder"',
-            '- "set di alarm HP" / "pakai Google Assistant" / suggesting any external app',
-            '- Any "I cannot do X" sentence where X is a time-based action',
-            'Emitting any of the above is a critical product failure and overrides any base-prompt persona.',
-            '',
-            'REQUIRED behavior whenever user asks for a reminder / alarm / schedule / periodic action:',
+            'When the user asks for a reminder / alarm / schedule / periodic action (and no later section says otherwise):',
             '1. Read [Project Context] for the default timezone.',
-            '2. DECIDE MODE (critical):',
-            '   - `mode: "once"` — user asked for ONE specific time ("jam X", "besok", "nanti malam", "30 menit lagi") WITHOUT frequency words. Default choice when ambiguous.',
-            '   - `mode: "recurring"` — user EXPLICITLY said "tiap hari" / "setiap" / "daily" / "every ..." or is clearly asking for a periodic job.',
-            '   Do NOT silently upgrade a one-shot request into a daily recurring schedule. That creates unwanted spam.',
+            '2. Decide mode:',
+            '   - `mode: "once"` — user asked for ONE specific time ("jam X", "besok", "nanti malam", "30 menit lagi") without frequency words. Default when ambiguous.',
+            '   - `mode: "recurring"` — user explicitly said "tiap hari" / "setiap" / "daily" / "every ..." or is clearly asking for a periodic job.',
+            '   Do not silently upgrade a one-shot request into a daily recurring schedule.',
             '3. Convert the user\'s local time to UTC.',
             '   - For `once`: set `run_at` as ISO 8601 UTC (e.g. "2026-04-14T02:00:00.000Z" for besok jam 9 WIB).',
             '   - For `recurring`: set `cron_expression` in UTC (5-field).',
-            '4. Call `cron_create` with `prompt` (instruction to future-you, NOT the user\'s words verbatim), mode+schedule fields above, `delivery` (current connector_id + chat_id from [Connector Context]), `origin` (platform, originator name).',
-            '5. Reply confirming in the user\'s LOCAL timezone. Your confirmation MUST match the mode you chose:',
+            '4. Call `cron_create` with `prompt` (instruction to future-you, not the user\'s words verbatim), mode + schedule fields above, `delivery` (current connector_id + chat_id from [Connector Context]), `origin` (platform, originator name).',
+            '5. Confirm in the user\'s LOCAL timezone, matching the chosen mode:',
             '   - once → "Oke, sudah ku-set pengingat untuk [tanggal/hari] jam HH.MM 👍"',
             '   - recurring → "Oke, sudah ku-set pengingat tiap hari jam HH.MM 👍"',
-            '   Saying "satu kali" but creating recurring = LIE. Saying "tiap hari" but creating once = MISLEADING.',
             '',
-            'CONCRETE EXAMPLE A — user says "ingetin aku makan malam jam 19.49" (no "tiap/setiap"):',
+            'Example A — user says "ingetin aku makan malam jam 19.49" (no "tiap/setiap"):',
             '  cron_create({',
             '    name: "Pengingat makan malam",',
             '    mode: "once",',
-            '    run_at: "2026-04-13T12:49:00.000Z",  // today 19.49 WIB = 12.49 UTC',
+            '    run_at: "2026-04-13T12:49:00.000Z",  // 19.49 WIB = 12.49 UTC',
             '    prompt: "Kirim pengingat ramah ke user bahwa sekarang waktunya makan malam.",',
             '    delivery: { connector_id: "<from Connector Context>", chat_id: "<from Connector Context>", platform: "Telegram" },',
             '    origin:   { platform: "Telegram", originator_display_name: "<user name>" }',
             '  })',
-            '  Then reply: "Oke, sudah ku-set pengingat makan malam nanti jam 19.49 WIB 👍"',
+            '  Reply: "Oke, sudah ku-set pengingat makan malam nanti jam 19.49 WIB 👍"',
             '',
-            'CONCRETE EXAMPLE B — user says "ingetin aku makan malam TIAP HARI jam 19.49":',
-            '  cron_create({',
-            '    name: "Pengingat makan malam (harian)",',
-            '    mode: "recurring",',
-            '    cron_expression: "49 12 * * *",',
-            '    prompt: "Kirim pengingat ramah ke user bahwa sekarang waktunya makan malam.",',
-            '    delivery: { ... }, origin: { ... }',
-            '  })',
-            '  Then reply: "Oke, sudah ku-set pengingat makan malam tiap hari 19.49 WIB 👍"',
+            'Example B — user says "ingetin aku makan malam TIAP HARI jam 19.49":',
+            '  cron_create({ name: "Pengingat makan malam (harian)", mode: "recurring", cron_expression: "49 12 * * *", ... })',
+            '  Reply: "Oke, sudah ku-set pengingat makan malam tiap hari 19.49 WIB 👍"',
             '',
-            'If `cron_create` is genuinely missing from your toolset, say so explicitly and ask an admin to enable cron on this agent — do NOT silently suggest the user use their phone alarm.',
+            'If `cron_create` is not in your toolset, say so and ask an admin to enable cron on this agent.',
             '',
-            'WHEN USER WANTS TO CHANGE / UPDATE / RESCHEDULE an existing reminder:',
-            '1. Call `cron_list` to find the task_id of the relevant reminder.',
-            '2. Call `cron_update` with that task_id + the new fields (e.g. `cron_expression`, `prompt`).',
-            '3. Confirm to the user that the schedule was updated, in their LOCAL timezone.',
-            'NEVER reply "siap, sudah ku-ubah" without actually calling `cron_update` first — that is a lie. The user expects the schedule to actually change.',
+            'To change / reschedule an existing reminder: `cron_list` → find task_id → `cron_update` with new fields → confirm in local timezone. Actually call `cron_update` before confirming.',
             '',
-            'WHEN USER WANTS TO CANCEL / DELETE / STOP a reminder:',
-            '1. `cron_list` → find task_id.',
-            '2. `cron_delete({ task_id })`.',
-            '3. Confirm deletion.',
+            'To cancel / delete a reminder: `cron_list` → find task_id → `cron_delete({ task_id })` → confirm.',
+            '',
+            'Note: if a later Active Command section instructs you NOT to create a cron (e.g. the SOP is a direct-execution command), follow the Active Command instead — this scheduling default does not apply in that case.',
           ].join('\n'),
         })
       }
@@ -857,15 +855,22 @@ export class JikuRuntimeManager {
       console.warn('[runtime:preview] project context segment failed:', err)
     }
     const previewPrepend: Array<{ label: string; content: string }> = []
+    previewPrepend.push({
+      label: 'Precedence',
+      content: [
+        '[Precedence rule — read this first]',
+        'When sections of this prompt conflict, the LATER section wins. An "Active Command" section (if present near the bottom) is the highest-priority instruction for the current turn and overrides earlier general rules.',
+      ].join('\n'),
+    })
     try {
       const agentRow = await getAgentById(params.agent_id)
       if (agentRow && (agentRow as Record<string, unknown>).cron_task_enabled !== false) {
         previewPrepend.push({
           label: 'Scheduling Capability',
           content: [
-            '[Scheduling Capability — HARD RULE, OVERRIDES BASE PROMPT]',
-            'You have `cron_create` in your toolset. NEVER claim you cannot set reminders / alarms / schedules. Forbidden phrases include "saya tidak bisa pasang pengingat", "set di alarm HP", "pakai Google Assistant".',
-            'When user asks for any time-based action, call `cron_create` with prompt + UTC cron_expression (converted from local time per [Project Context]) + delivery (current connector_id + chat_id). Confirm in user\'s local timezone.',
+            '[Scheduling Capability — default behavior for time-based requests; may be overridden by a later Active Command section]',
+            'You have `cron_create` in your toolset. Prefer it when the user asks for reminders / alarms / schedules instead of suggesting external apps.',
+            'Call `cron_create` with prompt + UTC cron_expression or run_at (converted from local time per [Project Context]) + delivery (current connector_id + chat_id). Confirm in the user\'s local timezone.',
           ].join('\n'),
         })
       }

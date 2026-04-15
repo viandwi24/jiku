@@ -119,11 +119,20 @@ Default dev credential: endpoint `http://localhost:9000`, key `minioadmin`, secr
 
 ## Known Limitations
 
-- Binary files (images, audio, video) not supported — text-only
+- Binary files not supported by `fs_read` (text-only); images ARE viewable in the UI via the built-in image view adapter (`.png/.jpg/.jpeg/.gif/.webp/.svg/.bmp/.avif`) which loads via the signed inline proxy URL.
 - No file versioning/history
 - No per-agent private filesystem (all agents in project share same disk)
-- No file permissions per user (defer to Plan 12 ACL)
+- Per-file `tool_permission` ACL controls agent access; UI access is gated by the `disk:*` project role permissions.
 - Streaming upload/download not supported (5 MB limit)
+
+## UI permissions
+
+The Disk page + filesystem routes are gated by `disk:read` / `disk:write`:
+- `disk:read`: browse, open, download, view images.
+- `disk:write`: create file, create folder, upload, rename, move, delete, edit content.
+- Server: write routes return 403 on missing perm. UI: `FileExplorer` + `FileDetailPanel` take a `canWrite` prop and hide all mutating controls (new file, new folder, upload, rename, delete, save; CodeEditor becomes read-only).
+- `GET /filesystem/config` + `POST /filesystem/test` accept `disk:read` OR `settings:read` via `requireAnyPermission` — non-admin readers still need to know whether disk is configured.
+- `PATCH /filesystem/config` and `/filesystem/migrate` remain `settings:write`. "Storage Config" tab in the UI is hidden for users without `settings:read`.
 
 ## Related Files
 

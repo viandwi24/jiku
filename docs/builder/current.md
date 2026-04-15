@@ -1,3 +1,20 @@
+## Phase (2026-04-15) — Permission hardening across features ✅
+
+End-to-end audit + fix pass across all 11 project features (Channels, Cron Tasks, Browser, Disk, Plugins, Console, Skills, Commands, Memory, Chats, Agents). Plus: cancel-run ownership gate + real stream abort.
+
+- Added permission keys: `skills:*`, `commands:*`, `browser:*`, `disk:*`, `usage:read`, `console:read`, `runs:cancel` (PR `packages/types/src/index.ts`).
+- Migrations `0033_permissions_expanded.sql` + `0034_runs_cancel_permission.sql` backfill existing roles so upgrade doesn't strip menus.
+- Role editor UI (`settings/permissions/page.tsx`) exposes every new group as a toggle.
+- Sidebar uses the right permission key per item (was lumped under `agents:read`/`settings:read` before).
+- Server routes: every feature's mutate endpoints now gated by `:write` permission; user-facing file ops by `disk:write` (fixed a bulk-replace mistake that set them to `disk:read`); browser/browser-profiles use `browser:*`; usage uses `usage:read`.
+- UI write-button gating: Skills / Commands / Cron Tasks hide Create + Delete buttons for `:read`-only users. FileExplorer exposes `canWrite` prop consumed by Disk + Skills + Commands file editors.
+- Disk viewer: `GET /filesystem/config` + `/filesystem/test` readable by `disk:read` (via `requireAnyPermission`) so the "Virtual Disk not configured" false-positive for non-admin readers is gone. Built-in **image viewer** adapter added (`.png/.jpg/.jpeg/.gif/.webp/.svg/.bmp/.avif`) — loads via signed inline proxy URL, zoom 25-800%. Storage Config tab hidden for users without `settings:read`.
+- Runs cancel: was gated by `runs:read` (anyone viewing could cancel). Now chat runs are **owner-only or superadmin** (no team perm can stop someone else's personal chat). Task/heartbeat runs require owner / superadmin / `runs:cancel`. Cancel endpoint now calls `streamRegistry.abort(conversationId)` which threads through `AbortController` → `reader.cancel()` → chat route finally-block UPDATE `run_status='cancelled'` — so the stream actually stops, not just the DB label.
+- Console UI: project-level `/console` page (sidebar "Config → Console") lists all active sessions for the current project's connectors with live indicator + filter. Connector detail page renders the console as an inline terminal-styled block (black bg, green text) — no Sheet/Drawer. `<ConsolePanel>` gained `variant: 'default' | 'terminal'`.
+- Sidebar restructured into groups: (no-header) Dashboard, **AI** (Agents, Chats, Memory, Skills, Commands), **Tools** (Channels, Cron Tasks, Browser, Disk), **History** (Runs, Usage), **Config** (Plugins, Console, Settings), **Plugins** (dynamic slots).
+
+See ADR-090 through ADR-095 + `docs/feats/permission-policy.md`, `docs/feats/console.md`.
+
 ## Phase (2026-04-15) — Console feature ✅
 
 Shipped plugin-wide ephemeral log streams. Telegram bot + userbot adapters are the first consumer; architecture is generic (`<plugin_id>:<scope>:<id>` console ids, `ctx.console` API, `<ConsolePanel>` UI). Storage: 100–200 memory ring + NDJSON tempfile flush at 200 → keep 100. Session-scoped (tempdir wiped on boot). SSE live tail + reverse-scan pagination for history. See `docs/feats/console.md`, ADR-093.

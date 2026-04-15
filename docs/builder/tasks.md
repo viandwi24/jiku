@@ -1,5 +1,15 @@
 ## Backlog
 
+### Runs cancel follow-ups (post-ship)
+- [ ] Register task + heartbeat runs in `streamRegistry` so `abort()` actually signals them. Currently their runners only observe the DB label on next poll.
+- [ ] Surface "cancelled by" (`actor_id`) in run detail + run list — right now the row becomes `cancelled` with no audit of who did it.
+- [ ] UI on Runs page: disable Cancel button for chat runs the viewer doesn't own (match server gate so users don't see a button that 403s).
+
+### Permission audit follow-ups (post-ship)
+- [ ] Audit writeup: check `audit-log.md` / `members` / `plugin-permissions` routes — not covered by this pass.
+- [ ] Consider splitting `settings:*` further (e.g. `settings:filesystem:write` vs generic `settings:write`) — currently any settings:write user can reconfigure storage backend.
+- [ ] Sidebar: collapse empty groups (if all items filtered out by permissions, hide the group label too). Already partially handled — verify edge cases.
+
 ### Streaming adapter follow-ups (post-ship)
 - [x] Slash `/` autocomplete in chat input — `SlashCommandAutocomplete` component with arrow-key nav + Tab/Enter insert + Esc dismiss. Respects `command_access_mode` (allowlist vs full project).
 - [x] Connector inbound command dispatcher (previously deferred per ADR-085). Now wired with uniform `command_access_mode` gate (ADR-088, supersedes ADR-085's defer decision).

@@ -1122,9 +1122,9 @@ async function executeConversationAdapter(
       ? [{
           label: `Active Command — /${cmdDispatch.slug ?? ''}`,
           content: [
-            `[Active Command — execute this turn]`,
+            `[Active Command — highest-priority instruction for this turn]`,
             `User invoked \`/${cmdDispatch.slug}\` (literal message: ${JSON.stringify(inputText)}).`,
-            `Follow the SOP body below as the user's instruction for this turn.`,
+            `Follow the SOP body below as the user's instruction for this turn. Per the Precedence rule, this section overrides earlier general rules (including Scheduling Capability) where they conflict with the SOP.`,
             ``,
             `--- COMMAND BODY START ---`,
             cmdDispatch.resolvedInput,

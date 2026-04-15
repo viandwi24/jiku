@@ -190,18 +190,23 @@ export function buildRunTaskTool(
       timeout_ms: z.number().default(30000).describe('Max wait ms when detach=false. Max 60s.'),
     }),
     execute: async (input: unknown, ctx) => {
-      const parsed = input as { goal: string; agent_id?: string; detach: boolean; timeout_ms: number }
+      const parsed = input as { goal: string; agent_id: string; detach: boolean; timeout_ms: number }
       const timeoutMs = Math.min(parsed.timeout_ms ?? 30000, TASK_TIMEOUT_MAX_MS)
 
-      // Resolve target agent: if caller passed empty string OR omitted, default
-      // to the CURRENT agent (the one running the tool). If caller passed a
-      // non-empty UUID, validate it exists before spawning — otherwise we'd
-      // silently spawn against a non-existent agent and the user sees a
-      // confusing "agent_id tidak terdeteksi" hallucination from the model.
-      const rawAgentId = (parsed.agent_id ?? '').trim()
-      const targetAgentId = rawAgentId.length > 0 ? rawAgentId : agentId
+      // agent_id is REQUIRED. Explicit validation + explicit existence check —
+      // no silent fallback to the current agent. Model must call `list_agents`
+      // and pick a real id (or pass its own id to run as itself).
+      const targetAgentId = (parsed.agent_id ?? '').trim()
+      if (!targetAgentId) {
+        return {
+          status: 'error',
+          code: 'AGENT_ID_REQUIRED',
+          message: '`agent_id` is required and must be a non-empty UUID.',
+          hint: 'Call `list_agents` to see available agent ids, then retry with `agent_id` set. If you want the current agent to run the task, pass your own agent id explicitly.',
+        }
+      }
 
-      if (rawAgentId.length > 0) {
+      {
         const { getAgentById } = await import('@jiku-studio/db')
         const exists = await getAgentById(targetAgentId).catch(() => null)
         if (!exists) {
@@ -209,7 +214,7 @@ export function buildRunTaskTool(
             status: 'error',
             code: 'AGENT_NOT_FOUND',
             message: `Agent with id "${targetAgentId}" not found in this project.`,
-            hint: 'Call `list_agents` to see available agent ids in this project, then retry with a valid `agent_id`. Or omit `agent_id` to delegate to yourself (the current agent).',
+            hint: 'Call `list_agents` to see available agent ids in this project, then retry with a valid `agent_id`.',
           }
         }
       }

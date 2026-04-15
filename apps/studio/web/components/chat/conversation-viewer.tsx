@@ -503,6 +503,13 @@ export function ConversationViewer({ convId, mode, conversation, initialMessages
   const { liveMessage, isStreaming: liveStreaming, start: startLive, stop: stopLive } = useLiveConversation({
     conversationId: convId,
     autoDetect: mode === 'readonly',
+    onStart: async () => {
+      // Readonly viewers: pull the newly-persisted user message from DB the
+      // moment a run is detected so it renders before the assistant stream.
+      if (mode === 'readonly') {
+        try { await refreshMessages() } catch { /* ignore */ }
+      }
+    },
     onDone: async () => {
       await refreshMessages()
       qc.invalidateQueries({ queryKey: ['conversations'] })

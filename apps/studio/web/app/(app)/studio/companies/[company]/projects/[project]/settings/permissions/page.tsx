@@ -39,7 +39,10 @@ const PERMISSION_GROUPS: { label: string; perms: { key: string; label: string }[
   },
   {
     label: 'Runs',
-    perms: [{ key: PERMISSIONS.RUNS_READ, label: 'View run history' }],
+    perms: [
+      { key: PERMISSIONS.RUNS_READ, label: 'View run history' },
+      { key: PERMISSIONS.RUNS_CANCEL, label: 'Cancel running task/heartbeat runs (chat cancels always owner-only)' },
+    ],
   },
   {
     label: 'Agents',
@@ -84,6 +87,46 @@ const PERMISSION_GROUPS: { label: string; perms: { key: string; label: string }[
     perms: [
       { key: PERMISSIONS.CRON_TASKS_READ, label: 'View cron tasks' },
       { key: PERMISSIONS.CRON_TASKS_WRITE, label: 'Create / edit cron tasks' },
+    ],
+  },
+  {
+    label: 'Skills',
+    perms: [
+      { key: PERMISSIONS.SKILLS_READ, label: 'View skills' },
+      { key: PERMISSIONS.SKILLS_WRITE, label: 'Create / edit skills' },
+    ],
+  },
+  {
+    label: 'Commands',
+    perms: [
+      { key: PERMISSIONS.COMMANDS_READ, label: 'View slash commands' },
+      { key: PERMISSIONS.COMMANDS_WRITE, label: 'Create / edit slash commands' },
+    ],
+  },
+  {
+    label: 'Browser',
+    perms: [
+      { key: PERMISSIONS.BROWSER_READ, label: 'View browser profiles' },
+      { key: PERMISSIONS.BROWSER_WRITE, label: 'Create / edit browser profiles' },
+    ],
+  },
+  {
+    label: 'Disk',
+    perms: [
+      { key: PERMISSIONS.DISK_READ, label: 'View / download disk files' },
+      { key: PERMISSIONS.DISK_WRITE, label: 'Upload / delete disk files' },
+    ],
+  },
+  {
+    label: 'Usage',
+    perms: [
+      { key: PERMISSIONS.USAGE_READ, label: 'View usage metrics' },
+    ],
+  },
+  {
+    label: 'Console',
+    perms: [
+      { key: PERMISSIONS.CONSOLE_READ, label: 'View plugin / connector consoles' },
     ],
   },
 ]

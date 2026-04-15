@@ -22,6 +22,7 @@ import type {
   PluginConnectorAPI,
   PluginFileViewAdapterAPI,
   PluginBrowserAdapterAPI,
+  PluginConsoleAPI,
 } from './types.ts'
 
 // ─── Type exports ────────────────────────────────────────────────────────────
@@ -39,6 +40,8 @@ export type {
   FileViewAdapterSpec,
   PluginFileViewAdapterAPI,
   PluginBrowserAdapterAPI,
+  PluginConsoleAPI,
+  PluginConsoleLogger,
   BrowserAdapter,
 } from './types.ts'
 
@@ -66,6 +69,7 @@ interface StudioContributes {
   connector: PluginConnectorAPI
   fileViewAdapters: PluginFileViewAdapterAPI
   browser: PluginBrowserAdapterAPI
+  console: PluginConsoleAPI
 }
 
 const StudioPlugin = definePlugin({

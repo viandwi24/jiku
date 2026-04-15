@@ -221,8 +221,8 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
     return
   }
 
-  // Register run and get broadcast/buffer/done handles
-  const { broadcast, bufferChunk, done } = streamRegistry.startRun(conversationId)
+  // Register run and get broadcast/buffer/done handles + abort signal
+  const { broadcast, bufferChunk, done, abortSignal, isAborted } = streamRegistry.startRun(conversationId)
 
   // Tee the stream: one branch for the original caller, one for broadcasting + buffering
   const [callerStream, broadcastStream] = result.stream.tee()
@@ -231,9 +231,16 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
   ;(async () => {
     let runSnapshot: { system_prompt: string; messages: unknown[]; response?: string; tools?: string[]; adapter?: string } | null = null
     const runStart = Date.now()
+    const reader = broadcastStream.getReader()
+    // If the run is cancelled via streamRegistry.abort(), cancel the reader
+    // so the loop unwinds. The caller-facing branch is also torn down when
+    // the tee'd source closes, which propagates to the HTTP response.
+    abortSignal.addEventListener('abort', () => {
+      reader.cancel().catch(() => { /* ignore — already settled */ })
+    })
     try {
-      const reader = broadcastStream.getReader()
       while (true) {
+        if (isAborted()) break
         const { done: streamDone, value } = await reader.read()
         if (streamDone) break
         // Accumulate in memory for polling consumers
@@ -274,6 +281,17 @@ router.post('/conversations/:id/chat', chatRateLimit, authMiddleware, async (req
       }
     } finally {
       done()
+      // If run was aborted, update DB so status reflects reality (not left as
+      // 'running' by whatever wrote it before). Best-effort; cancel endpoint
+      // already set 'cancelled', this just covers the race where the reader
+      // finishes before the cancel handler flushes to DB.
+      if (isAborted()) {
+        const { updateConversation } = await import('@jiku-studio/db')
+        await updateConversation(conversationId, {
+          run_status: 'cancelled',
+          finished_at: new Date(),
+        }).catch(() => { /* best-effort */ })
+      }
       // Fire-and-forget: generate title if conversation has none yet
       if (!conversation.title) {
         generateConversationTitle(agent.id, input, conversationId)

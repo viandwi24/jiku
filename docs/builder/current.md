@@ -1,3 +1,7 @@
+## Phase (2026-04-15) — Console feature ✅
+
+Shipped plugin-wide ephemeral log streams. Telegram bot + userbot adapters are the first consumer; architecture is generic (`<plugin_id>:<scope>:<id>` console ids, `ctx.console` API, `<ConsolePanel>` UI). Storage: 100–200 memory ring + NDJSON tempfile flush at 200 → keep 100. Session-scoped (tempdir wiped on boot). SSE live tail + reverse-scan pagination for history. See `docs/feats/console.md`, ADR-093.
+
 ## Phase (2026-04-15) — Telegram production safety hardening ✅
 
 Final audit before production run. Three fixes shipped:

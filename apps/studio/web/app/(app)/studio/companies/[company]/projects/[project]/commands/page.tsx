@@ -7,6 +7,7 @@ import type { CommandItem } from '@/lib/api'
 import { Button, Badge, cn } from '@jiku/ui'
 import { Terminal, Plus, Trash2, Check, X, AlertCircle, Settings2, RefreshCw } from 'lucide-react'
 import { FileExplorer } from '@/components/filesystem/file-explorer'
+import { useProjectPermission } from '@/lib/permissions'
 import { toast } from 'sonner'
 
 interface PageProps {
@@ -18,7 +19,7 @@ function commandEmoji(cmd: CommandItem): string {
   return m?.metadata?.jiku?.emoji ?? '/'
 }
 
-export default function ProjectCommandsPage({ params }: PageProps) {
+function ProjectCommandsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const queryClient = useQueryClient()
   const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null)
@@ -37,6 +38,8 @@ export default function ProjectCommandsPage({ params }: PageProps) {
     enabled: !!company?.id,
   })
   const project = projectsData?.projects.find(p => p.slug === projectSlug)
+  const { can } = useProjectPermission(project?.id)
+  const canWrite = can('commands:write')
 
   const { data: commandsData, isLoading } = useQuery({
     queryKey: ['project-commands', project?.id],
@@ -103,15 +106,17 @@ export default function ProjectCommandsPage({ params }: PageProps) {
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-6 w-6"
-              title="New command"
-              onClick={() => setCreating(true)}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
+            {canWrite && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-6 w-6"
+                title="New command"
+                onClick={() => setCreating(true)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -226,6 +231,7 @@ export default function ProjectCommandsPage({ params }: PageProps) {
           <CommandFileEditor
             command={selectedCommand}
             projectId={project.id}
+            canWrite={canWrite}
             onDelete={() => {
               if (!confirm(`Delete command "${selectedCommand.name}" and all its files?`)) return
               deleteMutation.mutate(selectedCommand.id)
@@ -241,10 +247,12 @@ function CommandFileEditor({
   command,
   projectId,
   onDelete,
+  canWrite = true,
 }: {
   command: CommandItem
   projectId: string
   onDelete: () => void
+  canWrite?: boolean
 }) {
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
@@ -261,15 +269,17 @@ function CommandFileEditor({
           <span>·</span>
           <span>entry: <span className="font-mono">{command.entrypoint}</span></span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs text-destructive hover:text-destructive gap-1"
-          onClick={onDelete}
-        >
-          <Trash2 className="h-3 w-3" />
-          Delete
-        </Button>
+        {canWrite && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-destructive hover:text-destructive gap-1"
+            onClick={onDelete}
+          >
+            <Trash2 className="h-3 w-3" />
+            Delete
+          </Button>
+        )}
       </div>
 
       <FileExplorer
@@ -277,7 +287,11 @@ function CommandFileEditor({
         projectId={projectId}
         rootPath={`/commands/${command.slug}`}
         hideUpload
+        canWrite={canWrite}
       />
     </div>
   )
 }
+
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ProjectCommandsPage, 'commands:read')

@@ -130,13 +130,13 @@ function serializeAdapter(a: import('@jiku/kit').BrowserAdapter) {
 }
 
 // ── GET /projects/:pid/browser/adapters ────────────────────────────────────
-router.get('/projects/:pid/browser/adapters', requirePermission('settings:read'), async (_req, res) => {
+router.get('/projects/:pid/browser/adapters', requirePermission('browser:read'), async (_req, res) => {
   const adapters = browserAdapterRegistry.list().map(serializeAdapter)
   res.json({ adapters })
 })
 
 // ── GET /projects/:pid/browser/profiles ────────────────────────────────────
-router.get('/projects/:pid/browser/profiles', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/browser/profiles', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profiles = await getProjectBrowserProfiles(projectId)
@@ -155,7 +155,7 @@ const CreateSchema = z.object({
   is_default: z.boolean().optional(),
 })
 
-router.post('/projects/:pid/browser/profiles', requirePermission('settings:write'), async (req, res) => {
+router.post('/projects/:pid/browser/profiles', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const parsed = CreateSchema.safeParse(req.body)
@@ -197,7 +197,7 @@ router.post('/projects/:pid/browser/profiles', requirePermission('settings:write
 })
 
 // ── GET /projects/:pid/browser/profiles/:profileId ─────────────────────────
-router.get('/projects/:pid/browser/profiles/:profileId', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/browser/profiles/:profileId', requirePermission('browser:read'), async (req, res) => {
   try {
     const profileId = req.params['profileId']!
     const profile = await getBrowserProfile(profileId)
@@ -216,7 +216,7 @@ const PatchSchema = z.object({
   is_default: z.boolean().optional(),
 })
 
-router.patch('/projects/:pid/browser/profiles/:profileId', requirePermission('settings:write'), async (req, res) => {
+router.patch('/projects/:pid/browser/profiles/:profileId', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profileId = req.params['profileId']!
@@ -271,7 +271,7 @@ router.patch('/projects/:pid/browser/profiles/:profileId', requirePermission('se
 })
 
 // ── DELETE /projects/:pid/browser/profiles/:profileId ──────────────────────
-router.delete('/projects/:pid/browser/profiles/:profileId', requirePermission('settings:write'), async (req, res) => {
+router.delete('/projects/:pid/browser/profiles/:profileId', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profileId = req.params['profileId']!
@@ -292,7 +292,7 @@ router.delete('/projects/:pid/browser/profiles/:profileId', requirePermission('s
 })
 
 // ── POST /projects/:pid/browser/profiles/:profileId/default ────────────────
-router.post('/projects/:pid/browser/profiles/:profileId/default', requirePermission('settings:write'), async (req, res) => {
+router.post('/projects/:pid/browser/profiles/:profileId/default', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profileId = req.params['profileId']!
@@ -305,7 +305,7 @@ router.post('/projects/:pid/browser/profiles/:profileId/default', requirePermiss
 })
 
 // ── POST /projects/:pid/browser/profiles/:profileId/ping ───────────────────
-router.post('/projects/:pid/browser/profiles/:profileId/ping', requirePermission('settings:read'), async (req, res) => {
+router.post('/projects/:pid/browser/profiles/:profileId/ping', requirePermission('browser:read'), async (req, res) => {
   try {
     const profileId = req.params['profileId']!
     const profile = await getBrowserProfile(profileId)
@@ -320,7 +320,7 @@ router.post('/projects/:pid/browser/profiles/:profileId/ping', requirePermission
 })
 
 // ── POST /projects/:pid/browser/profiles/:profileId/preview ────────────────
-router.post('/projects/:pid/browser/profiles/:profileId/preview', requirePermission('settings:read'), async (req, res) => {
+router.post('/projects/:pid/browser/profiles/:profileId/preview', requirePermission('browser:read'), async (req, res) => {
   try {
     const profileId = req.params['profileId']!
     const profile = await getBrowserProfile(profileId)
@@ -337,7 +337,7 @@ router.post('/projects/:pid/browser/profiles/:profileId/preview', requirePermiss
 })
 
 // ── GET /projects/:pid/browser/profiles/:profileId/status ──────────────────
-router.get('/projects/:pid/browser/profiles/:profileId/status', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/browser/profiles/:profileId/status', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profileId = req.params['profileId']!

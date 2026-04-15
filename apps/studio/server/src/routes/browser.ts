@@ -53,7 +53,7 @@ async function ensureDefaultProfile(projectId: string, enabledInitially: boolean
   })
 }
 
-router.get('/projects/:pid/browser', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/browser', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profiles = await getProjectBrowserProfiles(projectId)
@@ -68,7 +68,7 @@ router.get('/projects/:pid/browser', requirePermission('settings:read'), async (
   }
 })
 
-router.patch('/projects/:pid/browser/enabled', requirePermission('settings:write'), async (req, res) => {
+router.patch('/projects/:pid/browser/enabled', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const body = z.object({ enabled: z.boolean() }).safeParse(req.body)
@@ -86,7 +86,7 @@ router.patch('/projects/:pid/browser/enabled', requirePermission('settings:write
   }
 })
 
-router.patch('/projects/:pid/browser/config', requirePermission('settings:write'), async (req, res) => {
+router.patch('/projects/:pid/browser/config', requirePermission('browser:write'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const parsed = BrowserConfigSchema.safeParse(req.body)
@@ -102,7 +102,7 @@ router.patch('/projects/:pid/browser/config', requirePermission('settings:write'
   }
 })
 
-router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), async (req, res) => {
+router.post('/projects/:pid/browser/ping', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profile = await getDefaultBrowserProfile(projectId)
@@ -117,7 +117,7 @@ router.post('/projects/:pid/browser/ping', requirePermission('settings:read'), a
   }
 })
 
-router.post('/projects/:pid/browser/preview', requirePermission('settings:read'), async (req, res) => {
+router.post('/projects/:pid/browser/preview', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profile = await getDefaultBrowserProfile(projectId)
@@ -131,7 +131,7 @@ router.post('/projects/:pid/browser/preview', requirePermission('settings:read')
   }
 })
 
-router.get('/projects/:pid/browser/status', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/browser/status', requirePermission('browser:read'), async (req, res) => {
   try {
     const projectId = req.params['pid']!
     const profile = await getDefaultBrowserProfile(projectId)

@@ -10,6 +10,7 @@ import type {
   PluginConnectorAPI,
   PluginFileViewAdapterAPI,
   PluginBrowserAdapterAPI,
+  PluginConsoleAPI,
   ConnectorAdapter,
   BrowserAdapter,
 } from '@jiku-plugin/studio'
@@ -17,6 +18,7 @@ import { registerPluginRoute } from './http-registry.ts'
 import { publish } from './event-bus.ts'
 import { registerFileViewAdapter } from './fileViewAdapterRegistry.ts'
 import { browserAdapterRegistry } from '../../browser/adapter-registry.ts'
+import { consoleRegistry } from '../../console/registry.ts'
 
 function makeHttp(pluginId: string): PluginHttpAPI {
   return {
@@ -67,6 +69,21 @@ function makeBrowserAdapter(_pluginId: string): PluginBrowserAdapterAPI {
   }
 }
 
+function makeConsole(_pluginId: string): PluginConsoleAPI {
+  return {
+    get: (id: string, title?: string) => {
+      consoleRegistry.ensure(id, title)
+      return {
+        info: (msg, meta) => consoleRegistry.info(id, msg, meta),
+        warn: (msg, meta) => consoleRegistry.warn(id, msg, meta),
+        error: (msg, meta) => consoleRegistry.error(id, msg, meta),
+        debug: (msg, meta) => consoleRegistry.debug(id, msg, meta),
+      }
+    },
+    drop: (id: string) => consoleRegistry.drop(id),
+  }
+}
+
 export function extendPluginContext(pluginId: string, baseCtx: BasePluginContext): BasePluginContext {
   const extended = {
     ...baseCtx,
@@ -75,6 +92,7 @@ export function extendPluginContext(pluginId: string, baseCtx: BasePluginContext
     connector: makeConnector(baseCtx),
     fileViewAdapters: makeFileViewAdapters(pluginId),
     browser: makeBrowserAdapter(pluginId),
+    console: makeConsole(pluginId),
   }
   return extended as BasePluginContext
 }

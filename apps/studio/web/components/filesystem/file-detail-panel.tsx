@@ -47,6 +47,8 @@ interface FileDetailPanelProps {
   onSave: () => void
   onDelete: () => void
   onClose: () => void
+  /** Hide save + delete buttons when false. Default true. */
+  canWrite?: boolean
 }
 
 // ── Plugin file-view-adapter island ─────────────────────────────────────────
@@ -133,6 +135,7 @@ export function FileDetailPanel({
   onSave,
   onDelete,
   onClose,
+  canWrite = true,
 }: FileDetailPanelProps) {
   const { data: activePluginsData } = useQuery({
     queryKey: ['project-plugins-active', projectId],
@@ -259,28 +262,32 @@ export function FileDetailPanel({
               <Download className="w-3.5 h-3.5" />
             </Button>
           </a>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-red-500 hover:text-red-600"
-            title="Delete file"
-            onClick={() => {
-              if (!confirm(`Delete "${file.name}"?`)) return
-              onDelete()
-            }}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 px-3 text-xs"
-            onClick={onSave}
-            disabled={isSaving || !isDirty}
-          >
-            {isSaving
-              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              : <><Save className="w-3.5 h-3.5 mr-1" />Save</>}
-          </Button>
+          {canWrite && (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-red-500 hover:text-red-600"
+                title="Delete file"
+                onClick={() => {
+                  if (!confirm(`Delete "${file.name}"?`)) return
+                  onDelete()
+                }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                className="h-7 px-3 text-xs"
+                onClick={onSave}
+                disabled={isSaving || !isDirty}
+              >
+                {isSaving
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <><Save className="w-3.5 h-3.5 mr-1" />Save</>}
+              </Button>
+            </>
+          )}
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
             <X className="w-3.5 h-3.5" />
           </Button>
@@ -309,7 +316,7 @@ export function FileDetailPanel({
         <CodeEditor
           filePath={file.path}
           value={content}
-          onChange={(v) => onContentChange(v)}
+          onChange={canWrite ? (v) => onContentChange(v) : () => { /* read-only */ }}
         />
       )}
     </div>

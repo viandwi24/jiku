@@ -81,15 +81,37 @@ export default function RunDetailPage({ params }: PageProps) {
 
   const initialMessages: UIMessage[] = historyData.messages.map(dbMessageToUIMessage)
 
+  // Title fallback chain: explicit title → goal → first user message snippet → "Untitled".
+  // Many runs never get an auto-generated title, so without the fallback the
+  // header row ends up empty and the operator has no way to distinguish runs.
+  const firstUserText = (() => {
+    const first = initialMessages.find(m => m.role === 'user')
+    if (!first) return null
+    const textPart = (first.parts as Array<{ type: string; text?: string }>).find(p => p.type === 'text' && p.text)
+    return textPart?.text?.trim() || null
+  })()
+  // Hard cap fallback to ~80 chars on the first line. User messages can be
+  // multi-paragraph and blow through any CSS truncate if an ancestor container
+  // isn't fully min-w-0 chained.
+  const clamp = (s: string, max = 80): string => {
+    const firstLine = s.split('\n')[0]!.trim()
+    return firstLine.length > max ? `${firstLine.slice(0, max).trimEnd()}…` : firstLine
+  }
+  const rawTitle = conv.title?.trim() || goal?.trim() || firstUserText || ''
+  const displayTitle = rawTitle ? clamp(rawTitle) : 'Untitled conversation'
+
   return (
-    <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100svh - 3rem)' }}>
+    <div className="flex flex-col overflow-hidden min-w-0 w-full" style={{ height: 'calc(100svh - 3rem)' }}>
       {/* Back bar + run metadata */}
       <div className="border-b px-4 py-2 shrink-0 space-y-2">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" asChild className="-ml-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Button variant="ghost" size="sm" asChild className="-ml-2 shrink-0">
             <Link href={`${base}/runs`}><ArrowLeft className="h-4 w-4 mr-1" />Runs</Link>
           </Button>
-          <div className="flex items-center gap-2 ml-auto">
+          <h1 className="text-sm font-medium truncate flex-1 min-w-0" title={displayTitle}>
+            {displayTitle}
+          </h1>
+          <div className="flex items-center gap-2 shrink-0">
             <Badge variant="outline" className="font-mono text-[10px]">{type}</Badge>
             <Badge variant="outline" className={`font-mono text-[10px] ${
               runStatus === 'running' ? 'text-green-600 border-green-500/40' :

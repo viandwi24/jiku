@@ -2,7 +2,7 @@ import { Router } from 'express'
 import nodePath from 'node:path'
 import busboy from 'busboy'
 import { authMiddleware } from '../middleware/auth.ts'
-import { requirePermission } from '../middleware/permission.ts'
+import { requirePermission, requireAnyPermission } from '../middleware/permission.ts'
 import {
   getFilesystemConfig,
   upsertFilesystemConfig,
@@ -50,7 +50,11 @@ function handleFsError(res: import('express').Response, err: unknown) {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 // GET /projects/:pid/filesystem/config
-router.get('/projects/:pid/filesystem/config', requirePermission('settings:read'), async (req, res) => {
+// Readable by `disk:read` too — the Disk page needs this to know if the
+// virtual disk is configured at all. The returned fields (adapter_id,
+// credential_id uuid, enabled) are not sensitive; secrets live in the
+// credential record and are only readable via the credential service.
+router.get('/projects/:pid/filesystem/config', requireAnyPermission('disk:read', 'settings:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const config = await getFilesystemConfig(projectId)
   res.json({ config: config ?? null })
@@ -104,7 +108,7 @@ router.patch('/projects/:pid/filesystem/config', requirePermission('settings:wri
 })
 
 // POST /projects/:pid/filesystem/test
-router.post('/projects/:pid/filesystem/test', requirePermission('settings:read'), async (req, res) => {
+router.post('/projects/:pid/filesystem/test', requireAnyPermission('disk:read', 'settings:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const result = await testFilesystemConnection(projectId)
   res.json(result)
@@ -113,7 +117,7 @@ router.post('/projects/:pid/filesystem/test', requirePermission('settings:read')
 // ─── File listing & content ───────────────────────────────────────────────────
 
 // GET /projects/:pid/files?path=/src
-router.get('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/files', requirePermission('disk:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = (req.query['path'] as string) ?? '/'
 
@@ -128,7 +132,7 @@ router.get('/projects/:pid/files', requirePermission('agents:read'), async (req,
 })
 
 // GET /projects/:pid/files/content?path=/src/index.ts
-router.get('/projects/:pid/files/content', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/files/content', requirePermission('disk:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = (req.query['path'] as string)
   if (!filePath) return res.status(400).json({ error: 'path query param required' })
@@ -149,7 +153,7 @@ router.get('/projects/:pid/files/content', requirePermission('agents:read'), asy
 })
 
 // GET /projects/:pid/files/search?q=&ext=
-router.get('/projects/:pid/files/search', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/files/search', requirePermission('disk:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const query = (req.query['q'] as string) ?? ''
   const ext = req.query['ext'] as string | undefined
@@ -171,7 +175,7 @@ router.get('/projects/:pid/files/search', requirePermission('agents:read'), asyn
 // mode=download            — forces browser download
 // mode=preview             — same as inline but sets cache headers
 
-router.get('/projects/:pid/files/proxy', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/files/proxy', requirePermission('disk:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = (req.query['path'] as string)
   const mode = (req.query['mode'] as string) ?? 'inline'
@@ -234,7 +238,7 @@ router.get('/projects/:pid/files/proxy', requirePermission('agents:read'), async
 // ─── Write / create ───────────────────────────────────────────────────────────
 
 // POST /projects/:pid/files  { path, content }
-router.post('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
+router.post('/projects/:pid/files', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const { path: filePath, content } = req.body as { path: string; content: string }
 
@@ -255,7 +259,7 @@ router.post('/projects/:pid/files', requirePermission('agents:read'), async (req
 // ─── Create folder ───────────────────────────────────────────────────────────
 
 // POST /projects/:pid/files/folder  { path }
-router.post('/projects/:pid/files/folder', requirePermission('agents:read'), async (req, res) => {
+router.post('/projects/:pid/files/folder', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const { path: folderPath } = req.body as { path: string }
 
@@ -274,7 +278,7 @@ router.post('/projects/:pid/files/folder', requirePermission('agents:read'), asy
 // ─── Move ─────────────────────────────────────────────────────────────────────
 
 // PATCH /projects/:pid/files/move  { from, to }
-router.patch('/projects/:pid/files/move', requirePermission('agents:read'), async (req, res) => {
+router.patch('/projects/:pid/files/move', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const { from, to } = req.body as { from: string; to: string }
 
@@ -293,7 +297,7 @@ router.patch('/projects/:pid/files/move', requirePermission('agents:read'), asyn
 // ─── Delete ───────────────────────────────────────────────────────────────────
 
 // DELETE /projects/:pid/files?path=/x
-router.delete('/projects/:pid/files', requirePermission('agents:read'), async (req, res) => {
+router.delete('/projects/:pid/files', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const filePath = req.query['path'] as string
   if (!filePath) return res.status(400).json({ error: 'path query param required' })
@@ -309,7 +313,7 @@ router.delete('/projects/:pid/files', requirePermission('agents:read'), async (r
 })
 
 // DELETE /projects/:pid/files/folder?path=/src
-router.delete('/projects/:pid/files/folder', requirePermission('agents:read'), async (req, res) => {
+router.delete('/projects/:pid/files/folder', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = req.query['path'] as string
   if (!folderPath) return res.status(400).json({ error: 'path query param required' })
@@ -327,7 +331,7 @@ router.delete('/projects/:pid/files/folder', requirePermission('agents:read'), a
 // ─── Upload (multipart) ───────────────────────────────────────────────────────
 
 // POST /projects/:pid/files/upload
-router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('agents:read'), (req, res) => {
+router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('disk:write'), (req, res) => {
   const projectId = req.params['pid']!
   const folderPath = normalizePath((req.query['path'] as string) ?? '/')
 
@@ -491,7 +495,7 @@ router.get('/projects/:pid/filesystem/migrate/:id', requirePermission('settings:
 // ─── Plan 26 — FS tool permission ─────────────────────────────────────────────
 
 // GET /projects/:pid/files/permission?path=/plans
-router.get('/projects/:pid/files/permission', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/files/permission', requirePermission('disk:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const p = req.query['path'] as string
   if (!p) return res.status(400).json({ error: 'path query param required' })
@@ -500,7 +504,7 @@ router.get('/projects/:pid/files/permission', requirePermission('agents:read'), 
 })
 
 // PATCH /projects/:pid/files/permission  body: { path, type: 'file'|'folder', permission: 'read'|'read+write'|null }
-router.patch('/projects/:pid/files/permission', requirePermission('agents:write'), async (req, res) => {
+router.patch('/projects/:pid/files/permission', requirePermission('disk:write'), async (req, res) => {
   const projectId = req.params['pid']!
   const body = req.body as { path?: string; type?: 'file' | 'folder'; permission?: 'read' | 'read+write' | null }
   if (!body.path) return res.status(400).json({ error: 'path required' })

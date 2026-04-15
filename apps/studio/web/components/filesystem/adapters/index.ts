@@ -4,6 +4,7 @@
 
 import { registerAdapter } from '@/lib/file-view-adapters'
 import { MarkdownViewAdapter } from './markdown-adapter'
+import { ImageViewAdapter } from './image-adapter'
 
 // ── Built-in adapters ───────────────────────────────────────────
 registerAdapter({
@@ -11,4 +12,11 @@ registerAdapter({
   label: 'Preview',
   extensions: ['.md', '.mdx', '.markdown'],
   component: MarkdownViewAdapter,
+})
+
+registerAdapter({
+  id: 'image',
+  label: 'Image',
+  extensions: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif'],
+  component: ImageViewAdapter,
 })

@@ -52,7 +52,7 @@ export default function StudioShell({ children }: { children: React.ReactNode })
         <DynamicSidebar />
         <SidebarInset>
           <AppHeader />
-          <main className="flex-1 min-h-0 overflow-y-auto">
+          <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
             {children}
           </main>
         </SidebarInset>

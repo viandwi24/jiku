@@ -100,4 +100,4 @@ function ProjectBrowserPage({ params }: PageProps) {
 }
 
 import { withPermissionGuard } from '@/components/permissions/permission-guard'
-export default withPermissionGuard(ProjectBrowserPage, 'agents:read')
+export default withPermissionGuard(ProjectBrowserPage, 'browser:read')

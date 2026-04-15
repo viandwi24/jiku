@@ -20,6 +20,7 @@ import {
   Puzzle,
   Settings,
   Terminal,
+  ScrollText,
   Webhook,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -40,6 +41,7 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
@@ -53,27 +55,62 @@ interface ProjectSidebarProps {
   projectSlug: string
 }
 
-// Map each nav item to the permission required to see it (null = always visible)
-const NAV_ITEMS: Array<{
+// Nav items grouped into sections. `null` permission = always visible.
+// The Dashboard group has no label (shown as a bare top item).
+interface NavItem {
   href: string
   label: string
   icon: React.ElementType
   permission: string | null
   badgeKey?: string
-}> = [
-  { href: '',          label: 'Dashboard', icon: LayoutDashboard, permission: null },
-  { href: '/agents',   label: 'Agents',    icon: Bot,             permission: 'agents:read' },
-  { href: '/chats',    label: 'Chats',     icon: MessageSquare,   permission: 'chats:read' },
-  { href: '/runs',     label: 'Runs',      icon: Activity,        permission: 'runs:read' },
-  { href: '/memory',   label: 'Memory',    icon: Brain,           permission: 'memory:read' },
-  { href: '/channels', label: 'Channels',  icon: Webhook,         permission: 'channels:read' },
-  { href: '/skills',      label: 'Skills',      icon: BookOpen,  permission: 'agents:read' },
-  { href: '/commands',    label: 'Commands',    icon: Terminal,  permission: 'agents:read' },
-  { href: '/cron-tasks',  label: 'Cron Tasks',  icon: Clock,     permission: 'cron_tasks:read' },
-  { href: '/browser',     label: 'Browser',     icon: Globe,     permission: 'agents:read' },
-  { href: '/disk',     label: 'Disk',      icon: FolderOpen,      permission: 'agents:read' },
-  { href: '/plugins',  label: 'Plugins',   icon: Puzzle,          permission: 'plugins:read', badgeKey: 'plugins' },
-  { href: '/usage',    label: 'Usage',     icon: BarChart2,       permission: 'settings:read' },
+}
+
+interface NavSection {
+  label: string | null
+  items: NavItem[]
+}
+
+const NAV_SECTIONS: NavSection[] = [
+  {
+    label: null,
+    items: [
+      { href: '', label: 'Dashboard', icon: LayoutDashboard, permission: null },
+    ],
+  },
+  {
+    label: 'AI',
+    items: [
+      { href: '/agents',   label: 'Agents',   icon: Bot,           permission: 'agents:read' },
+      { href: '/chats',    label: 'Chats',    icon: MessageSquare, permission: 'chats:read' },
+      { href: '/memory',   label: 'Memory',   icon: Brain,         permission: 'memory:read' },
+      { href: '/skills',   label: 'Skills',   icon: BookOpen,      permission: 'skills:read' },
+      { href: '/commands', label: 'Commands', icon: Terminal,      permission: 'commands:read' },
+    ],
+  },
+  {
+    label: 'Tools',
+    items: [
+      { href: '/channels',   label: 'Channels',   icon: Webhook,    permission: 'channels:read' },
+      { href: '/cron-tasks', label: 'Cron Tasks', icon: Clock,      permission: 'cron_tasks:read' },
+      { href: '/browser',    label: 'Browser',    icon: Globe,      permission: 'browser:read' },
+      { href: '/disk',       label: 'Disk',       icon: FolderOpen, permission: 'disk:read' },
+    ],
+  },
+  {
+    label: 'History',
+    items: [
+      { href: '/runs',  label: 'Runs',  icon: Activity,  permission: 'runs:read' },
+      { href: '/usage', label: 'Usage', icon: BarChart2, permission: 'usage:read' },
+    ],
+  },
+  {
+    label: 'Config',
+    items: [
+      { href: '/plugins',  label: 'Plugins',  icon: Puzzle,     permission: 'plugins:read', badgeKey: 'plugins' },
+      { href: '/console',  label: 'Console',  icon: ScrollText, permission: 'console:read' },
+      { href: '/settings/general', label: 'Settings', icon: Settings, permission: 'settings:read' },
+    ],
+  },
 ]
 
 export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps) {
@@ -140,11 +177,16 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
 
   const base = `/studio/companies/${companySlug}/projects/${projectSlug}`
   const isActive = (path: string) => {
-    const full = `${base}${path}`
-    return path === '' ? pathname === base : pathname.startsWith(full)
+    if (path === '') return pathname === base
+    // Normalise: settings has a multi-segment href but activates on any /settings path.
+    const topSegment = path.startsWith('/settings') ? '/settings' : path
+    const full = `${base}${topSegment}`
+    return pathname === full || pathname.startsWith(full + '/')
   }
 
-  const visibleNav = NAV_ITEMS.filter(item => canSee(item.permission))
+  const visibleSections = NAV_SECTIONS
+    .map(s => ({ ...s, items: s.items.filter(i => canSee(i.permission)) }))
+    .filter(s => s.items.length > 0)
 
   return (
     <Sidebar collapsible="icon">
@@ -174,40 +216,34 @@ export function ProjectSidebar({ companySlug, projectSlug }: ProjectSidebarProps
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">
-              {visibleNav.map(item => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={isActive(item.href)}>
-                    <Link href={`${base}${item.href}`}>
-                      <item.icon className="h-4 w-4" />
-                      {item.label}
-                    </Link>
-                  </SidebarMenuButton>
-                  {item.href === '/agents' && badges.agents !== undefined && (
-                    <SidebarMenuBadge>{badges.agents}</SidebarMenuBadge>
-                  )}
-                  {item.badgeKey === 'plugins' && badges.plugins !== undefined && (
-                    <SidebarMenuBadge>{badges.plugins}</SidebarMenuBadge>
-                  )}
-                </SidebarMenuItem>
-              ))}
-              {canSeeSettings && (
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild isActive={isActive('/settings')}>
-                    <Link href={`${base}/settings/general`}>
-                      <Settings className="h-4 w-4" />
-                      Settings
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {visibleSections.map((section, idx) => (
+          <SidebarGroup key={section.label ?? `_top_${idx}`}>
+            {section.label && <SidebarGroupLabel>{section.label}</SidebarGroupLabel>}
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                {section.items.map(item => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton asChild isActive={isActive(item.href)}>
+                      <Link href={`${base}${item.href}`}>
+                        <item.icon className="h-4 w-4" />
+                        {item.label}
+                      </Link>
+                    </SidebarMenuButton>
+                    {item.href === '/agents' && badges.agents !== undefined && (
+                      <SidebarMenuBadge>{badges.agents}</SidebarMenuBadge>
+                    )}
+                    {item.badgeKey === 'plugins' && badges.plugins !== undefined && (
+                      <SidebarMenuBadge>{badges.plugins}</SidebarMenuBadge>
+                    )}
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
 
-        {/* Plan 17 — plugin sidebar slots */}
+        {/* Plan 17 — plugin sidebar slots. The component already renders its own
+            SidebarGroup + "Plugins" label, so do not wrap it. */}
         {projectId && projectData && user && (
           <PluginSidebarSlot
             projectId={projectId}

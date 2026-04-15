@@ -1023,6 +1023,26 @@ export const api = {
     revoke: (projectId: string, id: string) =>
       request<{ ok: boolean }>(`/api/projects/${projectId}/plugin-permissions/${id}`, { method: 'DELETE' }),
   },
+
+  console: {
+    list: () => request<{ consoles: Array<{ id: string; title: string; size: number }> }>('/api/console'),
+    snapshot: (id: string) =>
+      request<{ id: string; title: string; entries: ConsoleEntry[] }>(`/api/console/${encodeURIComponent(id)}/snapshot`),
+    history: (id: string, beforeTs: number, limit = 100) =>
+      request<{ id: string; entries: ConsoleEntry[] }>(`/api/console/${encodeURIComponent(id)}/history?before_ts=${beforeTs}&limit=${limit}`),
+    streamUrl: (id: string) => {
+      const headers = getAuthHeaders() as Record<string, string>
+      const token = headers['Authorization']?.replace('Bearer ', '') ?? ''
+      return `${BASE_URL}/api/console/${encodeURIComponent(id)}/stream?token=${encodeURIComponent(token)}`
+    },
+  },
+}
+
+export interface ConsoleEntry {
+  ts: number
+  level: 'info' | 'warn' | 'error' | 'debug'
+  msg: string
+  meta?: Record<string, unknown>
 }
 
 export interface AuditLogEntry {
@@ -1506,6 +1526,7 @@ export interface ConversationItemWithAgent extends ConversationItem {
 
 export interface RunRow {
   id: string
+  title: string | null
   type: string
   run_status: string
   agent_id: string

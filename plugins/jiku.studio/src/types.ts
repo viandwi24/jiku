@@ -56,6 +56,25 @@ export interface PluginFileViewAdapterAPI {
   register: (spec: FileViewAdapterSpec) => void
 }
 
+/** Console feature — ephemeral log streams per instance id.
+ *  Usage: `const con = ctx.console.get('jiku.telegram.bot:connector:abc')`;
+ *         `con.info('connected', { bot: 'mybot' })`. Logs are held 100–200 in
+ *         memory, batched to a tempfile per session, and streamed to the
+ *         Studio UI via SSE. See `<ConsolePanel>` on the UI side. */
+export interface PluginConsoleLogger {
+  info: (msg: string, meta?: Record<string, unknown>) => void
+  warn: (msg: string, meta?: Record<string, unknown>) => void
+  error: (msg: string, meta?: Record<string, unknown>) => void
+  debug: (msg: string, meta?: Record<string, unknown>) => void
+}
+
+export interface PluginConsoleAPI {
+  /** Get (or lazily create) a console by id. Title is optional label for UI. */
+  get: (id: string, title?: string) => PluginConsoleLogger
+  /** Drop the console — clears memory + file. Optional cleanup on deactivate. */
+  drop: (id: string) => Promise<void>
+}
+
 /** Plugin API for registering browser adapters (Plan 20).
  *  Installed adapters appear in the Browser Profile adapter selector UI. */
 export interface PluginBrowserAdapterAPI {

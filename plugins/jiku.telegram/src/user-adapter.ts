@@ -13,6 +13,12 @@ import { UserbotQueue, type UserbotQueuePolicy } from './userbot-queue.ts'
 import { REACTIVATE_WAIT_MS } from './shared/constants.ts'
 import { lastDeactivateByConnector } from './shared/queues.ts'
 import { mapQueueError } from './shared/error-mapper.ts'
+import type { PluginConsoleAPI, PluginConsoleLogger } from '@jiku-plugin/studio'
+
+/** Console id for a given Telegram user (self-bot) connector instance. */
+export function userConsoleId(connectorId: string): string {
+  return `jiku.telegram.user:connector:${connectorId}`
+}
 
 // `unknown` typing for the mtcute client because the plugin file would need
 // every mtcute type imported just to satisfy TS. Type-aliased to the real
@@ -99,6 +105,13 @@ class TelegramUserAdapter extends ConnectorAdapter {
     }
     // Legacy fallback — single global queue for code paths not yet updated.
     return this.queue
+  }
+
+  private consoleApi: PluginConsoleAPI | null = null
+  attachConsole(api: PluginConsoleAPI) { this.consoleApi = api }
+  private con(connectorId: string | null | undefined): PluginConsoleLogger | null {
+    if (!this.consoleApi || !connectorId) return null
+    return this.consoleApi.get(userConsoleId(connectorId), `Telegram User ${connectorId.slice(0, 8)}`)
   }
 
   // Legacy scalar state (kept as fallback for single-tenant + getter-style reads).
@@ -270,6 +283,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
   // ─── Runtime ──────────────────────────────────────────────────────────────
 
   override async onActivate(ctx: ConnectorContext): Promise<void> {
+    this.con(ctx.connectorId)?.info('Userbot activating', { project_id: ctx.projectId })
     const session = ctx.fields['session_string']
     const apiIdRaw = ctx.fields['api_id']
     const apiHash = ctx.fields['api_hash']
@@ -396,6 +410,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
         inst.myUsername = this.myUsername
         inst.myIsPremium = this.myIsPremium
       }
+      this.con(ctx.connectorId)?.info(`Identity cached: @${this.myUsername ?? '(no username)'}`, { user_id: this.myUserId, premium: this.myIsPremium })
     } catch { /* non-fatal */ }
 
     // Inbound — wire 'new_message' to ConnectorEvent shape. mtcute's pub-sub
@@ -475,6 +490,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
     }
 
     console.log(`[telegram.user] activated — logged in as user_id=${this.myUserId}`)
+    this.con(ctx.connectorId)?.info(`Userbot activated — user_id=${this.myUserId}`, { wired_inbound: wired })
   }
 
   override async onDeactivate(connectorId?: string): Promise<void> {
@@ -494,6 +510,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
     const inst = this.userInstances.get(targetId)
     if (!inst) return
 
+    this.con(targetId)?.info('Userbot deactivating')
     lastDeactivateByConnector.set(targetId, Date.now())
     try { await inst.client.disconnect() } catch { /* best-effort */ }
     try { if (inst.client.close) await inst.client.close() } catch { /* best-effort */ }
@@ -665,12 +682,14 @@ class TelegramUserAdapter extends ConnectorAdapter {
     }
 
     try {
+      this.con(target.connector_id)?.info(`outbound → chat_id=${chatId} len=${finalText.length}`, { chat_id: chatId })
       const queued = await queue.enqueue<{ id?: number; chat?: { id?: number | bigint } } | undefined>(
         { chatId },
         () => client.sendText(peer, finalText, opts) as Promise<{ id?: number; chat?: { id?: number | bigint } } | undefined>,
         'send_message',
       )
       const res = queued.result
+      this.con(target.connector_id)?.info(`outbound OK message_id=${res?.id ?? 'n/a'}`, { chat_id: chatId })
       return {
         success: true,
         ref_keys: {

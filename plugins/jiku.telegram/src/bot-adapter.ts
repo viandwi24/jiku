@@ -20,6 +20,13 @@ import { getFilesystemService } from '../../../apps/studio/server/src/filesystem
 import { TELEGRAM_MAX_LENGTH, REACTIVATE_WAIT_MS } from './shared/constants.ts'
 import { splitMessage, extractTelegramMedia, withTelegramRetry } from './shared/helpers.ts'
 import { enqueueForChat, enqueueInboundEvent, lastDeactivateByConnector } from './shared/queues.ts'
+import type { PluginConsoleAPI, PluginConsoleLogger } from '@jiku-plugin/studio'
+
+/** Console id for a given Telegram bot connector instance. Shared shape
+ *  `jiku.telegram.bot:connector:<uuid>` — UI panels key off this. */
+export function botConsoleId(connectorId: string): string {
+  return `jiku.telegram.bot:connector:${connectorId}`
+}
 
 /**
  * Non-blocking arrival log.
@@ -107,6 +114,16 @@ class TelegramBotAdapter extends ConnectorAdapter {
       console.warn(`[telegram] botFor() called WITHOUT connector_id while ${this.instances.size} credentials active — defaulting to legacy fallback bot. This may pick the wrong bot. Caller MUST pass ConnectorTarget.connector_id.`)
     }
     return this.bot
+  }
+
+  private consoleApi: PluginConsoleAPI | null = null
+
+  attachConsole(api: PluginConsoleAPI) { this.consoleApi = api }
+
+  /** Resolve a console logger for this connector. No-op if console API not attached. */
+  private con(connectorId: string | null | undefined): PluginConsoleLogger | null {
+    if (!this.consoleApi || !connectorId) return null
+    return this.consoleApi.get(botConsoleId(connectorId), `Telegram Bot ${connectorId.slice(0, 8)}`)
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -586,6 +603,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
     this.pollingStopRequested = false
     this.lastEventAt = null
     this.bot = new Bot(token)
+    this.con(ctx.connectorId)?.info('Bot activating', { project_id: ctx.projectId })
 
     // Multi-tenant fix: register this credential's bot in the per-connector
     // Map. `botFor(connectorId)` looks here first; only falls back to the
@@ -604,6 +622,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
     // process (or, worse, silently kill the polling loop). Log + swallow.
     this.bot.catch((err) => {
       console.error('[telegram] grammy handler error:', err.error ?? err)
+      this.con(ctx.connectorId)?.error('grammy handler error', { error: String(err.error ?? err) })
     })
 
     this.bot.on('message', async (gramCtx: any) => {
@@ -1006,8 +1025,10 @@ class TelegramBotAdapter extends ConnectorAdapter {
         inst.botUserId = this.botUserId
       }
       console.log(`[telegram] identity cached for connector=${ctx.connectorId}: @${this.botUsername} (id=${this.botUserId})`)
+      this.con(ctx.connectorId)?.info(`Identity cached: @${this.botUsername}`, { user_id: this.botUserId })
     } catch (err) {
       console.warn('[telegram] getMe failed — mention/reply detection disabled:', err)
+      this.con(ctx.connectorId)?.warn('getMe failed — mention/reply detection disabled', { error: String(err) })
     }
 
     try {
@@ -1125,6 +1146,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
     })
 
     console.log('[telegram] bot started (polling loop running with auto-reconnect)')
+    this.con(ctx.connectorId)?.info('Bot started — polling loop running')
   }
 
   async onDeactivate(connectorId?: string): Promise<void> {
@@ -1144,6 +1166,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
     const inst = this.instances.get(targetId)
     if (!inst) return
 
+    this.con(targetId)?.info('Bot deactivating')
     lastDeactivateByConnector.set(targetId, Date.now())
     // Only the matching instance has its polling stopped.
     try { await inst.bot.stop() } catch { /* best-effort */ }
@@ -1699,11 +1722,13 @@ class TelegramBotAdapter extends ConnectorAdapter {
         const inst = connectorIdHint ? this.instances.get(connectorIdHint) : null
         const botUsernameForLog = inst?.botUsername ?? this.botUsername ?? 'unknown'
         console.log(`[telegram] sendMessage → chat_id=${chatId} bot=@${botUsernameForLog} connector=${connectorIdHint ?? 'legacy'} chunk=${i + 1}/${chunks.length} len=${(chunks[i] ?? '').length} parse_mode=${useMarkdown ? 'MarkdownV2' : 'none'}`)
+        this.con(connectorIdHint)?.info(`outbound → chat_id=${chatId} chunk=${i + 1}/${chunks.length} len=${(chunks[i] ?? '').length}`, { chat_id: chatId, parse_mode: useMarkdown ? 'MarkdownV2' : 'none' })
         lastSent = await withTelegramRetry(
           () => activeBot.api.sendMessage(chatId, chunks[i] || '-', opts as any),
           'telegram:sendMessage',
         )
         console.log(`[telegram] sendMessage ← chat_id=${chatId} message_id=${lastSent?.message_id ?? 'n/a'} (tg returned chat_title="${(lastSent as { chat?: { title?: string } } | null)?.chat?.title ?? '?'}")`)
+        this.con(connectorIdHint)?.info(`outbound OK message_id=${lastSent?.message_id ?? 'n/a'}`, { chat_id: chatId })
       }
 
       return {
@@ -1718,6 +1743,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
       // chat X — verify with `getMe` against the bot's token, then check
       // membership in the Telegram client.
       const errStr = String(err)
+      this.con(connectorIdHint)?.error(`outbound FAILED chat_id=${chatId}`, { error: errStr })
       let botUsername: string | null = null
       try {
         const me = await activeBot.api.getMe()

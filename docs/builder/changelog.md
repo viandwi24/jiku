@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-04-15 — Permission coverage expansion (Skills, Commands, Browser, Disk, Usage, Console)
+
+**Changed:** Six feature groups that previously piggy-backed on `agents:*` or `settings:*` now have dedicated permission keys. This lets role admins grant/revoke each feature independently instead of lumping them into over-broad grants.
+
+- `PERMISSIONS` enum in `packages/types`: added `SKILLS_READ/WRITE`, `COMMANDS_READ/WRITE`, `BROWSER_READ/WRITE`, `DISK_READ/WRITE`, `USAGE_READ`, `CONSOLE_READ`.
+- `ROLE_PRESETS`: Manager gets full r/w on new groups; Member gets read-only (skills/commands/disk/console); Viewer unchanged.
+- Migration `0033_permissions_expanded.sql` backfills Owner/Admin/Manager (full list) + Member (read subset) into existing roles so live projects don't lose menus.
+- Role editor UI (`settings/permissions/page.tsx`) renders toggle groups for each new category.
+- Sidebar `NAV_SECTIONS` now uses the correct permission key per item (Skills→skills:read, Browser→browser:read, Disk→disk:read, Usage→usage:read, Console→console:read, Commands→commands:read).
+- Server route guards updated: `skills.ts`, `commands.ts`, `browser.ts`, `browser-profiles.ts` swapped from `agents:*`/`settings:*` → their dedicated keys; `filesystem.ts /files/*` user-facing endpoints → `disk:*` (backend `/filesystem/config` stays on `settings:*` since it configures storage infra); `projects.ts /usage` → `usage:read`.
+- Console router documents its defense-in-depth stance: project-level URL gating isn't present (console ids are free-form), so `console:read` is enforced at UI (sidebar + withPermissionGuard). IDs are not secrets.
+
+**Files touched:** `packages/types/src/index.ts`, `apps/studio/db/src/migrations/0033_permissions_expanded.sql` (new), `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/settings/permissions/page.tsx`, `apps/studio/web/components/sidebar/project-sidebar.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/console/page.tsx`, `apps/studio/server/src/routes/skills.ts`, `apps/studio/server/src/routes/commands.ts`, `apps/studio/server/src/routes/browser.ts`, `apps/studio/server/src/routes/browser-profiles.ts`, `apps/studio/server/src/routes/filesystem.ts`, `apps/studio/server/src/routes/projects.ts`, `apps/studio/server/src/console/router.ts`
+
+## 2026-04-15 — Console UI: project-level viewer + inline terminal on connector detail
+
+**Changed:**
+- New project-level page `/console` listing every active console for this project's connectors with session indicator + filter. Picking a session renders the terminal-styled `<ConsolePanel>`. Sidebar entry added.
+- Connector detail page now shows the console as an inline terminal-styled block (black bg, green timestamps) — no more Sheet/Drawer.
+- `<ConsolePanel>` gained `variant: 'default' | 'terminal'` prop.
+- Removed redundant "Console" button + Sheet from the Channels Connectors tab — users navigate into the detail page or use the new unified `/console` route.
+- `api.console.list()` client helper added.
+
+**Files touched:** `apps/studio/web/components/console/console-panel.tsx`, `apps/studio/web/components/channels/connectors-tab.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/channels/[connector]/page.tsx`, `apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/console/page.tsx` (new), `apps/studio/web/components/sidebar/project-sidebar.tsx`, `apps/studio/web/lib/api.ts`
+
+## 2026-04-15 — Console feature (live log streams per plugin instance)
+
+**Changed:** New first-class Console feature for plugins/adapters to emit structured log lines that UI can live-stream. Session-scoped storage: 100–200 entries in memory (ring), batched flush of 100 to NDJSON tempfile when ring hits 200, reverse-scan pagination when UI scrolls past memory window. Tempdir wiped on server boot — logs are ephemeral. SSE for live tail. Plugins access via `ctx.console.get(id)` → `.info/.warn/.error/.debug`. Telegram bot + userbot adapters now emit console logs on activate/deactivate/inbound/outbound/errors; each connector instance gets its own console id `<plugin_id>:connector:<uuid>`.
+
+**Files touched:**
+- `apps/studio/server/src/console/registry.ts`, `apps/studio/server/src/console/router.ts` — new
+- `apps/studio/server/src/index.ts` — wires router + shutdown flush + tmpdir wipe
+- `apps/studio/server/src/plugins/ui/context-extender.ts` — `ctx.console` binding
+- `plugins/jiku.studio/src/types.ts`, `plugins/jiku.studio/src/index.ts` — `PluginConsoleAPI` types
+- `plugins/jiku.telegram/src/index.ts`, `plugins/jiku.telegram/src/bot-adapter.ts`, `plugins/jiku.telegram/src/user-adapter.ts` — console wiring + `attachConsole()` + lifecycle logs
+- `apps/studio/web/lib/api.ts` — `api.console.{snapshot,history,streamUrl}`
+- `apps/studio/web/components/console/console-panel.tsx` — new
+- `apps/studio/web/components/channels/connectors-tab.tsx` — Console button + Sheet
+
 ## 2026-04-15 — Telegram production safety hardening
 
 **Changed:**

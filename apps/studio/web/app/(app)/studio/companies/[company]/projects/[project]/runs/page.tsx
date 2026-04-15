@@ -166,7 +166,8 @@ function RunsPage({ params }: PageProps) {
           <thead>
             <tr className="border-b bg-muted/30">
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-28">Type</th>
-              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Agent</th>
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Title</th>
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-40">Agent</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-28">Status</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-20">Duration</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-24">Started</th>
@@ -176,14 +177,14 @@ function RunsPage({ params }: PageProps) {
           <tbody className="divide-y">
             {isLoading && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   Loading...
                 </td>
               </tr>
             )}
             {!isLoading && runs.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No runs found
                 </td>
               </tr>
@@ -220,6 +221,7 @@ function RunsPage({ params }: PageProps) {
 
 function RunRow({ run, base, onCancel }: { run: RunRow; base: string; onCancel: () => void }) {
   const goal = (run.metadata as { goal?: string }).goal
+  const displayTitle = run.title?.trim() || goal?.trim() || null
   return (
     <tr
       className="hover:bg-muted/30 cursor-pointer transition-colors"
@@ -228,11 +230,15 @@ function RunRow({ run, base, onCancel }: { run: RunRow; base: string; onCancel: 
       <td className="px-4 py-3">
         <TypeBadge type={run.type} />
       </td>
-      <td className="px-4 py-3">
-        <div className="font-medium text-xs">{run.agent_name}</div>
-        {goal && (
-          <div className="text-[10px] text-muted-foreground truncate max-w-[280px] mt-0.5">{goal}</div>
+      <td className="px-4 py-3 max-w-0">
+        {displayTitle ? (
+          <div className="text-xs font-medium truncate" title={displayTitle}>{displayTitle}</div>
+        ) : (
+          <div className="text-xs text-muted-foreground font-mono truncate">{run.id.slice(0, 8)}</div>
         )}
+      </td>
+      <td className="px-4 py-3">
+        <div className="font-medium text-xs truncate" title={run.agent_name}>{run.agent_name}</div>
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={run.run_status} />

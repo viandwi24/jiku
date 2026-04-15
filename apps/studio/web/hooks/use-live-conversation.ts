@@ -44,13 +44,17 @@ function chunksToUIMessage(chunks: Record<string, unknown>[]): UIMessage | null 
         textParts.set(id, { id, text: delta })
       }
     } else if (type === 'tool-input-available') {
+      // Emit as AI SDK v6 `dynamic-tool` shape directly — matches what
+      // `dbPartsToUIParts` produces on post-stream refresh, so the tool
+      // accordion renders name/input/output live instead of showing a
+      // generic "invocation" label until the refresh swaps shapes.
       const toolCallId = chunk['toolCallId'] as string
       if (toolCallId) {
         toolParts.set(toolCallId, {
-          type: 'tool-invocation',
+          type: 'dynamic-tool',
           toolCallId,
-          toolName: chunk['toolName'] ?? '',
-          state: 'call',
+          toolName: (chunk['toolName'] as string) ?? '',
+          state: 'input-available',
           input: chunk['input'] ?? {},
         })
       }
@@ -58,15 +62,15 @@ function chunksToUIMessage(chunks: Record<string, unknown>[]): UIMessage | null 
       const toolCallId = chunk['toolCallId'] as string
       if (toolCallId) {
         const existing = toolParts.get(toolCallId) ?? {
-          type: 'tool-invocation',
+          type: 'dynamic-tool',
           toolCallId,
           toolName: '',
-          state: 'result',
+          state: 'output-available',
           input: {},
         }
         toolParts.set(toolCallId, {
           ...existing,
-          state: 'result',
+          state: 'output-available',
           output: chunk['output'],
         })
       }
@@ -109,6 +113,12 @@ interface UseLiveConversationOptions {
   /** Called when the stream ends — caller should reload messages from DB */
   onDone?: () => void
   /**
+   * Called the first time a polling session observes `running:true`. Readonly
+   * viewers use this to refresh from DB so the just-persisted user message
+   * appears before the assistant stream starts rendering on top of it.
+   */
+  onStart?: () => void
+  /**
    * If true, automatically polls /status every 2s and starts live polling
    * when a run is detected. Useful for readonly tabs that are already open
    * when streaming begins.
@@ -124,13 +134,15 @@ interface UseLiveConversationOptions {
  * Usage: append the returned liveMessage to your existing messages array
  * when it's non-null, replacing it on every update.
  */
-export function useLiveConversation({ conversationId, onDone, autoDetect = false }: UseLiveConversationOptions) {
+export function useLiveConversation({ conversationId, onDone, onStart, autoDetect = false }: UseLiveConversationOptions) {
   const [liveMessage, setLiveMessage] = useState<UIMessage | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const detectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
+  const onStartRef = useRef(onStart)
+  onStartRef.current = onStart
 
   // Tracks whether we've ever observed `running:true` in the current polling
   // session. Without this, callers that start polling BEFORE the server has
@@ -178,7 +190,15 @@ export function useLiveConversation({ conversationId, onDone, autoDetect = false
           return
         }
 
+        const firstObservation = !seenRunningRef.current
         seenRunningRef.current = true
+        if (firstObservation) {
+          // Fire onStart so readonly viewers can pull the freshly-persisted
+          // user message from DB before the assistant stream starts rendering.
+          // Without this the assistant response appears first and the user
+          // message pops in only after the run finishes + refreshMessages.
+          try { onStartRef.current?.() } catch { /* ignore */ }
+        }
         const msg = chunksToUIMessage(chunks)
         setLiveMessage(msg)
       } catch {

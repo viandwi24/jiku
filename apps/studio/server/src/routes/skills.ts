@@ -38,13 +38,13 @@ async function resolveSkillProject(req: Request, res: Response, next: NextFuncti
 
 // ── Project Skills CRUD ───────────────────────────────────────────────────────
 
-router.get('/projects/:pid/skills', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/skills', requirePermission('skills:read'), async (req, res) => {
   const projectId = req.params['pid'] as string
   const skills = await getSkillsByProjectId(projectId)
   res.json({ skills })
 })
 
-router.post('/projects/:pid/skills', requirePermission('agents:write'), async (req, res) => {
+router.post('/projects/:pid/skills', requirePermission('skills:write'), async (req, res) => {
   const projectId = req.params['pid'] as string
   const body = req.body as { name: string; slug?: string; description?: string; tags?: string[]; entrypoint?: string }
 
@@ -77,12 +77,12 @@ router.post('/projects/:pid/skills', requirePermission('agents:write'), async (r
   res.status(201).json({ skill })
 })
 
-router.get('/skills/:sid', resolveSkillProject, requirePermission('agents:read'), async (req, res) => {
+router.get('/skills/:sid', resolveSkillProject, requirePermission('skills:read'), async (req, res) => {
   const skill = res.locals['skill'] as ProjectSkill
   res.json({ skill })
 })
 
-router.patch('/skills/:sid', resolveSkillProject, requirePermission('agents:write'), async (req, res) => {
+router.patch('/skills/:sid', resolveSkillProject, requirePermission('skills:write'), async (req, res) => {
   const skillId = req.params['sid'] as string
   const body = req.body as { name?: string; description?: string; tags?: string[]; entrypoint?: string; enabled?: boolean }
   const skill = await updateSkill(skillId, body)
@@ -90,7 +90,7 @@ router.patch('/skills/:sid', resolveSkillProject, requirePermission('agents:writ
   res.json({ skill })
 })
 
-router.delete('/skills/:sid', resolveSkillProject, requirePermission('agents:write'), async (req, res) => {
+router.delete('/skills/:sid', resolveSkillProject, requirePermission('skills:write'), async (req, res) => {
   const skill = res.locals['skill'] as ProjectSkill
 
   // Delete the skill's folder from the filesystem
@@ -107,13 +107,13 @@ router.delete('/skills/:sid', resolveSkillProject, requirePermission('agents:wri
 
 // ── Agent Skill Assignments ───────────────────────────────────────────────────
 
-router.get('/agents/:aid/skills', requirePermission('agents:read'), async (req, res) => {
+router.get('/agents/:aid/skills', requirePermission('skills:read'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const assignments = await getAgentSkills(agentId)
   res.json({ assignments })
 })
 
-router.post('/agents/:aid/skills', requirePermission('agents:write'), async (req, res) => {
+router.post('/agents/:aid/skills', requirePermission('skills:write'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const { skill_id, mode } = req.body as { skill_id: string; mode?: 'always' | 'on_demand' }
   if (!skill_id) { res.status(400).json({ error: 'skill_id required' }); return }
@@ -131,7 +131,7 @@ router.post('/agents/:aid/skills', requirePermission('agents:write'), async (req
   res.status(201).json({ assignment })
 })
 
-router.patch('/agents/:aid/skills/:sid', requirePermission('agents:write'), async (req, res) => {
+router.patch('/agents/:aid/skills/:sid', requirePermission('skills:write'), async (req, res) => {
   const { aid: agentId, sid: skillId } = req.params as { aid: string; sid: string }
   const { mode } = req.body as { mode: 'always' | 'on_demand' }
   if (!mode || !['always', 'on_demand'].includes(mode)) {
@@ -146,7 +146,7 @@ router.patch('/agents/:aid/skills/:sid', requirePermission('agents:write'), asyn
   res.json({ assignment })
 })
 
-router.delete('/agents/:aid/skills/:sid', requirePermission('agents:write'), async (req, res) => {
+router.delete('/agents/:aid/skills/:sid', requirePermission('skills:write'), async (req, res) => {
   const { aid: agentId, sid: skillId } = req.params as { aid: string; sid: string }
 
   await removeSkillFromAgent(agentId, skillId)
@@ -160,7 +160,7 @@ router.delete('/agents/:aid/skills/:sid', requirePermission('agents:write'), asy
 // ── Plan 19 — Skills Loader v2 endpoints ─────────────────────────────────────
 
 /** Refresh the SkillLoader FS cache for a project. */
-router.post('/projects/:pid/skills/refresh', requirePermission('agents:write'), async (req, res) => {
+router.post('/projects/:pid/skills/refresh', requirePermission('skills:write'), async (req, res) => {
   const projectId = req.params['pid'] as string
   try {
     const { getSkillLoader } = await import('../skills/loader.ts')
@@ -177,7 +177,7 @@ router.post('/projects/:pid/skills/refresh', requirePermission('agents:write'), 
  *   { source: 'github', package: 'owner/repo[/subpath][@ref]', overwrite?: boolean }
  *   { source: 'zip', overwrite?: boolean } + multipart "file" field
  */
-router.post('/projects/:pid/skills/import', requirePermission('agents:write'), async (req, res) => {
+router.post('/projects/:pid/skills/import', requirePermission('skills:write'), async (req, res) => {
   const projectId = req.params['pid'] as string
   try {
     const { importSkillFromGithub, importSkillFromZipBuffer, parseGithubPackageSpec } = await import('../skills/importer.ts')
@@ -208,7 +208,7 @@ router.post('/projects/:pid/skills/import', requirePermission('agents:write'), a
  */
 router.post(
   '/projects/:pid/skills/import-zip',
-  requirePermission('agents:write'),
+  requirePermission('skills:write'),
   express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '20mb' }),
   async (req, res) => {
     const projectId = req.params['pid'] as string
@@ -234,7 +234,7 @@ router.post(
 )
 
 /** Plan 19 — update agent.skill_access_mode. */
-router.patch('/agents/:aid/skill-access-mode', requirePermission('agents:write'), async (req, res) => {
+router.patch('/agents/:aid/skill-access-mode', requirePermission('skills:write'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const body = req.body as { mode?: 'manual' | 'all_on_demand' }
   if (body.mode !== 'manual' && body.mode !== 'all_on_demand') {

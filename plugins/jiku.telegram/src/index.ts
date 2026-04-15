@@ -34,6 +34,8 @@ export default definePlugin({
   },
   depends: [StudioPlugin],
   setup(ctx) {
+    telegramBotAdapter.attachConsole(ctx.console)
+    telegramUserAdapter.attachConsole(ctx.console)
     ctx.connector.register(telegramBotAdapter)
     ctx.connector.register(telegramUserAdapter)
   },

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import type { ProjectAttachment } from '@/lib/api'
 import { FileExplorer, formatSize } from '@/components/filesystem/file-explorer'
+import { useProjectPermission } from '@/lib/permissions'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
@@ -452,6 +453,9 @@ function FilesPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const projectId = useProjectId(companySlug, projectSlug)
   const [tab, setTab] = useState<Tab>('explorer')
+  const { can } = useProjectPermission(projectId)
+  const canConfigure = can('settings:read')
+  const canWriteDisk = can('disk:write')
 
   const { data: configData } = useQuery({
     queryKey: ['filesystem-config', projectId],
@@ -461,10 +465,12 @@ function FilesPage({ params }: PageProps) {
 
   const isConfigured = configData?.config?.enabled
 
+  // Hide the Storage Config tab for users without settings perms — disk:read
+  // users can browse + download but can't reconfigure the backend.
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id: 'explorer', label: 'Virtual Disk', icon: HardDrive },
     { id: 'attachments', label: 'Attachments', icon: Paperclip },
-    { id: 'config', label: 'Storage Config', icon: Settings2 },
+    ...(canConfigure ? [{ id: 'config' as Tab, label: 'Storage Config', icon: Settings2 }] : []),
   ]
 
   return (
@@ -491,19 +497,27 @@ function FilesPage({ params }: PageProps) {
 
       {tab === 'explorer' ? (
         isConfigured ? (
-          <FileExplorer projectId={projectId} />
+          <FileExplorer projectId={projectId} canWrite={canWriteDisk} />
         ) : (
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-sm text-center space-y-3">
               <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto" />
               <h2 className="font-semibold">Virtual Disk not configured</h2>
-              <p className="text-sm text-muted-foreground">
-                Switch to <strong>Storage Config</strong> to connect an S3-compatible storage adapter.
-              </p>
-              <Button variant="outline" size="sm" onClick={() => setTab('config')}>
-                <Settings2 className="w-3.5 h-3.5 mr-1.5" />
-                Configure Storage
-              </Button>
+              {canConfigure ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Switch to <strong>Storage Config</strong> to connect an S3-compatible storage adapter.
+                  </p>
+                  <Button variant="outline" size="sm" onClick={() => setTab('config')}>
+                    <Settings2 className="w-3.5 h-3.5 mr-1.5" />
+                    Configure Storage
+                  </Button>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  A project administrator hasn&apos;t configured the virtual disk yet. Ask an owner or admin to set up storage.
+                </p>
+              )}
             </div>
           </div>
         )
@@ -517,4 +531,4 @@ function FilesPage({ params }: PageProps) {
 }
 
 import { withPermissionGuard } from '@/components/permissions/permission-guard'
-export default withPermissionGuard(FilesPage, 'agents:read')
+export default withPermissionGuard(FilesPage, 'disk:read')

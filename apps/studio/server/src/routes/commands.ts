@@ -31,13 +31,13 @@ async function resolveCommandProject(req: Request, res: Response, next: NextFunc
 
 // ── Project Commands CRUD ─────────────────────────────────────────────────────
 
-router.get('/projects/:pid/commands', requirePermission('agents:read'), async (req, res) => {
+router.get('/projects/:pid/commands', requirePermission('commands:read'), async (req, res) => {
   const projectId = req.params['pid'] as string
   const commands = await getCommandsByProjectId(projectId)
   res.json({ commands })
 })
 
-router.post('/projects/:pid/commands', requirePermission('agents:write'), async (req, res) => {
+router.post('/projects/:pid/commands', requirePermission('commands:write'), async (req, res) => {
   const projectId = req.params['pid'] as string
   const body = req.body as { name: string; slug?: string; description?: string }
 
@@ -65,11 +65,11 @@ router.post('/projects/:pid/commands', requirePermission('agents:write'), async 
   res.status(201).json({ command: cmd })
 })
 
-router.get('/commands/:cid', resolveCommandProject, requirePermission('agents:read'), async (req, res) => {
+router.get('/commands/:cid', resolveCommandProject, requirePermission('commands:read'), async (req, res) => {
   res.json({ command: res.locals['command'] as ProjectCommand })
 })
 
-router.delete('/commands/:cid', resolveCommandProject, requirePermission('agents:write'), async (req, res) => {
+router.delete('/commands/:cid', resolveCommandProject, requirePermission('commands:write'), async (req, res) => {
   const cmd = res.locals['command'] as ProjectCommand
   const fs = await getFilesystemService(cmd.project_id)
   if (fs) {
@@ -81,7 +81,7 @@ router.delete('/commands/:cid', resolveCommandProject, requirePermission('agents
   res.json({ ok: true })
 })
 
-router.post('/projects/:pid/commands/refresh', requirePermission('agents:write'), async (req, res) => {
+router.post('/projects/:pid/commands/refresh', requirePermission('commands:write'), async (req, res) => {
   const projectId = req.params['pid'] as string
   try {
     const snapshot = await getCommandLoader(projectId).syncFilesystem()
@@ -93,13 +93,13 @@ router.post('/projects/:pid/commands/refresh', requirePermission('agents:write')
 
 // ── Agent Command Allow-List ─────────────────────────────────────────────────
 
-router.get('/agents/:aid/commands', requirePermission('agents:read'), async (req, res) => {
+router.get('/agents/:aid/commands', requirePermission('commands:read'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const assignments = await getAgentCommands(agentId)
   res.json({ assignments })
 })
 
-router.post('/agents/:aid/commands', requirePermission('agents:write'), async (req, res) => {
+router.post('/agents/:aid/commands', requirePermission('commands:write'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const { command_id, pinned } = req.body as { command_id: string; pinned?: boolean }
   if (!command_id) { res.status(400).json({ error: 'command_id required' }); return }
@@ -118,7 +118,7 @@ router.post('/agents/:aid/commands', requirePermission('agents:write'), async (r
   res.status(201).json({ assignment })
 })
 
-router.delete('/agents/:aid/commands/:cid', requirePermission('agents:write'), async (req, res) => {
+router.delete('/agents/:aid/commands/:cid', requirePermission('commands:write'), async (req, res) => {
   const { aid: agentId, cid: commandId } = req.params as { aid: string; cid: string }
   const agent = await getAgentById(agentId)
   const cmd = await getCommandById(commandId)
@@ -133,7 +133,7 @@ router.delete('/agents/:aid/commands/:cid', requirePermission('agents:write'), a
   res.json({ ok: true })
 })
 
-router.patch('/agents/:aid/command-access-mode', requirePermission('agents:write'), async (req, res) => {
+router.patch('/agents/:aid/command-access-mode', requirePermission('commands:write'), async (req, res) => {
   const agentId = req.params['aid'] as string
   const body = req.body as { mode?: 'manual' | 'all' }
   if (body.mode !== 'manual' && body.mode !== 'all') {

@@ -1,5 +1,13 @@
 # Decisions
 
+## ADR-093 — Console is a plugin-wide ephemeral log feature, not a persistent audit trail
+
+**Context:** Plugins (starting with Telegram bot + userbot) need an operator-visible log of what the instance is actually doing — inbound traffic, outbound sends, activation lifecycle, flood/retry events. `connector_events` table already exists for auditable per-event records; it's the wrong shape for free-form diagnostic lines and would bloat fast. `console.log` on the server is invisible to users. Needed: a lightweight, in-process log stream that can be read live from the Studio UI, without persistence requirements beyond the current server session.
+
+**Decision:** Add a `ConsoleRegistry` keyed by free-form `consoleId` string (convention `<plugin_id>:connector:<uuid>`). Storage model: 100–200 entry ring in memory (newest), batched flush of 100 oldest to NDJSON tempfile at `os.tmpdir()/jiku-console/` when ring hits 200. On server boot, that directory is wiped — logs are session-scoped only. UI: `<ConsolePanel>` loads snapshot (memory) instantly, subscribes to SSE, reverse-paginates against `/history?before_ts=` when scrolled past memory window. File rotates at 10MB per console (one `.log.1` backup). Plugins emit via `ctx.console.get(id).info/warn/error/debug`; adapters that need console wiring expose an `attachConsole(api)` method that plugin setup() calls before registering with the connector registry.
+
+**Consequences:** Zero DB cost; observability latency is in-memory speed. Accepted loss: if server crashes, up to 200 unflushed entries per console are lost — acceptable for live diagnostics, and we have `connector_events` for auditable trails. Reusable across any plugin (not Telegram-specific). Scale caveat: each console's memory footprint is ~200 entries × ~300 bytes = ~60KB; at 100 active consoles that's 6MB — fine for the expected Studio deployment size.
+
 ## ADR-090 — Telegram connector actions limited to message + media management
 
 **Context:** Audit before production found bot-adapter `runAction` exposed group/channel administration tools (`ban_member`, `set_chat_description`, `create_invite_link`, `get_chat_members`) plus destructive message ops (`delete_message`, `pin_message`, `unpin_message`, `send_reaction`). Userbot exposed the same destructive ops plus `join_chat`/`leave_chat` which trigger Telegram spam flags when bursted. A prompt-injected agent with access to these actions could silently ban users, rewrite channel descriptions, or mass-unpin — high blast radius, low observability. The scope of Jiku's Telegram usage is conversational message automation, not group administration.

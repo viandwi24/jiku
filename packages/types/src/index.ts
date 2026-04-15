@@ -1622,6 +1622,7 @@ export const PERMISSIONS = {
 
   // Runs
   RUNS_READ:     'runs:read',
+  RUNS_CANCEL:   'runs:cancel',
 
   // Agents
   AGENTS_READ:   'agents:read',
@@ -1649,6 +1650,28 @@ export const PERMISSIONS = {
   // Cron Tasks
   CRON_TASKS_READ:  'cron_tasks:read',
   CRON_TASKS_WRITE: 'cron_tasks:write',
+
+  // Skills
+  SKILLS_READ:  'skills:read',
+  SKILLS_WRITE: 'skills:write',
+
+  // Commands (slash commands)
+  COMMANDS_READ:  'commands:read',
+  COMMANDS_WRITE: 'commands:write',
+
+  // Browser profiles
+  BROWSER_READ:  'browser:read',
+  BROWSER_WRITE: 'browser:write',
+
+  // Disk / project virtual filesystem
+  DISK_READ:  'disk:read',
+  DISK_WRITE: 'disk:write',
+
+  // Usage metrics
+  USAGE_READ: 'usage:read',
+
+  // Console (per-plugin live log streams)
+  CONSOLE_READ: 'console:read',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
@@ -1664,13 +1687,19 @@ export const ROLE_PRESETS = {
     permissions: [
       'chats:read', 'chats:create',
       'memory:read', 'memory:write',
-      'runs:read',
+      'runs:read', 'runs:cancel',
       'agents:read',
       'channels:read',
       'plugins:read',
       'settings:read',
       'members:read',
       'cron_tasks:read', 'cron_tasks:write',
+      'skills:read', 'skills:write',
+      'commands:read', 'commands:write',
+      'browser:read', 'browser:write',
+      'disk:read', 'disk:write',
+      'usage:read',
+      'console:read',
     ] as Permission[],
   },
   member: {
@@ -1680,6 +1709,10 @@ export const ROLE_PRESETS = {
       'memory:read',
       'runs:read',
       'agents:read',
+      'skills:read',
+      'commands:read',
+      'disk:read',
+      'console:read',
     ] as Permission[],
   },
   viewer: {

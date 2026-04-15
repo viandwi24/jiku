@@ -7,13 +7,14 @@ import type { SkillItem } from '@/lib/api'
 import { Button, Badge, cn } from '@jiku/ui'
 import { BookOpen, Plus, Trash2, Check, X, AlertCircle, Settings2, RefreshCw, Download } from 'lucide-react'
 import { FileExplorer } from '@/components/filesystem/file-explorer'
+import { useProjectPermission } from '@/lib/permissions'
 import { toast } from 'sonner'
 
 interface PageProps {
   params: Promise<{ company: string; project: string }>
 }
 
-export default function ProjectSkillsPage({ params }: PageProps) {
+function ProjectSkillsPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const queryClient = useQueryClient()
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null)
@@ -33,6 +34,8 @@ export default function ProjectSkillsPage({ params }: PageProps) {
     enabled: !!company?.id,
   })
   const project = projectsData?.projects.find(p => p.slug === projectSlug)
+  const { can } = useProjectPermission(project?.id)
+  const canWrite = can('skills:write')
 
   const { data: skillsData, isLoading } = useQuery({
     queryKey: ['project-skills', project?.id],
@@ -99,24 +102,28 @@ export default function ProjectSkillsPage({ params }: PageProps) {
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-6 w-6"
-              title="Import from GitHub / ZIP"
-              onClick={() => setImportOpen(true)}
-            >
-              <Download className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-6 w-6"
-              title="New skill"
-              onClick={() => setCreatingSkill(true)}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
+            {canWrite && (
+              <>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  title="Import from GitHub / ZIP"
+                  onClick={() => setImportOpen(true)}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  title="New skill"
+                  onClick={() => setCreatingSkill(true)}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
@@ -231,6 +238,7 @@ export default function ProjectSkillsPage({ params }: PageProps) {
           <SkillFileEditor
             skill={selectedSkill}
             projectId={project.id}
+            canWrite={canWrite}
             onDelete={() => {
               if (!confirm(`Delete skill "${selectedSkill.name}" and all its files?`)) return
               deleteSkillMutation.mutate(selectedSkill.id)
@@ -370,10 +378,12 @@ function SkillFileEditor({
   skill,
   projectId,
   onDelete,
+  canWrite = true,
 }: {
   skill: SkillItem
   projectId: string
   onDelete: () => void
+  canWrite?: boolean
 }) {
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
@@ -391,15 +401,17 @@ function SkillFileEditor({
           <span>·</span>
           <span>entry: <span className="font-mono">{skill.entrypoint}</span></span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs text-destructive hover:text-destructive gap-1"
-          onClick={onDelete}
-        >
-          <Trash2 className="h-3 w-3" />
-          Delete
-        </Button>
+        {canWrite && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-destructive hover:text-destructive gap-1"
+            onClick={onDelete}
+          >
+            <Trash2 className="h-3 w-3" />
+            Delete
+          </Button>
+        )}
       </div>
 
       {/* FileExplorer scoped to /skills/{slug}/ — key resets all state when skill changes */}
@@ -408,7 +420,11 @@ function SkillFileEditor({
         projectId={projectId}
         rootPath={`/skills/${skill.slug}`}
         hideUpload
+        canWrite={canWrite}
       />
     </div>
   )
 }
+
+import { withPermissionGuard } from '@/components/permissions/permission-guard'
+export default withPermissionGuard(ProjectSkillsPage, 'skills:read')

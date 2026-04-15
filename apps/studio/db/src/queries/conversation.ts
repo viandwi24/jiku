@@ -136,6 +136,7 @@ export async function listRunsByProject(params: ListConversationsParams) {
     db
       .select({
         id: conversations.id,
+        title: conversations.title,
         type: conversations.type,
         run_status: conversations.run_status,
         agent_id: conversations.agent_id,

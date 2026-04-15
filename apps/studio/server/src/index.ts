@@ -37,6 +37,8 @@ import { mcpServersRouter } from './routes/mcp-servers.ts'
 import { toolStatesRouter } from './routes/tool-states.ts'
 import { auditRouter } from './routes/audit.ts'
 import { pluginPermissionsRouter } from './routes/plugin-permissions.ts'
+import { consoleRouter } from './console/router.ts'
+import { consoleRegistry } from './console/registry.ts'
 import { runtimeManager } from './runtime/manager.ts'
 import { startBrowserTabCleanup } from './browser/tab-manager.ts'
 import { startStorageCleanupWorker } from './filesystem/worker.ts'
@@ -104,6 +106,7 @@ app.use('/api', mcpServersRouter)
 app.use('/api', toolStatesRouter)
 app.use('/api', auditRouter)
 app.use('/api', pluginPermissionsRouter)
+app.use('/api', consoleRouter)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
@@ -211,6 +214,7 @@ async function shutdown() {
   dreamScheduler.stopAll()
   backgroundWorker.stop()
   await runtimeManager.stopAll()
+  await consoleRegistry.flushAll()
   console.log('[jiku] Studio Server stopped')
   process.exit(0)
 }

@@ -62,7 +62,7 @@ router.patch('/projects/:pid', requirePermission('settings:write'), async (req, 
   res.json({ project: updated })
 })
 
-router.get('/projects/:pid/usage', requirePermission('settings:read'), async (req, res) => {
+router.get('/projects/:pid/usage', requirePermission('usage:read'), async (req, res) => {
   const projectId = req.params['pid']!
   const limit = Math.min(Number(req.query['limit'] ?? 50), 500)
   const offset = Number(req.query['offset'] ?? 0)

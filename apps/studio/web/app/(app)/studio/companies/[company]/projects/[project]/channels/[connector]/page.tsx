@@ -39,7 +39,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@jiku/ui'
-import { ArrowLeft, Ban, Bot, Check, Clock, Copy, Link2, Pencil, Plus, RefreshCw, Send, Settings2, Target, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Ban, Bot, Check, Clock, Copy, Link2, Pencil, Plus, RefreshCw, Send, Settings2, Target, Terminal, Trash2, UserCheck, Webhook, Users, Play, Square, X, XCircle } from 'lucide-react'
+import { ConsolePanel } from '@/components/console/console-panel'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -1258,6 +1259,21 @@ export default function ConnectorDetailPage({ params }: PageProps) {
             ))}
           </div>
         )}
+      </div>
+
+      <Separator />
+
+      {/* Console — live log stream for this connector instance (session-scoped) */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium flex items-center gap-2">
+          <Terminal className="h-4 w-4" /> Console
+        </h2>
+        <ConsolePanel
+          consoleId={`${connector.plugin_id}:connector:${connector.id}`}
+          title={connector.display_name}
+          height={360}
+          variant="terminal"
+        />
       </div>
 
       <Separator />

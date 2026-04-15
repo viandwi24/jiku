@@ -38,9 +38,11 @@ interface EntryDropdownProps {
   onDelete: () => void
   onOpen?: () => void
   onSetPermission: (permission: 'read' | 'read+write' | null) => void
+  /** Hide mutating actions (rename/delete/tool-permission). Default true. */
+  canWrite?: boolean
 }
 
-export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, onSetPermission }: EntryDropdownProps) {
+export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, onSetPermission, canWrite = true }: EntryDropdownProps) {
   const current = entry.tool_permission ?? null
   return (
     <DropdownMenu>
@@ -59,44 +61,50 @@ export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, o
             {entry.type === 'folder' ? 'Open folder' : 'Open file'}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onClick={onRename} className="text-xs gap-2">
-          <Pencil className="w-3.5 h-3.5" />
-          Rename
-        </DropdownMenuItem>
+        {canWrite && (
+          <DropdownMenuItem onClick={onRename} className="text-xs gap-2">
+            <Pencil className="w-3.5 h-3.5" />
+            Rename
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={onCopyPath} className="text-xs gap-2">
           <Copy className="w-3.5 h-3.5" />
           Copy path
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger className="text-xs gap-2">
-            <Shield className="w-3.5 h-3.5" />
-            Tool permission
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="min-w-52">
-            <div className="px-2 py-1.5 text-[10px] text-muted-foreground">
-              Controls agent filesystem tools (fs_write, fs_edit, fs_delete, etc.). UI edits are never gated.
-            </div>
+        {canWrite && (
+          <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onSetPermission('read+write')} className="text-xs gap-2">
-              {current === 'read+write' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
-              Read + Write
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="text-xs gap-2">
+                <Shield className="w-3.5 h-3.5" />
+                Tool permission
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="min-w-52">
+                <div className="px-2 py-1.5 text-[10px] text-muted-foreground">
+                  Controls agent filesystem tools (fs_write, fs_edit, fs_delete, etc.). UI edits are never gated.
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onSetPermission('read+write')} className="text-xs gap-2">
+                  {current === 'read+write' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+                  Read + Write
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onSetPermission('read')} className="text-xs gap-2">
+                  {current === 'read' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+                  Read only
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onSetPermission(null)} className="text-xs gap-2">
+                  {current === null ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
+                  Inherit from parent
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-red-500 focus:text-red-500">
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSetPermission('read')} className="text-xs gap-2">
-              {current === 'read' ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
-              Read only
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSetPermission(null)} className="text-xs gap-2">
-              {current === null ? <Check className="w-3.5 h-3.5" /> : <span className="w-3.5" />}
-              Inherit from parent
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={onDelete} className="text-xs gap-2 text-red-500 focus:text-red-500">
-          <Trash2 className="w-3.5 h-3.5" />
-          Delete
-        </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -154,9 +162,15 @@ export interface FileExplorerProps {
   rootPath?: string
   /** Hide the upload button. Default false. */
   hideUpload?: boolean
+  /**
+   * When false, hide every mutating control (new file, new folder, upload,
+   * rename, delete, save editor). Read + download still work. Intended for
+   * users with `disk:read` only. Default true.
+   */
+  canWrite?: boolean
 }
 
-export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerProps) {
+export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true }: FileExplorerProps) {
   const qc = useQueryClient()
 
   // normalizedRoot: '/skills/my-skill' (no trailing slash, empty string = full access)
@@ -324,12 +338,16 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
       <div className="w-64 shrink-0 border-r flex flex-col overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center gap-1 px-2 py-2 border-b">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFileInput(v => !v); setShowNewFolderInput(false) }} title="New file">
-            <Plus className="w-3.5 h-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFolderInput(v => !v); setShowNewFileInput(false) }} title="New folder">
-            <FolderPlus className="w-3.5 h-3.5" />
-          </Button>
+          {canWrite && (
+            <>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFileInput(v => !v); setShowNewFolderInput(false) }} title="New file">
+                <Plus className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setShowNewFolderInput(v => !v); setShowNewFileInput(false) }} title="New folder">
+                <FolderPlus className="w-3.5 h-3.5" />
+              </Button>
+            </>
+          )}
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => refetch()} title="Refresh">
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
@@ -378,7 +396,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
         )}
 
         {/* New file input */}
-        {showNewFileInput && (
+        {canWrite && showNewFileInput && (
           <div className="flex items-center gap-1 px-2 py-1.5 border-b">
             <input
               autoFocus
@@ -401,7 +419,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
         )}
 
         {/* New folder input */}
-        {showNewFolderInput && (
+        {canWrite && showNewFolderInput && (
           <div className="flex items-center gap-1 px-2 py-1.5 border-b">
             <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <input
@@ -473,6 +491,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
                   <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto flex">
                     <EntryDropdown
                       entry={entry}
+                      canWrite={canWrite}
                       onOpen={() => handleNavigate(entry)}
                       onRename={() => { setRenamingEntry(entry); setRenameValue(entry.name) }}
                       onCopyPath={() => { navigator.clipboard.writeText(entry.path); toast.success('Path copied') }}
@@ -493,7 +512,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
         </div>
 
         {/* Upload button */}
-        {!hideUpload && (
+        {canWrite && !hideUpload && (
           <div className="p-2 border-t">
             <label className="flex items-center justify-center gap-2 cursor-pointer w-full py-1.5 text-xs rounded border border-dashed border-border hover:border-muted-foreground/40 text-muted-foreground hover:text-foreground transition-colors">
               <Upload className="w-3.5 h-3.5" />
@@ -529,6 +548,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload }: FileExplorerPr
             content={editorContent}
             isDirty={isDirty}
             isSaving={writeMutation.isPending}
+            canWrite={canWrite}
             onContentChange={(v) => { setEditorContent(v); setIsDirty(true) }}
             onSave={handleSave}
             onDelete={() => deleteMutation.mutate(selectedFile.path)}

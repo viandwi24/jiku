@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-16 — Telegram userbot: streaming `handleResolvedEvent` (placeholder + tool chips, slow debounce)
+
+Per user feedback "kok typing simulate ga ada di telegram self bot". Bot adapter has shipped streaming UX since ADR-087 (placeholder `⌛` → debounced edits → tool chips → final markdown render); userbot was stuck on the legacy accumulate-then-send path because mtcute's edit semantics + userbot flood thresholds needed different pacing.
+
+- New `TelegramUserAdapter.handleResolvedEvent(ctx)` mirrors the bot's interleaved segment renderer (chronological text + tool groups separated by `---`), with three userbot-specific tunings:
+  - **Plain text only.** mtcute v0.27 high-level `editMessage({chatId, message, text})` doesn't carry parseMode in this build; tool chips render as literal `[🔧] name` / `[☑️] name` / `[❌] name` (no italic) and `---` separators are bare. Matches what userbot's `sendMessage` already does (the existing markdownify path was producing visible backslashes for the same reason).
+  - **First edit 1500ms, subsequent 5000ms.** User-tested cadence: fast first feedback (so `⌛` doesn't sit dead for ~5s), then 5s pacing keeps total throughput at ~12 edits/min — well under any realistic FLOOD_WAIT / PEER_FLOOD threshold even with multi-chat concurrency.
+  - **Queue-respecting.** Every placeholder / edit / continuation / final-fallback call goes through `UserbotQueue.enqueue(...)` so the global 20/min sliding window + per-chat 1000ms min gap + FLOOD_WAIT pause latch all still gate. Edit failures (FLOOD_WAIT mid-stream, mtcute MESSAGE_NOT_MODIFIED no-op) swallowed silently for intermediate ticks; final edit falls back to `sendText` if it errors so the user always sees SOMETHING.
+- **editMessage probe at call-time.** Some mtcute builds don't expose `editMessage`; in that case we skip placeholder + intermediate edits and just send a single `sendText` at stream end. No regression for builds without edit support.
+- **Overflow at 4000 chars.** Same as bot — finalize current message, send fresh `⌛` continuation, reset segments, resume.
+- Outbound logging (`logOutboundMessage` + `logOutboundEvent`) + `recordUsage` invoked at finalize, mirroring bot adapter so Channels Events / Messages / Usage tabs pick up streamed userbot runs the same way.
+- Files: `plugins/jiku.telegram/src/user-adapter.ts` (new method ~270 lines), imports added for `ResolvedEventContext` + `TELEGRAM_MAX_LENGTH`.
+
+ADR-087 (streaming adapter handoff) decisions unchanged — this is a faithful port with platform-specific knobs. Memory note added: "userbot streaming = plain text, 1.5s/5s debounce, queue-wrapped".
+
 ## 2026-04-16 — Telegram: inbound media-group (album) debounce + outbound photo/video/group parity
 
 Field feedback: a user who sent an album of N photos triggered N separate bot runs (one per item, each with one photo), yielding N replies. Agent also didn't have parity across bot vs userbot for single photo / single video / multi-photo / multi-video send.

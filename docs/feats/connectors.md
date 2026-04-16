@@ -349,6 +349,18 @@ When defined, event-router hands off after building context. Adapter owns queuei
 
 ### Telegram implementation
 
+Both `TelegramBotAdapter` AND `TelegramUserAdapter` (selfbot) implement `handleResolvedEvent`. Shared shape: placeholder `⌛` → tee'd stream → debounced edits with interleaved text + tool segments → final render. Tunings differ:
+
+| Knob | Bot | Userbot (selfbot) |
+|---|---|---|
+| Debounce | 700ms throughout | First edit 1500ms, subsequent 5000ms |
+| Final render | MarkdownV2 (italic tool chips, escaped separators) | Plain text only (no italic, bare `---`) |
+| Edit transport | grammy `bot.api.editMessageText` | mtcute `client.editMessage` (probed at call time; missing → single `sendText` fallback at end) |
+| Rate limiting | per-chat send queue + 429 retry_after honor | `UserbotQueue` (20/min global sliding + 1000ms per-chat gap + FLOOD_WAIT/PEER_FLOOD latches) |
+| Final-edit fallback | plain interim render via legacy edit | fresh `sendText` if final edit errors |
+
+Bot-specific renderer details below.
+
 - **Placeholder `⌛`** sent immediately as reply to user's message.
 - **Stream tee** — own branch for render, one to `registerObserverStream` so chat-web SSE keeps getting chunks in parallel.
 - **Segment-based render** — interleaved `{type:'text'|'tools'}[]` with `---` separator between adjacent segments. Consecutive text-delta chunks extend the last text segment; consecutive tool-calls merge into the last tool group.

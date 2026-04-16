@@ -42,3 +42,6 @@ refs-*
 .agents
 .claude/skills
 skills-lock.json
+*.session
+*.session-shm
+*.session-wal

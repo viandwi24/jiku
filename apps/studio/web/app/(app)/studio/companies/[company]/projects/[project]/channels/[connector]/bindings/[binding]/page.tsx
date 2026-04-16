@@ -58,6 +58,17 @@ export default function BindingDetailPage({ params }: PageProps) {
     })),
   })
 
+  const { data: connectorData } = useQuery({
+    queryKey: ['connector', connectorId],
+    queryFn: () => api.connectors.get(connectorId),
+  })
+
+  const { data: agentsData } = useQuery({
+    queryKey: ['agents-for-binding', connectorData?.connector.project_id],
+    queryFn: () => api.agents.list(connectorData!.connector.project_id),
+    enabled: !!connectorData?.connector.project_id,
+  })
+
   const { data: identitiesData } = useQuery({
     queryKey: ['connector-identities', connectorId, bindingId],
     queryFn: () => api.connectors.identities.list(connectorId, bindingId),
@@ -424,6 +435,26 @@ export default function BindingDetailPage({ params }: PageProps) {
           <CardTitle className="text-sm">Destination</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Agent</p>
+            <Select
+              value={convConfig?.agent_id ?? ''}
+              onValueChange={v => updateBindingMutation.mutate({
+                output_config: { ...binding.output_config, agent_id: v }
+              })}
+              disabled={!agentsData}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder={agentsData ? 'Select agent…' : 'Loading agents…'} />
+              </SelectTrigger>
+              <SelectContent>
+                {agentsData?.agents.map(a => (
+                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-muted-foreground">Output Adapter</p>

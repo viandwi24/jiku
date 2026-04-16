@@ -1,3 +1,18 @@
+## Phase (2026-04-16) — Telegram userbot: streaming `handleResolvedEvent` ported from bot ✅
+
+User asked why typing simulation + tool chips only on bot, not selfbot. Answer: bot has `handleResolvedEvent` override (ADR-087); userbot was on legacy accumulate path. Ported the same pattern with userbot-specific tunings.
+
+Key knobs:
+- **First edit 1500ms, subsequent 5000ms** (vs bot's 700ms across the board) — agreed cadence balances responsive first-feedback against userbot flood thresholds (FLOOD_WAIT / PEER_FLOOD). At ~12 edits/min stays well under any realistic ceiling.
+- **Plain text only.** mtcute build doesn't carry parseMode in `editMessage`; tool chips render literal `[🔧] tool_name` (no italic), `---` separators bare. Matches existing userbot `sendMessage` plain-text choice.
+- **Queue-respecting.** All placeholder/edit/continuation/fallback calls flow through `UserbotQueue` — global 20/min sliding + per-chat 1000ms gap + FLOOD_WAIT pause latch all still gate. Edit failures swallow silently mid-stream; final fallback to `sendText` if edit errors so user always sees something.
+- **editMessage probe at call time** — some mtcute builds lack it; degrade to single sendText at stream end (no placeholder).
+- Overflow at 4000 chars: finalize + fresh continuation, same as bot.
+
+Files: `plugins/jiku.telegram/src/user-adapter.ts` (`handleResolvedEvent` ~270 lines), import `ResolvedEventContext` + `TELEGRAM_MAX_LENGTH`.
+
+Typecheck clean for new code; pre-existing user-adapter errors at lines 181/524/1092/1293 unrelated (mtcute type drift).
+
 ## Phase (2026-04-16) — Telegram: inbound album debounce + outbound single/album parity + file_id reuse ✅
 
 Three stacked user asks in one pass:

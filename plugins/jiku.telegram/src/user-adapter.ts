@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { ConnectorAdapter } from '@jiku/kit'
 import type {
   ConnectorAction, ConnectorEvent, ConnectorContext, ConnectorTarget, ConnectorContent,
-  ConnectorSendResult,
+  ConnectorSendResult, ResolvedEventContext,
   ConnectorSetupSessionState, ConnectorSetupStepResult,
 } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
@@ -10,7 +10,7 @@ import { TelegramClient } from '@mtcute/bun'
 import { logConnectorEvent } from '@jiku-studio/db'
 import { getFilesystemService } from '../../../apps/studio/server/src/filesystem/service.ts'
 import { UserbotQueue, type UserbotQueuePolicy } from './userbot-queue.ts'
-import { REACTIVATE_WAIT_MS } from './shared/constants.ts'
+import { REACTIVATE_WAIT_MS, TELEGRAM_MAX_LENGTH } from './shared/constants.ts'
 import { lastDeactivateByConnector } from './shared/queues.ts'
 import { mapQueueError } from './shared/error-mapper.ts'
 import type { PluginConsoleAPI, PluginConsoleLogger } from '@jiku-plugin/studio'
@@ -714,6 +714,352 @@ class TelegramUserAdapter extends ConnectorAdapter {
       }
     } catch (err) {
       return mapQueueError(err)
+    }
+  }
+
+  /**
+   * Streaming outbound via the event-router handoff hook (ADR-087).
+   *
+   * Mirrors `TelegramBotAdapter.handleResolvedEvent` but tuned for userbot
+   * MTProto constraints:
+   *  - **Plain text only.** mtcute's high-level `sendText` / `editMessage`
+   *    accepts a plain string (no parseMode in this build's shape). The bot
+   *    adapter's MarkdownV2 finalize step is skipped here; tool chips render
+   *    as literal `[🔧] name` / `[☑️] name` without italic wrapping.
+   *  - **Slower debounce.** First edit fires 1500ms after the first chunk
+   *    (so the user sees motion quickly); subsequent edits are debounced
+   *    5000ms. Userbot accounts get FLOOD_WAIT / PEER_FLOOD much more
+   *    aggressively than bots — this pacing keeps well under any realistic
+   *    threshold (~12 edits/min) while still showing progress.
+   *  - **Queue-respecting.** Every placeholder / edit / continuation call
+   *    goes through `UserbotQueue.enqueue(...)` so the global 20/min sliding
+   *    quota + per-chat 1000ms min gap + `FLOOD_WAIT` pause latch all still
+   *    apply. Edit failures (queue-mapped errors or mtcute "not modified")
+   *    are swallowed for intermediate ticks; the final edit falls back to
+   *    a plain sendText if even that fails.
+   *  - **editMessage probe.** Some `@mtcute/bun` builds don't expose
+   *    `editMessage`. When missing, we degrade to a single final `sendText`
+   *    at stream end (no placeholder, no intermediate edits).
+   */
+  override async handleResolvedEvent(ctx: ResolvedEventContext): Promise<void> {
+    const client = this.clientFor(ctx.connectorId)
+    const queue = this.queueFor(ctx.connectorId)
+    if (!client) {
+      console.warn('[telegram.user] handleResolvedEvent: no client for connector', ctx.connectorId)
+      return
+    }
+
+    const chatId = ctx.event.ref_keys['chat_id']
+    if (!chatId) return
+    const peer: string | number = chatId.startsWith('-') || /^\d+$/.test(chatId) ? Number(chatId) : chatId
+
+    const cExt = client as MtcuteClient & {
+      editMessage?: (opts: { chatId: string | number | bigint; message: number; text: string }) => Promise<unknown>
+    }
+    const hasEdit = typeof cExt.editMessage === 'function'
+
+    // 1. Placeholder (only when edits are available — otherwise we'd strand a
+    //    ⌛ message on the user's screen if editMessage is missing).
+    let currentMsgId: number | null = null
+    if (hasEdit) {
+      try {
+        const queued = await queue.enqueue<{ id?: number } | undefined>(
+          { chatId },
+          () => client.sendText(peer, '⌛') as Promise<{ id?: number } | undefined>,
+          'send_message',
+        )
+        const mid = queued.result?.id
+        if (typeof mid === 'number') currentMsgId = mid
+      } catch (err) {
+        // Queue rejected (FLOOD_WAIT / PEER_FLOOD / SESSION_EXPIRED). Bail —
+        // no placeholder, no streaming. The final send at the end will
+        // likely hit the same latch, but we'll try so the user at least
+        // gets an error surfaced via event-router logging.
+        console.warn('[telegram.user] handleResolvedEvent: placeholder rejected:', err)
+      }
+    }
+
+    // 2. Start run + tee stream.
+    const run = await ctx.startRun()
+    const [selfStream, observerStream] = run.stream.tee()
+    const observer = ctx.registerObserverStream(observerStream)
+
+    // 3. Streaming render state — same interleaved model as bot adapter.
+    type ToolItem = { id: string; name: string; status: 'running' | 'done' | 'error' }
+    type Segment = { type: 'text'; content: string } | { type: 'tools'; items: ToolItem[] }
+    const segments: Segment[] = []
+    const toolIndex = new Map<string, { groupIdx: number; itemIdx: number }>()
+
+    const appendText = (delta: string): void => {
+      if (!delta) return
+      const last = segments[segments.length - 1]
+      if (last && last.type === 'text') last.content += delta
+      else segments.push({ type: 'text', content: delta })
+    }
+
+    const pushTool = (id: string, name: string): void => {
+      if (toolIndex.has(id)) return
+      const last = segments[segments.length - 1]
+      if (last && last.type === 'tools') {
+        last.items.push({ id, name, status: 'running' })
+        toolIndex.set(id, { groupIdx: segments.length - 1, itemIdx: last.items.length - 1 })
+      } else {
+        segments.push({ type: 'tools', items: [{ id, name, status: 'running' }] })
+        toolIndex.set(id, { groupIdx: segments.length - 1, itemIdx: 0 })
+      }
+    }
+
+    const updateToolStatus = (id: string | undefined, status: 'done' | 'error'): void => {
+      const pos = id ? toolIndex.get(id) : undefined
+      if (pos) {
+        const group = segments[pos.groupIdx]
+        if (group?.type === 'tools') {
+          const item = group.items[pos.itemIdx]
+          if (item) item.status = status
+        }
+        return
+      }
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const s = segments[i]
+        if (s?.type !== 'tools') continue
+        for (let j = s.items.length - 1; j >= 0; j--) {
+          if (s.items[j]!.status === 'running') { s.items[j]!.status = status; return }
+        }
+      }
+    }
+
+    const iconFor = (s: 'running' | 'done' | 'error'): string =>
+      s === 'done' ? '[☑️]' : s === 'error' ? '[❌]' : '[🔧]'
+
+    const allTools = (): ToolItem[] => {
+      const out: ToolItem[] = []
+      for (const seg of segments) if (seg.type === 'tools') out.push(...seg.items)
+      return out
+    }
+
+    let usageInput = 0
+    let usageOutput = 0
+    let providerId: string | null = null
+    let modelId: string | null = null
+    type RunSnapshot = { system_prompt?: string; messages?: unknown[]; response?: string; tools?: string[]; adapter?: string }
+    let runSnapshot: RunSnapshot | null = null
+
+    // First edit after 1500ms gives the user fast feedback that something's
+    // happening; subsequent edits pace at 5000ms to stay well under userbot
+    // flood thresholds while still feeling live.
+    const FIRST_EDIT_MS = 1500
+    const SUBSEQUENT_EDIT_MS = 5000
+    let editCount = 0
+    let editChain: Promise<void> = Promise.resolve()
+    let pendingTimer: NodeJS.Timeout | null = null
+    let finalizing = false
+
+    // Plain-text render. `---` separators render literally on Telegram —
+    // no MarkdownV2 involvement so no escaping needed.
+    const renderPlain = (): string => {
+      if (segments.length === 0) return '⌛'
+      const parts = segments.map(seg => {
+        if (seg.type === 'text') return seg.content
+        return seg.items.map(t => `${iconFor(t.status)} ${t.name}`).join('\n')
+      })
+      return parts.join('\n---\n')
+    }
+
+    const overflow = (): boolean => renderPlain().length > TELEGRAM_MAX_LENGTH - 200
+
+    // mtcute surfaces Telegram's "MESSAGE_NOT_MODIFIED" when edit content
+    // matches the current message content byte-for-byte — that's a no-op
+    // success, not a failure. Swallow silently.
+    const isNotModifiedError = (err: unknown): boolean => {
+      const msg = err instanceof Error ? err.message : String(err)
+      return /MESSAGE_NOT_MODIFIED|message.*not modified/i.test(msg)
+    }
+
+    const runEdit = async (text: string): Promise<boolean> => {
+      if (!hasEdit || currentMsgId == null) return false
+      try {
+        await queue.enqueue<unknown>(
+          { chatId },
+          () => cExt.editMessage!({ chatId: peer, message: currentMsgId!, text }),
+          'edit_message',
+        )
+        return true
+      } catch (err) {
+        if (isNotModifiedError(err)) return true
+        // FLOOD_WAIT / transient — skip this tick. The next debounced edit
+        // (or the finalize) will retry with more content.
+        return false
+      }
+    }
+
+    const flushEdit = () => {
+      pendingTimer = null
+      if (finalizing) return
+      editChain = editChain.then(async () => {
+        if (finalizing) return
+        if (overflow() && hasEdit) {
+          // Land what we have, start a fresh placeholder for continuation.
+          await runEdit(renderPlain())
+          try {
+            const queued = await queue.enqueue<{ id?: number } | undefined>(
+              { chatId },
+              () => client.sendText(peer, '⌛') as Promise<{ id?: number } | undefined>,
+              'send_message',
+            )
+            const mid = queued.result?.id
+            if (typeof mid === 'number') currentMsgId = mid
+          } catch {
+            // Continuation send rejected by queue — stop mid-stream; we'll
+            // still accumulate segments but edits won't land.
+            currentMsgId = null
+          }
+          segments.length = 0
+          toolIndex.clear()
+          editCount = 0
+          return
+        }
+        const ok = await runEdit(renderPlain())
+        if (ok) editCount++
+      })
+    }
+
+    const scheduleEdit = () => {
+      if (pendingTimer || finalizing || !hasEdit || currentMsgId == null) return
+      const delay = editCount === 0 ? FIRST_EDIT_MS : SUBSEQUENT_EDIT_MS
+      pendingTimer = setTimeout(flushEdit, delay)
+    }
+
+    // 4. Consume stream.
+    const reader = selfStream.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const v = value as {
+          type: string
+          delta?: string
+          textDelta?: string
+          data?: { input_tokens?: number; output_tokens?: number; provider_id?: string; model_id?: string; system_prompt?: string; messages?: unknown[]; response?: string; tools?: string[]; adapter?: string; tool_id?: string; tool_call_id?: string }
+          toolCallId?: string
+          toolName?: string
+        }
+
+        if (v.type === 'text-delta' || v.type === 'text' || v.type === 'text-start') {
+          const delta = v.delta ?? v.textDelta ?? ''
+          appendText(delta)
+          if (delta) scheduleEdit()
+        } else if (
+          v.type === 'tool-call' ||
+          v.type === 'tool-input-start' ||
+          v.type === 'tool-input-available' ||
+          v.type === 'data-jiku-tool-start'
+        ) {
+          const id = v.toolCallId ?? `tool-${toolIndex.size}`
+          const name = v.toolName ?? v.data?.tool_id ?? 'tool'
+          pushTool(id, name)
+          scheduleEdit()
+        } else if (
+          v.type === 'tool-result' ||
+          v.type === 'tool-output-available' ||
+          v.type === 'data-jiku-tool-end'
+        ) {
+          updateToolStatus(v.toolCallId ?? v.data?.tool_call_id, 'done')
+          scheduleEdit()
+        } else if (v.type === 'tool-error' || v.type === 'data-jiku-tool-error') {
+          updateToolStatus(v.toolCallId, 'error')
+          scheduleEdit()
+        } else if (v.type === 'data-jiku-usage') {
+          usageInput = v.data?.input_tokens ?? 0
+          usageOutput = v.data?.output_tokens ?? 0
+        } else if (v.type === 'data-jiku-meta') {
+          providerId = v.data?.provider_id ?? providerId
+          modelId = v.data?.model_id ?? modelId
+        } else if (v.type === 'data-jiku-run-snapshot') {
+          runSnapshot = v.data as RunSnapshot
+        }
+      }
+    } finally {
+      reader.releaseLock()
+      observer.done()
+    }
+
+    // 5. Finalize. Wait for any pending debounced edit so it doesn't race
+    //    the final send.
+    finalizing = true
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+    await editChain
+
+    const hasContent = segments.some(s => (s.type === 'text' && s.content.trim() !== '') || (s.type === 'tools' && s.items.length > 0))
+    const finalText = hasContent ? renderPlain() : '(no response)'
+
+    let finalMsgId: number | null = currentMsgId
+    if (hasEdit && currentMsgId != null) {
+      const ok = await runEdit(finalText)
+      if (!ok) {
+        // Final edit failed (non-NOT_MODIFIED). Fall back to sending a fresh
+        // message so the user sees SOMETHING — the stranded ⌛ stays but
+        // that's recoverable with a later edit if the user retries.
+        try {
+          const queued = await queue.enqueue<{ id?: number } | undefined>(
+            { chatId },
+            () => client.sendText(peer, finalText) as Promise<{ id?: number } | undefined>,
+            'send_message',
+          )
+          if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
+        } catch (err) {
+          console.warn('[telegram.user] stream final fallback send failed:', err)
+        }
+      }
+    } else {
+      // editMessage unavailable OR placeholder never landed. Just send once.
+      try {
+        const queued = await queue.enqueue<{ id?: number } | undefined>(
+          { chatId },
+          () => client.sendText(peer, finalText) as Promise<{ id?: number } | undefined>,
+          'send_message',
+        )
+        if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
+      } catch (err) {
+        console.warn('[telegram.user] stream no-edit final send failed:', err)
+      }
+    }
+
+    // 6. Log outbound + record usage. Snapshot uses the plain render so DB
+    //    rows stay readable.
+    const plainSnapshot = renderPlain()
+    const refKeys = { message_id: String(finalMsgId ?? ''), chat_id: chatId }
+    const sendResult: ConnectorSendResult = {
+      success: finalMsgId != null,
+      ref_keys: refKeys,
+      raw_payload: { streamed: true, message_id: finalMsgId },
+    }
+
+    await ctx.logOutboundMessage({
+      ref_keys: refKeys,
+      content_snapshot: plainSnapshot,
+      raw_payload: sendResult,
+      status: finalMsgId != null ? 'sent' : 'failed',
+    }).catch(() => null)
+    await ctx.logOutboundEvent({
+      event_type: 'send_message',
+      ref_keys: refKeys,
+      payload: { text: plainSnapshot, markdown: false, source: 'resolved_event_stream', tools: allTools().map(s => ({ name: s.name, status: s.status })) },
+      raw_payload: sendResult,
+      status: finalMsgId != null ? 'routed' : 'error',
+    }).catch(() => null)
+
+    if (usageInput > 0 || usageOutput > 0) {
+      ctx.recordUsage({
+        input_tokens: usageInput,
+        output_tokens: usageOutput,
+        provider: providerId,
+        model: modelId,
+        raw_system_prompt: runSnapshot?.system_prompt ?? null,
+        raw_messages: runSnapshot?.messages ?? null,
+        raw_response: runSnapshot?.response ?? plainSnapshot,
+        active_tools: runSnapshot?.tools ?? null,
+        agent_adapter: runSnapshot?.adapter ?? null,
+      })
     }
   }
 

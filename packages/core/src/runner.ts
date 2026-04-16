@@ -209,7 +209,7 @@ export class AgentRunner {
       caller,
       agent: this.agent,
       rules,
-      all_tools: this.plugins.getResolvedTools(),
+      all_tools: this.plugins.getResolvedTools(this.runtimeId),
       mode,
       subject_matcher,
     })
@@ -419,7 +419,7 @@ export class AgentRunner {
     }
 
     // 6. Build system prompt + history (before stream starts)
-    const pluginSegmentsMeta = await this.plugins.getPromptSegmentsWithMetaAsync()
+    const pluginSegmentsMeta = await this.plugins.getPromptSegmentsWithMetaAsync(this.runtimeId)
     const labeledPluginSegments = pluginSegmentsMeta.map(p => ({
       label: `${p.plugin_name} (${p.plugin_id})`,
       content: p.segment,
@@ -883,7 +883,7 @@ export class AgentRunner {
       caller,
       agent: this.agent,
       rules,
-      all_tools: this.plugins.getResolvedTools(),
+      all_tools: this.plugins.getResolvedTools(this.runtimeId),
       mode,
       subject_matcher,
     })
@@ -904,7 +904,7 @@ export class AgentRunner {
     ]
 
     const model_id = this.agent.model_id ?? 'unknown'
-    const pluginSegmentsWithMeta = await this.plugins.getPromptSegmentsWithMetaAsync()
+    const pluginSegmentsWithMeta = await this.plugins.getPromptSegmentsWithMetaAsync(this.runtimeId)
     const pluginSegments = pluginSegmentsWithMeta.map(s => s.segment)
 
     // Build segments with token estimates

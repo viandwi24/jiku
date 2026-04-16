@@ -5,6 +5,7 @@ import {
   createIdentity,
   updateIdentity,
   logConnectorEvent,
+  updateConnectorEvent,
   logConnectorMessage,
   getConnectorMessageByExternalRef,
   createConversation,
@@ -23,6 +24,54 @@ async function logEv(projectId: string, args: Parameters<typeof logConnectorEven
   const row = await logConnectorEvent(args)
   broadcastProjectEvent(projectId, row as unknown as Record<string, unknown>)
   return row
+}
+
+/**
+ * Finalize the inbound event: UPDATE the arrival row that the adapter already
+ * inserted (status='received') with the routing outcome — exactly one row per
+ * inbound event. Falls back to INSERT if the adapter didn't thread an
+ * `arrival_event_id` (non-Telegram source, or arrival logger failed).
+ *
+ * `event.metadata.arrival_event_id` is set by `logArrivalImmediate` in the
+ * Telegram adapters (bot + user). Other adapters wishing to participate in the
+ * single-row pattern must do the same.
+ */
+async function finalizeEv(
+  projectId: string,
+  event: ConnectorEvent,
+  args: {
+    connector_id: string
+    binding_id?: string
+    identity_id?: string
+    event_type: string
+    direction?: 'inbound' | 'outbound'
+    ref_keys: Record<string, string>
+    target_ref_keys?: Record<string, string>
+    payload: Record<string, unknown>
+    raw_payload?: unknown
+    metadata?: Record<string, unknown>
+    status: string
+    drop_reason?: string
+    processing_ms?: number
+  },
+) {
+  const arrivalId = (event.metadata?.['arrival_event_id'] as string | undefined) ?? null
+  if (arrivalId) {
+    const row = await updateConnectorEvent(arrivalId, {
+      binding_id: args.binding_id ?? null,
+      identity_id: args.identity_id ?? null,
+      target_ref_keys: args.target_ref_keys ?? null,
+      metadata: args.metadata ?? null,
+      status: args.status,
+      drop_reason: args.drop_reason ?? null,
+      processing_ms: args.processing_ms ?? null,
+    })
+    if (row) {
+      broadcastProjectEvent(projectId, row as unknown as Record<string, unknown>)
+      return row
+    }
+  }
+  return logEv(projectId, args)
 }
 
 async function logMsg(projectId: string, args: Parameters<typeof logConnectorMessage>[0]) {
@@ -69,7 +118,9 @@ async function tryRedeemInviteCode(event: ConnectorEvent, connectorUuid: string)
   }
 
   const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
-  if (adapter) {
+  // Suppress notification if the connector is inbound-only — the bot is not
+  // allowed to send outbound in that mode. The approval itself still lands.
+  if (adapter && connectorRegistry.getTrafficMode(connectorUuid) !== 'inbound_only') {
     adapter.sendMessage(
       { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorUuid },
       { text: '✅ Access granted! You can now chat with the agent.' },
@@ -79,7 +130,7 @@ async function tryRedeemInviteCode(event: ConnectorEvent, connectorUuid: string)
   return true
 }
 
-type RouteResult = 'routed' | 'dropped' | 'pending_approval' | 'rate_limited'
+type RouteResult = 'routed' | 'dropped' | 'unhandled' | 'rate_limited' | 'error'
 
 // In-memory rate limit tracking: identity_id → [timestamps]
 const rateLimitMap = new Map<string, number[]>()
@@ -503,6 +554,23 @@ export async function routeConnectorEvent(
   const activeCtx = connectorRegistry.getActiveContextForPlugin(event.connector_id, projectId)
   const connectorUuid = activeCtx?.connectorId ?? null
 
+  // Traffic-mode gate: if this connector is scoped to outbound-only, inbound
+  // events are finalized as 'dropped' and NOT routed to any binding or agent.
+  // The arrival row already exists (status='received') — finalizeEv updates it.
+  if (connectorUuid && activeCtx?.trafficMode === 'outbound_only') {
+    await finalizeEv(projectId, event, {
+      connector_id: connectorUuid,
+      event_type: event.type,
+      ref_keys: event.ref_keys,
+      payload: event as unknown as Record<string, unknown>,
+      raw_payload: event.raw_payload,
+      status: 'dropped',
+      drop_reason: 'traffic_outbound_only',
+      processing_ms: Date.now() - start,
+    })
+    return 'dropped'
+  }
+
   // Plan 22 — compute scope_key from adapter (multi-chat adapters populate this)
   if (connectorUuid && event.scope_key === undefined) {
     const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
@@ -627,7 +695,12 @@ export async function routeConnectorEvent(
       }
     }
   }
-  const gatedLogEv: typeof logEv = (pid, args) => (logAllowed ? logEv(pid, args) : Promise.resolve(null as unknown as Awaited<ReturnType<typeof logEv>>))
+  // Inbound paths: UPDATE the arrival row (finalizeEv) instead of INSERTing
+  // a second row. Falls back to INSERT when arrival_event_id is missing.
+  const gatedFinalizeEv = (args: Parameters<typeof finalizeEv>[2]) =>
+    logAllowed
+      ? finalizeEv(projectId, event, args)
+      : Promise.resolve(null as unknown as Awaited<ReturnType<typeof finalizeEv>>)
   const gatedLogMsg: typeof logMsg = (pid, args) => (logAllowed ? logMsg(pid, args) : Promise.resolve(null as unknown as Awaited<ReturnType<typeof logMsg>>))
 
   // 1a. Always record inbound MESSAGE events in connector_messages with a
@@ -635,14 +708,16 @@ export async function routeConnectorEvent(
   // `connector_get_thread` agent tool can filter "handled by the agent" vs
   // "arrived but not handled".
   //
-  //   Inbound status vocabulary:
-  //     'unhandled'     — arrived but no binding matched this chat
-  //     'pending'       — binding matched but identity is pending approval
+  //   Inbound status vocabulary (connector_messages):
+  //     'unhandled'     — no binding matched, OR identity is pending approval
   //     'dropped'       — binding matched but identity is blocked / filtered
   //     'rate_limited'  — binding matched but rate limit was hit
   //     'handled'       — binding matched and agent processed it
   //
-  // Non-message events live in connector_events (status vocabulary differs there).
+  // connector_events uses the SAME vocabulary plus 'received' (initial arrival
+  // state set by the adapter's logArrivalImmediate) and 'error' (outbound).
+  // The arrival row is UPDATEd by finalizeEv as routing transitions — exactly
+  // ONE event row per inbound update. There is no `pending_approval` status.
   if (matchingBindings.length === 0 && connectorUuid && event.type === 'message') {
     await gatedLogMsg(projectId, {
       connector_id: connectorUuid,
@@ -678,17 +753,17 @@ export async function routeConnectorEvent(
           const lazyKey = `${connectorUuid}::${event.scope_key}`
           if (lazyCreateInFlight.has(lazyKey)) {
             console.log(`[connector] lazy group-pairing skip (in-flight) connector=${connectorUuid} scope=${event.scope_key}`)
-            await gatedLogEv(projectId, {
+            await gatedFinalizeEv({
               connector_id: connectorUuid,
               event_type: event.type,
               ref_keys: event.ref_keys,
               payload: event as unknown as Record<string, unknown>,
               raw_payload: event.raw_payload,
-              status: 'pending_approval',
+              status: 'unhandled',
               drop_reason: 'no_binding',
               processing_ms: Date.now() - start,
             })
-            return 'pending_approval'
+            return 'unhandled'
           }
           lazyCreateInFlight.add(lazyKey)
 
@@ -738,13 +813,13 @@ export async function routeConnectorEvent(
           // existing bindings and find the just-created draft.
           lazyCreateInFlight.delete(`${connectorUuid}::${event.scope_key}`)
         }
-        await gatedLogEv(projectId, {
+        await gatedFinalizeEv({
           connector_id: connectorUuid,
           event_type: event.type,
           ref_keys: event.ref_keys,
           payload: event as unknown as Record<string, unknown>,
           raw_payload: event.raw_payload,
-          status: 'pending_approval',
+          status: 'unhandled',
           drop_reason: 'no_binding',
           processing_ms: Date.now() - start,
         })
@@ -773,27 +848,27 @@ export async function routeConnectorEvent(
         }
         if (shouldNotify) {
           const adapter = connectorRegistry.getAdapterForConnector(connectorUuid)
-          if (adapter) {
+          if (adapter && connectorRegistry.getTrafficMode(connectorUuid) !== 'inbound_only') {
             adapter.sendMessage(
               { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connectorUuid },
               { text: '👋 Your access request has been sent. Please wait for admin approval.' },
             ).catch(() => {})
           }
         }
-        await gatedLogEv(projectId, {
+        await gatedFinalizeEv({
           connector_id: connectorUuid,
           identity_id: identity.id,
           event_type: event.type,
           ref_keys: event.ref_keys,
           payload: event as unknown as Record<string, unknown>,
           raw_payload: event.raw_payload,
-          status: 'pending_approval',
+          status: 'unhandled',
           drop_reason: 'no_binding',
           processing_ms: Date.now() - start,
         })
       }
     }
-    return 'pending_approval'
+    return 'unhandled'
   }
 
   // Plan 15.5: Sort by priority (descending — higher wins)
@@ -844,7 +919,7 @@ export async function routeConnectorEvent(
 
     // 3. Approval check
     if (typedIdentity.status === 'blocked') {
-      await logEv(projectId, {
+      await finalizeEv(projectId, event, {
         connector_id: connector.id,
         binding_id: typedBinding.id,
         identity_id: typedIdentity.id,
@@ -870,7 +945,7 @@ export async function routeConnectorEvent(
     }
 
     if (typedIdentity.status === 'pending') {
-      await logEv(projectId, {
+      await finalizeEv(projectId, event, {
         connector_id: connector.id,
         binding_id: typedBinding.id,
         identity_id: typedIdentity.id,
@@ -878,7 +953,8 @@ export async function routeConnectorEvent(
         ref_keys: event.ref_keys,
         payload: event as unknown as Record<string, unknown>,
         raw_payload: event.raw_payload,
-        status: 'pending_approval',
+        status: 'unhandled',
+        drop_reason: 'identity_pending',
         processing_ms: Date.now() - start,
       })
       if (event.type === 'message') {
@@ -888,7 +964,7 @@ export async function routeConnectorEvent(
           ref_keys: event.ref_keys,
           content_snapshot: event.content?.text,
           raw_payload: event.raw_payload,
-          status: 'pending',
+          status: 'unhandled',
         })
       }
       if (isNewIdentity) {
@@ -900,7 +976,7 @@ export async function routeConnectorEvent(
         const isDmScope = !event.scope_key && typedBinding.source_type === 'private'
         if (isDmScope) {
           const adapter = connectorRegistry.getAdapterForConnector(connector.id)
-          if (adapter) {
+          if (adapter && connectorRegistry.getTrafficMode(connector.id) !== 'inbound_only') {
             adapter.sendMessage(
               { ref_keys: event.ref_keys, reply_to_ref_keys: event.ref_keys, connector_id: connector.id },
               { text: '👋 Your access request has been sent. Please wait for admin approval.' },
@@ -908,7 +984,7 @@ export async function routeConnectorEvent(
           }
         }
       }
-      result = 'pending_approval'
+      result = 'unhandled'
       continue
     }
 
@@ -916,14 +992,14 @@ export async function routeConnectorEvent(
     if (typedBinding.rate_limit_rpm) {
       const ok = checkRateLimit(typedIdentity.id, typedBinding.rate_limit_rpm)
       if (!ok) {
-        await logEv(projectId, {
+        await finalizeEv(projectId, event, {
           connector_id: connector.id,
           binding_id: typedBinding.id,
           identity_id: typedIdentity.id,
           event_type: event.type,
           ref_keys: event.ref_keys,
           payload: event as unknown as Record<string, unknown>,
-        raw_payload: event.raw_payload,
+          raw_payload: event.raw_payload,
           status: 'rate_limited',
           processing_ms: Date.now() - start,
         })
@@ -943,7 +1019,7 @@ export async function routeConnectorEvent(
     }
 
     // 5. Log event
-    const loggedEvent = await logEv(projectId, {
+    const loggedEvent = await finalizeEv(projectId, event, {
       connector_id: connector.id,
       binding_id: typedBinding.id,
       identity_id: typedIdentity.id,
@@ -1053,6 +1129,14 @@ async function executeConversationAdapter(
   const agentId = cfg.agent_id
   const conversationMode = cfg.conversation_mode ?? 'persistent'
   if (!agentId) { console.error('[connector] conversation adapter: missing agent_id in output_config'); return }
+
+  // Traffic-mode gate: inbound_only connectors record the inbound event
+  // (already done upstream) but don't run the agent / send a reply. Listen-only
+  // strategy — the event is archived in connector_events, that's it.
+  if (connectorRegistry.getTrafficMode(connectorId) === 'inbound_only') {
+    console.log(`[connector] conversation adapter skipped (traffic_mode=inbound_only) connector=${connectorId}`)
+    return
+  }
 
   const connectorAdapter = connectorRegistry.getAdapterForConnector(connectorId)
 

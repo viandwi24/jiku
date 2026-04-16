@@ -42,6 +42,14 @@ export const connectors = pgTable('connectors', {
    *                          bot accounts that sit in many unrelated groups.
    */
   log_mode:       text('log_mode').notNull().default('all'),
+  /**
+   * Traffic gate per connector — decouples "is the connector active" from
+   * "what directions is it allowed to carry". See `ConnectorTrafficMode` in
+   * `@jiku/types` for semantics. Values: 'both' (default) | 'inbound_only'
+   * | 'outbound_only'. Does NOT affect polling/lifecycle — adapters manage
+   * those independently; this only gates the routing + outbound-tool layers.
+   */
+  traffic_mode:   text('traffic_mode').$type<'inbound_only' | 'outbound_only' | 'both'>().notNull().default('both'),
   created_at:     timestamp('created_at').notNull().defaultNow(),
   updated_at:     timestamp('updated_at').notNull().defaultNow(),
 }, t => [

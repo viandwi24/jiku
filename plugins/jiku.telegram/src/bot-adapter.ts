@@ -43,7 +43,7 @@ async function logArrivalImmediate(
 ): Promise<void> {
   if (!connectorId) return
   try {
-    await logConnectorEvent({
+    const row = await logConnectorEvent({
       connector_id: connectorId,
       event_type: event.type,
       direction: 'inbound',
@@ -57,6 +57,9 @@ async function logArrivalImmediate(
       metadata: event.metadata,
       status: 'received',
     })
+    // Thread the arrival row id into event metadata so the downstream
+    // event-router can UPDATE this row instead of INSERTing a duplicate.
+    event.metadata = { ...(event.metadata ?? {}), arrival_event_id: row.id }
   } catch (err) {
     console.error('[telegram] logArrivalImmediate failed:', err)
   }

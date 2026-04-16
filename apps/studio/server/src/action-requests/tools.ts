@@ -1,22 +1,20 @@
 /**
  * Plan 25 — Agent tools for the Action Request Center.
  *
- *   action_request_create  — create an AR (non-blocking)
- *   action_request_wait    — long-poll until AR closed (uses pubsub bus, no polling)
+ *   action_request_create  — create an AR (non-blocking, fire-and-forget)
  *   action_request_list    — read-only list (self-monitoring)
  *
- * Agents creating an AR via the `create` tool default to source_type='agent_tool'
- * with no destination — pair with `wait` to implement synchronous human-in-the-loop.
+ * Agent flow is always DETACHED: create an AR and move on. The operator decision
+ * flows independently to its destination handler (outbound_approval, task_resume,
+ * etc.) — the agent is not expected to block on the result.
  */
 import { z } from 'zod'
 import type { ToolDefinition } from '@jiku/types'
 import {
   createActionRequest,
-  getActionRequest,
   ActionRequestError,
 } from './service.ts'
 import { listActionRequests } from '@jiku-studio/db'
-import { subscribeActionRequest } from './pubsub.ts'
 
 const TYPE_ENUM = z.enum(['boolean', 'choice', 'input', 'form'])
 const DESTINATION_ENUM = z.enum(['outbound_approval', 'task', 'task_resume'])
@@ -30,8 +28,7 @@ export function buildActionRequestTools(projectId: string): ToolDefinition[] {
         description: [
           'Create a human-in-the-loop request that appears in the Action Center for an operator to act on.',
           '',
-          'Returns IMMEDIATELY with { action_request_id, status: "pending" } — does NOT wait.',
-          'To block until the operator responds, call `action_request_wait({ action_request_id })`.',
+          'Returns IMMEDIATELY with { action_request_id, status: "pending" }. Fire-and-forget — the operator decision flows to its destination handler independently (e.g. outbound_approval sends the message, task_resume re-invokes the task). The agent does NOT need to wait.',
           '',
           'Types:',
           '  boolean — two buttons (default Approve/Reject). spec: { approve_label, reject_label, approve_style?, reject_style? }',
@@ -55,7 +52,7 @@ export function buildActionRequestTools(projectId: string): ToolDefinition[] {
         destination: z.object({
           type: DESTINATION_ENUM,
           ref: z.record(z.unknown()),
-        }).optional().describe('Where the decision flows. Omit for default agent_tool source with no destination — pair with action_request_wait.'),
+        }).optional().describe('Where the decision flows when the operator responds. Omit if no side-effect is needed (pure record of decision).'),
       }),
       execute: async (args, ctx) => {
         const a = args as {
@@ -96,7 +93,6 @@ export function buildActionRequestTools(projectId: string): ToolDefinition[] {
             action_request_id: ar.id,
             status: ar.status,
             expires_at: ar.expires_at,
-            hint: 'Call action_request_wait({ action_request_id }) to block until the operator responds.',
           }
         } catch (err) {
           if (err instanceof ActionRequestError) {
@@ -104,70 +100,6 @@ export function buildActionRequestTools(projectId: string): ToolDefinition[] {
           }
           return { error: err instanceof Error ? err.message : 'Failed to create action request' }
         }
-      },
-    },
-
-    {
-      meta: {
-        id: 'action_request_wait',
-        name: 'Wait for Action Request',
-        description: [
-          'Block until an Action Request reaches a final state (approved / rejected / answered / dropped / expired / failed).',
-          'Default timeout 600s. On timeout returns { status: "wait_timeout", action_request_id, hint } so you can decide whether to keep waiting or move on.',
-          '',
-          'Returns on completion:',
-          '  status: "approved" | "rejected" | "answered" | "dropped" | "expired" | "failed"',
-          '  response: the operator response (shape depends on AR type) or null',
-          '  responded_by: user_id of the operator (null if expired/dropped without responder)',
-          '  responded_at: ISO timestamp',
-          '',
-          'Special cases:',
-          '  status="dropped" — operator dismissed without a decision. Skip the action or retry with clearer context.',
-          '  status="expired" — TTL elapsed. Treat as no-decision.',
-        ].join('\n'),
-        group: 'action_request',
-      },
-      permission: '*',
-      modes: ['chat', 'task'],
-      input: z.object({
-        action_request_id: z.string().uuid().describe('ID returned by action_request_create.'),
-        timeout_seconds: z.number().int().positive().max(3600).default(600).describe('How long to wait. Default 600s.'),
-      }),
-      execute: async (args) => {
-        const { action_request_id: arId, timeout_seconds: timeout } = args as { action_request_id: string; timeout_seconds: number }
-
-        // Fast path: already final.
-        const initial = await getActionRequest(arId)
-        if (!initial) return { error: 'not_found', hint: `No action request with id ${arId}` }
-        if (initial.status !== 'pending') return formatWaitResult(initial)
-
-        // Subscribe + race against timeout.
-        const result = await new Promise<'updated' | 'timeout'>((resolve) => {
-          const timer = setTimeout(() => {
-            unsub()
-            resolve('timeout')
-          }, timeout * 1000)
-          const unsub = subscribeActionRequest(arId, (update) => {
-            if (update.action_request.status !== 'pending') {
-              clearTimeout(timer)
-              unsub()
-              resolve('updated')
-            }
-          })
-        })
-
-        if (result === 'timeout') {
-          return {
-            status: 'wait_timeout',
-            action_request_id: arId,
-            ar_still_pending: true,
-            hint: 'Timed out waiting for operator response. Call action_request_wait again to keep waiting, or move on.',
-          }
-        }
-
-        const final = await getActionRequest(arId)
-        if (!final) return { error: 'not_found', hint: 'Action request disappeared mid-wait' }
-        return formatWaitResult(final)
       },
     },
 
@@ -209,14 +141,4 @@ export function buildActionRequestTools(projectId: string): ToolDefinition[] {
       },
     },
   ]
-}
-
-function formatWaitResult(ar: { status: string; response: unknown; response_by: string | null; response_at: string | null; execution_error: string | null }) {
-  return {
-    status: ar.status,
-    response: ar.response,
-    responded_by: ar.response_by,
-    responded_at: ar.response_at,
-    execution_error: ar.execution_error,
-  }
 }

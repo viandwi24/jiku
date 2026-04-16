@@ -19,12 +19,12 @@ interface EventsTabProps {
 const ALL = '__all__'
 
 const STATUS_COLORS: Record<string, string> = {
+  received: 'text-blue-600',
   routed: 'text-green-600',
+  unhandled: 'text-amber-600',
   dropped: 'text-muted-foreground',
-  pending_approval: 'text-amber-600',
   rate_limited: 'text-orange-600',
   error: 'text-destructive',
-  received: 'text-blue-600',
 }
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
@@ -93,7 +93,18 @@ export function EventsTab({ projectId, initialConnectorId }: EventsTabProps) {
     es.onmessage = (e) => {
       try {
         const row = JSON.parse(e.data) as ConnectorEventListItem
-        setLiveItems(prev => [row, ...prev].slice(0, 200))
+        // Upsert by id: arrival broadcasts `received`, routing broadcasts the
+        // final status against the SAME row id (single-row pattern). Replace
+        // any existing entry instead of appending a duplicate.
+        setLiveItems(prev => {
+          const idx = prev.findIndex(p => p.id === row.id)
+          if (idx >= 0) {
+            const next = prev.slice()
+            next[idx] = row
+            return next
+          }
+          return [row, ...prev].slice(0, 200)
+        })
       } catch { /* ignore */ }
     }
     es.onerror = () => { setIsLive(false) }
@@ -148,12 +159,12 @@ export function EventsTab({ projectId, initialConnectorId }: EventsTabProps) {
           <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>Any status</SelectItem>
+            <SelectItem value="received">received</SelectItem>
             <SelectItem value="routed">routed</SelectItem>
+            <SelectItem value="unhandled">unhandled</SelectItem>
             <SelectItem value="dropped">dropped</SelectItem>
-            <SelectItem value="pending_approval">pending_approval</SelectItem>
             <SelectItem value="rate_limited">rate_limited</SelectItem>
             <SelectItem value="error">error</SelectItem>
-            <SelectItem value="received">received</SelectItem>
           </SelectContent>
         </Select>
         <Input value={chatId} onChange={(e) => setChatId(e.target.value)}

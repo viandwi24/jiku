@@ -1,5 +1,88 @@
 # Changelog
 
+## 2026-04-15 — Chat sub-sidebar: collapsible + mobile-friendly default
+
+Chat page's conversation-list panel (`chats/layout.tsx`) was a fixed `w-72` rail with no way to hide — took too much screen on mobile. Now togglable, state persisted in `localStorage['chats.sidebar.open']`.
+
+- `chats/layout.tsx`: state-owned toggle. Default: open on viewport ≥768px, closed on <768px (only when no persisted preference). Sidebar conditionally rendered; when collapsed, a small `PanelLeftOpen` ghost button floats top-left of chat area to re-open.
+- `conversation-list-panel.tsx`: new optional `onCollapse?: () => void` prop. When provided, renders a `PanelLeftClose` ghost button next to the New-chat button in the panel header. Parent owns open/closed state.
+
+## 2026-04-15 — Chat UI: `<active_command>` parser fix — false-close in preamble truncated body
+
+Bug found in field test: the dispatcher's preamble inside the block contained the literal string `</active_command>` (in a sentence describing where the user trigger text appears). The lazy-match parser then bounded the accordion body at that fake close, so the actual SOP body + the real closing tag spilled into a raw text segment after the accordion.
+
+- `commands/dispatcher.ts`: rephrased the preamble — replaced `"after </active_command>"` with `"after the active_command closing tag"`. Added a comment warning future editors not to inline the literal closing tag inside the body.
+- `web/components/chat/active-command-block.tsx`: defense-in-depth — parser now uses `lastIndexOf(CLOSE_TAG)` capped at the next opening tag (or end-of-text). Greedy match against the LAST close before the next block. Multiple separate blocks still detected; streaming path unchanged. Verified with three test fixtures (fake-close in preamble, streaming-in-progress, two separate blocks).
+
+## 2026-04-15 — Chat UI: `<active_command>` accordion shared + streaming-aware
+
+The conversation viewer (`components/chat/conversation-viewer.tsx`) rendered user messages as raw `<span className="whitespace-pre-wrap">{part.text}</span>` — so `<active_command slug="...">...</active_command>` blocks (injected by the slash-command dispatcher) leaked as ugly XML into the message bubble. The chat-interface already had a proper `ActiveCommandBlock` accordion; extracted it to a shared module and applied to both.
+
+- New `apps/studio/web/components/chat/active-command-block.tsx` — exports `MessageTextWithActiveCommands` + `ActiveCommandBlock` + `parseActiveCommandSegments`. Streaming-aware parser: matches BOTH closed blocks and an opening tag with no close yet (mid-stream). Unclosed segment renders the same accordion with a pulsing amber dot + "streaming" label + ` …` suffix inside the body preview.
+- `chat-interface.tsx` — deleted local `MessageText` + `ActiveCommandBlock` duplicate, imports from the shared module. Cleaned up unused `ChevronDown` / `ChevronRight` / `Terminal` imports from lucide-react.
+- `conversation-viewer.tsx` — replaced the raw-text `<span>` fallback for user messages with `<MessageTextWithActiveCommands>` so history view + chat-interface render identically.
+
+## 2026-04-15 — Connector traffic mode (inbound_only / outbound_only / both)
+
+Per-connector direction gate so operators can scope a connector to one direction based on strategy (broadcast-only notifier vs listen-only archive vs default both). Polling/lifecycle untouched — pure routing + tool-layer gate.
+
+- New column `connectors.traffic_mode text NOT NULL DEFAULT 'both'` in Drizzle schema (`apps/studio/db/src/schema/connectors.ts`). User runs `db generate` / `db push` for the migration; no migration file shipped.
+- Type `ConnectorTrafficMode = 'inbound_only' | 'outbound_only' | 'both'` in `@jiku/types`. Added required field `trafficMode` to `ConnectorContext` so adapters receive the mode at activation (informational — adapters may honour it but the gating is enforced server-side).
+- `connectorRegistry`: cached `trafficMode` on activeContexts. New methods `setTrafficMode(connectorId, mode)` (called by PATCH route) + `getTrafficMode(connectorId)` (used by gates). Live update — no connector restart needed when the operator changes the mode.
+- `activation.ts`: reads `connector.traffic_mode`, passes into `ctx.trafficMode` and `connectorRegistry.setActive(..., trafficMode)`.
+- Inbound gate (`event-router.ts:routeConnectorEvent`): if `outbound_only`, finalize arrival row as `status='dropped'`, `drop_reason='traffic_outbound_only'` and return — no binding match, no agent run.
+- `executeConversationAdapter`: if `inbound_only`, early-return — agent doesn't run, no reply sent. Inbound event still recorded as `routed` in connector_events.
+- "Access request sent" notification sends in event-router (3 sites: invite-code redemption, DM Path B, pending-identity loop) skip when `inbound_only`.
+- Outbound tool gates (`connectors/tools.ts`): `connector_send`, `connector_send_to_target`, `connector_run_action` return `{ code: 'TRAFFIC_INBOUND_ONLY', error }` when the target connector is `inbound_only`. Gate placed before outbound-approval interceptor so AR rows aren't created for traffic that can't be sent.
+- PATCH `/connectors/:id` refreshes the registry's trafficMode cache when `traffic_mode` is in the body.
+- UI: new `TrafficModeSection` component on the channel detail page (`channels/[connector]/page.tsx`), Select with 3 options + per-mode help text + Save/Reset. Gated by `channels:write`.
+- Web `Connector` interface + `api.connectors.update` body updated for `traffic_mode`.
+- Files: `packages/types/src/index.ts`, `apps/studio/db/src/{schema,queries}/connector*.ts`, `apps/studio/server/src/connectors/{registry,activation,event-router,tools}.ts`, `apps/studio/server/src/routes/connectors.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../channels/[connector]/page.tsx`.
+
+## 2026-04-15 — Connector events: ONE row per inbound, drop `pending_approval` status
+
+Long-standing duplication where every inbound produced TWO `connector_events` rows (`received` from arrival logger + outcome row from the routing pipeline) — visible in the Channels Events tab as side-by-side duplicates. Folded into one row per event.
+
+- New `updateConnectorEvent(id, patch)` query in `apps/studio/db/src/queries/connector.ts`.
+- Telegram adapters (`bot-adapter.ts logArrivalImmediate` + `user-adapter.ts` inline arrival logger) now capture the inserted row and stamp `event.metadata.arrival_event_id` so the downstream router can address it.
+- `event-router.ts`: new `finalizeEv(projectId, event, args)` helper UPDATEs the arrival row using `arrival_event_id`; falls back to INSERT when the id is missing (non-Telegram source). Replaced 5 routing-pipeline insert sites (`gatedLogEv` + 3 inline `logEv` for blocked/pending/rate_limited/routed) with `finalizeEv`. The connector_messages logging is unchanged (separate table).
+- Vocabulary collapsed: `pending_approval` status removed entirely from connector_events. The two cases that used it (no_binding match, identity pending approval) now use `status='unhandled'` with `drop_reason` describing why (`'no_binding'` vs `'identity_pending'`). connector_messages `'pending'` status also folded into `'unhandled'` for consistency.
+- New canonical `connector_events.status` vocabulary: `received | routed | unhandled | dropped | rate_limited | error`.
+- `RouteResult` type updated; `routeConnectorEvent` returns `'unhandled'` instead of `'pending_approval'` (no consumer cared about the specific value — both call sites only check for errors).
+- Frontend: `events-tab.tsx` removed `pending_approval` from STATUS_COLORS + filter dropdown; added `unhandled`. SSE live items now upsert by id (replace existing entry instead of prepending a duplicate when arrival → routed broadcasts arrive in order).
+- Agent tool `connector_get_events` status hint rewritten with the new vocabulary + meaning.
+- Known follow-up: when `connectors.log_mode='active_binding_only'` the arrival row stays as `received` (gate skips the finalize). Acceptable — same as before for that mode.
+
+## 2026-04-15 — Action Request: removed `wait` tool, default to detached flow
+
+User-requested behavior change: agent flow for AR is now ALWAYS detached. Agents create-and-move-on; the operator decision flows to its destination handler independently.
+
+- Deleted `action_request_wait` tool from `apps/studio/server/src/action-requests/tools.ts` (removed schema, execute, helper `formatWaitResult`, import of `subscribeActionRequest`).
+- Removed wait hint from `action_request_create` tool description + return value.
+- Updated destination param description (no longer references wait pairing).
+- Removed wait-pair hint from `connector_send` outbound-approval response (`connectors/tools.ts:434`) and from `connector_run_action` outbound-approval response (`connectors/tools.ts:634`) — both now explicitly tell the agent to MOVE ON.
+- Pruned dead pubsub: `subscribeActionRequest` + `arChannel` removed from `action-requests/pubsub.ts` (only the wait tool ever subscribed). SSE hub continues to use the project-level channel.
+- Cleaned doc-comments in `destination-outbound.ts` (no more "wait() resolves with rejected").
+- Docs: rewrote `docs/feats/action-request.md` Architecture diagram, Agent tools, Outbound approval, Task checkpoint, and Realtime sections to reflect detached-only flow. Inline-wait task pattern removed entirely; only detached-resume remains.
+
+## 2026-04-15 — Telegram userbot: clearer errors for `copy_message` / `forward_message` misuse
+
+Diagnosed a real failure: agent passed a UUID as `message_id` AND a sender's `user_id` as `from_chat_id` (instead of the chat id where the message lives). mtcute returned the cryptic "Peer X is not found in local cache" with no recovery hint.
+
+- `plugins/jiku.telegram/src/user-adapter.ts`: `copy_message` + `forward_message` now validate that `message_id` / `message_ids` parse to positive integers BEFORE calling mtcute. Returns `{ code: 'INVALID_MESSAGE_ID', error }` with explicit "not a UUID / connector_events.id" guidance.
+- `plugins/jiku.telegram/src/shared/error-mapper.ts`: catches mtcute's "not found in local cache" / `PEER_ID_INVALID` and returns `{ code: 'PEER_NOT_CACHED', error }` explaining the two common causes (sender_id confused with chat_id, or session reset wiped the cache).
+- Sharpened `customActions` descriptions on both `forward_message` and `copy_message` to be explicit about: (a) `from_chat_id` = the chat where the message LIVES (group id, NOT sender), (b) `message_id` = numeric Telegram id (NOT a UUID), (c) the userbot must have interacted with the peer for its access_hash to be cached.
+
+## 2026-04-15 — Fix: project-scoped plugins leaked tools + prompts to all projects
+
+`AgentRunner` punya `this.runtimeId` (= projectId) tapi 4 call site ke `PluginLoader` tidak pernah pass argument itu — `getResolvedTools()` dan `getPromptSegmentsWithMetaAsync()` dipanggil tanpa parameter, masuk branch `if (!projectId) return all` di loader, jadi filter `project_scope` tidak pernah aktif. Akibat: tools + system-prompt segment dari plugin `project_scope: true` (mis. `jiku.web-reader`, `jiku.analytics`, `jiku.social`) muncul di setiap project meski belum di-activate via `project_plugins`.
+
+- Fix: pass `this.runtimeId` ke 4 call site (`run()` line 212 + 422, `previewRun()` line 886 + 907).
+- Skills tidak terdampak — `propagatePluginSkills` hanya iterate `enabledRows`, jadi sudah benar.
+- Storage tidak terdampak — keyed `${projectId}:${pluginId}`.
+- Plugin UI route (`/api/.../tools`) tidak terdampak — sudah pass projectId benar.
+- Files: `packages/core/src/runner.ts`.
+
 ## 2026-04-15 — Plan 25: Action Request Center (all 6 phases)
 
 **Added:**

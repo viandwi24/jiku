@@ -20,8 +20,14 @@ agent/connector/admin
    destination handler  ──── side-effect (send message, spawn task, resume task)
         │
         ▼
-   pubsub bus  ──── action_request_wait subscribers + SSE UI
+   pubsub bus  ──── SSE UI
 ```
+
+Agent flow is **always detached**: `action_request_create` returns immediately
+with `{ action_request_id, status: 'pending' }`. The operator decision flows to
+its destination handler independently — there is no `wait` tool. If the agent
+needs the decision injected back into its conversation, use the `task_resume`
+destination so the runner re-invokes after the operator responds.
 
 ### Tables
 
@@ -60,11 +66,13 @@ destinations plug in with `registerDestinationHandler(type, handler)`.
 
 ## Agent tools
 
-- `action_request_create(...)` — creates AR, returns `{ action_request_id, status: 'pending' }`. Non-blocking.
-- `action_request_wait({ action_request_id, timeout_seconds? })` — long-poll via in-process
-  pubsub subscription. Default 600s. On timeout returns `{ status: 'wait_timeout',
-  ar_still_pending: true }` — agent decides whether to re-wait or move on.
+- `action_request_create(...)` — creates AR, returns `{ action_request_id, status: 'pending' }`. Non-blocking, fire-and-forget.
 - `action_request_list({ status?, agent_only?, limit })` — read-only, for self-monitoring.
+
+There is intentionally **no wait tool** — the agent should always create-and-move-on.
+If the operator decision needs to flow back into the agent's conversation, choose a
+destination (`outbound_approval` / `task_resume`) — the destination handler runs
+independently when the operator responds.
 
 Per-agent rate limit: max 10 concurrent `pending` requests. Beyond that, `create` returns
 `{ error, code: 'too_many_pending' }`.
@@ -83,23 +91,18 @@ Bypass for emergency system messages: agent passes `params.skip_approval=true`. 
 the destination handler re-resolves the adapter and calls `sendMessage`.
 
 Agent that called `connector_send` receives `{ success: true, queued: true,
-action_request_id, status: 'pending', hint }`. Agent can pair with `action_request_wait`
-to block, or move on (the operator decision still flows independently).
+action_request_id, status: 'pending', hint }` and is expected to MOVE ON — the
+operator decision flows into the destination handler (which calls
+`adapter.sendMessage` on approve, drops on reject) without any agent involvement.
 
 ## Task checkpoint
 
-Two flavors:
-
-1. **Inline-wait**: agent calls `action_request_create({ ... })` then `action_request_wait`.
-   The task naturally pauses inside the agent's run (the `wait` tool blocks). When AR
-   resolves, `wait` returns and the agent continues. No task-runner changes needed.
-
-2. **Detached-resume**: agent calls `action_request_create({ destination: { type:
-   'task_resume', ref: { task_id, resume_token } } })` and exits the task. When AR
-   resolves, the `task_resume` destination handler injects a synthetic `[Operator
-   decision]` message into the conversation and re-invokes `runTaskConversation` against
-   the existing conversation_id. Agent picks up where it left off with the decision in
-   message history.
+Always **detached-resume**: agent calls `action_request_create({ destination: { type:
+'task_resume', ref: { task_id, resume_token } } })` and exits the task. When AR
+resolves, the `task_resume` destination handler injects a synthetic `[Operator
+decision]` message into the conversation and re-invokes `runTaskConversation` against
+the existing conversation_id. Agent picks up where it left off with the decision in
+message history.
 
 Resume-token validation: the handler reads `conversations.metadata.action_request_resume_tokens[token]`
 and refuses resume if it's bound to a different AR. Agents seeding a token at create
@@ -126,10 +129,9 @@ Backfill: existing Owner/Admin/Manager roles get all three; Member gets `:read` 
 ## Realtime
 
 Single-process EventEmitter (`apps/studio/server/src/action-requests/pubsub.ts`),
-matching the existing in-process pattern used by connector SSE. Channels:
-`ar:{id}` (per-AR, used by `action_request_wait`) and `project:{pid}:ar` (project-scoped,
-used by SSE hub). Multi-process scale-out would require swapping to Redis pub/sub —
-contained behind this module's small API.
+matching the existing in-process pattern used by connector SSE. Channel:
+`project:{pid}:ar` (project-scoped, used by SSE hub). Multi-process scale-out
+would require swapping to Redis pub/sub — contained behind this module's small API.
 
 ## Expiry
 

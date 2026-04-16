@@ -5,11 +5,12 @@ import { useChat } from '@ai-sdk/react'
 import { useQuery } from '@tanstack/react-query'
 import { useQueryClient } from '@tanstack/react-query'
 import { DefaultChatTransport } from 'ai'
-import { ArrowDown, ArrowUp, Bot, User, Paperclip, X, FileText, Image as ImageIcon, Loader2, ChevronDown, ChevronRight, Terminal } from 'lucide-react'
+import { ArrowDown, ArrowUp, Bot, User, Paperclip, X, FileText, Image as ImageIcon, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getToken } from '@/lib/auth'
 import { api } from '@/lib/api'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
+import { MessageTextWithActiveCommands } from '@/components/chat/active-command-block'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
@@ -266,7 +267,7 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
               {/* Text */}
               <div className="whitespace-pre-wrap wrap-break-word space-y-1.5">
                 {msg.parts.map((part, i) =>
-                  part.type === 'text' ? <MessageText key={i} text={part.text} isUser={msg.role === 'user'} /> : null,
+                  part.type === 'text' ? <MessageTextWithActiveCommands key={i} text={part.text} isUser={msg.role === 'user'} /> : null,
                 )}
               </div>
             </div>
@@ -425,97 +426,3 @@ export function ChatInterface({ conversationId, agentId, projectId, companyId }:
   )
 }
 
-/**
- * Detects `<active_command slug="...">...</active_command>` blocks injected by
- * the slash-command dispatcher and renders them as a collapsible accordion so
- * the raw system-directive body doesn't drown out the user's actual message.
- */
-const ACTIVE_COMMAND_RE = /<active_command(?:\s+slug="([^"]+)")?>([\s\S]*?)<\/active_command>/g
-
-interface MessageTextProps {
-  text: string
-  isUser: boolean
-}
-
-function MessageText({ text, isUser }: MessageTextProps) {
-  const segments = useMemo(() => {
-    const out: Array<{ kind: 'text'; value: string } | { kind: 'cmd'; slug: string | null; body: string }> = []
-    let lastIndex = 0
-    const re = new RegExp(ACTIVE_COMMAND_RE.source, 'g')
-    let match: RegExpExecArray | null
-    while ((match = re.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        out.push({ kind: 'text', value: text.slice(lastIndex, match.index) })
-      }
-      out.push({ kind: 'cmd', slug: match[1] ?? null, body: (match[2] ?? '').trim() })
-      lastIndex = re.lastIndex
-    }
-    if (lastIndex < text.length) {
-      out.push({ kind: 'text', value: text.slice(lastIndex) })
-    }
-    return out
-  }, [text])
-
-  if (segments.length === 1 && segments[0]!.kind === 'text') {
-    return <span>{text}</span>
-  }
-
-  return (
-    <>
-      {segments.map((seg, i) => {
-        if (seg.kind === 'text') {
-          const trimmed = seg.value.replace(/^\n+|\n+$/g, '')
-          if (!trimmed) return null
-          return <span key={i}>{trimmed}</span>
-        }
-        return <ActiveCommandBlock key={i} slug={seg.slug} body={seg.body} isUser={isUser} />
-      })}
-    </>
-  )
-}
-
-interface ActiveCommandBlockProps {
-  slug: string | null
-  body: string
-  isUser: boolean
-}
-
-function ActiveCommandBlock({ slug, body, isUser }: ActiveCommandBlockProps) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div
-      className={cn(
-        'rounded-lg border text-xs my-1 overflow-hidden',
-        isUser
-          ? 'border-primary-foreground/20 bg-primary-foreground/5'
-          : 'border-border bg-background/60',
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className={cn(
-          'w-full flex items-center gap-1.5 px-2 py-1.5 text-left',
-          isUser ? 'hover:bg-primary-foreground/10' : 'hover:bg-muted',
-        )}
-      >
-        {open ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronRight className="w-3 h-3 shrink-0" />}
-        <Terminal className="w-3 h-3 shrink-0 opacity-70" />
-        <span className="font-mono opacity-80">
-          {slug ? `/${slug}` : 'active_command'}
-        </span>
-        <span className="ml-auto opacity-60 text-[10px] uppercase tracking-wide">
-          system prompt
-        </span>
-      </button>
-      {open && (
-        <pre className={cn(
-          'px-2.5 py-2 text-[11px] leading-relaxed whitespace-pre-wrap wrap-break-word border-t font-mono',
-          isUser ? 'border-primary-foreground/10' : 'border-border',
-        )}>
-          {body}
-        </pre>
-      )}
-    </div>
-  )
-}

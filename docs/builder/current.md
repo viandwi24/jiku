@@ -1,3 +1,37 @@
+## Phase (2026-04-15) — Chat UI: active_command accordion + collapsible sub-sidebar ✅
+
+Two chat UI tasks in same pass:
+
+1. **`<active_command>` accordion shared + streaming-aware.** Conversation viewer (history view) rendered user messages as raw `<span>{text}</span>` so the dispatcher's `<active_command slug="...">...</active_command>` wrapper leaked as XML. Extracted `MessageTextWithActiveCommands` + `ActiveCommandBlock` + streaming-aware parser to `apps/studio/web/components/chat/active-command-block.tsx`. Used by both `chat-interface.tsx` (replaced local duplicate) and `conversation-viewer.tsx`. Streaming: opening tag without a close yet renders the same accordion chip with a pulsing amber dot + "streaming" label and a trailing `…` inside the body preview.
+
+2. **Collapsible chat sub-sidebar with mobile default.** `chats/layout.tsx` was a fixed `w-72` rail. Now togglable via header button (in panel) + floating `PanelLeftOpen` button (over chat area when collapsed). State persisted in `localStorage['chats.sidebar.open']`. Default: open on ≥768px viewport, closed on <768px. `ConversationListPanel` gained optional `onCollapse` prop.
+
+## Phase (2026-04-15) — Connector traffic_mode (inbound_only / outbound_only / both) ✅
+
+Per-connector direction gate. Schema-only (no migration file — user runs `db generate`/`db push`). Polling/lifecycle untouched per requirement; gate enforced at routing + tool layer. Cached in `connectorRegistry`, refreshed on PATCH without restart. Surfaced to adapters via `ConnectorContext.trafficMode`. UI Select on channel detail page next to LogMode + OutboundApproval. Codes returned to agents: `TRAFFIC_INBOUND_ONLY` (for outbound tools) and `drop_reason: 'traffic_outbound_only'` (on dropped inbound rows).
+
+Files: `packages/types/src/index.ts`, `apps/studio/db/src/{schema,queries}/connector*.ts`, `apps/studio/server/src/connectors/{registry,activation,event-router,tools}.ts`, `apps/studio/server/src/routes/connectors.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../channels/[connector]/page.tsx`. See `changelog.md` 2026-04-15 + memory entry "Connector traffic_mode = pure routing/tool gate".
+
+## Phase (2026-04-15) — Connector events: collapse duplicate rows + drop `pending_approval` ✅
+
+User saw two rows per inbound in Channels Events tab (`received` + `pending_approval`). Root cause: adapter's `logArrivalImmediate` INSERTed the arrival row, then `routeConnectorEvent` INSERTed a SECOND row with the routing outcome. Was tracked as a known follow-up (`tasks.md:39`).
+
+Fix: arrival logger now stamps the inserted row id onto `event.metadata.arrival_event_id`. `event-router.ts:finalizeEv` UPDATEs that row via new `updateConnectorEvent` query instead of INSERTing. Pipeline collapses to ONE row per inbound. `pending_approval` status removed entirely — folded into `unhandled` (with `drop_reason='no_binding'` or `'identity_pending'` distinguishing the two cases). New canonical vocabulary: `received | routed | unhandled | dropped | rate_limited | error`. Frontend `events-tab.tsx` updated (filter dropdown, status colours, SSE upsert-by-id).
+
+See `changelog.md` 2026-04-15 entry "Connector events: ONE row per inbound" + memory entry "Connector inbound = ONE event row per update".
+
+## Phase (2026-04-15) — Action Request: detach-only + Telegram userbot error clarity ✅
+
+User-requested two changes + one bug-investigation:
+1. Removed `action_request_wait` tool entirely (deleted handler, helper, import, dead pubsub channel). Agent flow for AR is now ALWAYS detached — create-and-move-on. Wait hints stripped from `action_request_create` description, return value, `connector_send` outbound-approval response, and `connector_run_action` outbound-approval response.
+2. Telegram userbot `copy_message` failed with `Peer 1309769651 is not found in local cache`. Root cause = agent prompt likely saved sender's `user_id` as `from_chat_id` (instead of the chat where the message LIVED) AND saved a UUID as `message_id`. Code-side: added numeric `message_id` validation in `copy_message` + `forward_message`, added `PEER_NOT_CACHED` translation in `mapQueueError` with actionable hint, sharpened action descriptions to reject UUIDs / sender ids upfront.
+
+See `changelog.md` 2026-04-15 entries + memory entries `Action Request agent flow is ALWAYS detached` and `Telegram userbot: peer access_hash must be cached`.
+
+## Phase (2026-04-15) — Bugfix: project-scope plugin leak ✅
+
+`AgentRunner` panggil `PluginLoader.getResolvedTools()` + `getPromptSegmentsWithMetaAsync()` tanpa projectId di 4 call site (`runner.ts:212/422/886/907`) — filter `project_scope` di loader tidak pernah aktif, jadi tools + prompts dari plugin `project_scope: true` (mis. `jiku.web-reader`, `jiku.analytics`, `jiku.social`) bocor ke setiap project. Fix: pass `this.runtimeId`. Skills/storage/lifecycle hooks sudah aman. Lihat `changelog.md` 2026-04-15 + memory entry `PluginLoader.getResolvedTools()...`.
+
 ## Phase (2026-04-15) — Plan 25 Action Request Center ✅
 
 All 6 phases shipped from `docs/plans/25-action-request-center.md` in one session:

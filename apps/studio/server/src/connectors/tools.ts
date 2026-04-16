@@ -134,7 +134,7 @@ export function buildConnectorTools(projectId: string) {
         user_id: z.string().optional().describe('Filter by external sender id (e.g. Telegram numeric user_id).'),
         direction: z.enum(['inbound', 'outbound']).optional().describe('"inbound" = from user, "outbound" = from bot.'),
         event_type: z.string().optional().describe('Exact event_type, e.g. "message", "reaction", "send_message".'),
-        status: z.string().optional().describe('Exact status, e.g. "routed", "dropped", "pending_approval".'),
+        status: z.string().optional().describe('Exact status. Vocabulary: "received" (initial arrival), "routed" (dispatched to agent), "unhandled" (no binding matched OR identity pending approval — see drop_reason), "dropped" (identity blocked), "rate_limited", "error" (outbound only).'),
         content_search: z.string().optional().describe('Case-insensitive substring match against the message text inside the event payload.'),
         from: z.string().optional().describe('ISO timestamp — lower bound of created_at.'),
         to: z.string().optional().describe('ISO timestamp — upper bound of created_at.'),
@@ -352,6 +352,11 @@ export function buildConnectorTools(projectId: string) {
         const adapter = connectorRegistry.getAdapterForConnector(connector_id)
         if (!adapter) return { success: false, error: 'Connector not active' }
 
+        // Traffic-mode gate: inbound-only connectors refuse outbound sends.
+        if (connectorRegistry.getTrafficMode(connector_id) === 'inbound_only') {
+          return { success: false, code: 'TRAFFIC_INBOUND_ONLY', error: `Connector ${connector_id} is set to inbound_only — outbound sends are blocked by operator policy. Change traffic_mode to 'both' or 'outbound_only' if you need to send, or use a different connector.` }
+        }
+
         // Plan 27 — validate params against adapter schema (if declared). Unknown
         // keys produce an informative error so the agent fixes the call, not
         // silently passes bogus fields to the platform.
@@ -431,7 +436,7 @@ export function buildConnectorTools(projectId: string) {
               queued: true,
               action_request_id: ar.id,
               status: 'pending',
-              hint: 'Message is awaiting operator approval. Use action_request.wait({ action_request_id }) to block until decided, or continue with other work.',
+              hint: 'Message is queued for operator approval. The operator decision will send the message independently — you do not need to wait. Move on.',
               identity,
             }
           } catch (err) {
@@ -568,6 +573,11 @@ export function buildConnectorTools(projectId: string) {
         if (!adapter) return { success: false, error: 'Connector not active' }
         if (!adapter.runAction) return { success: false, error: `Connector "${adapter.id}" does not support custom actions` }
 
+        // Traffic-mode gate: inbound-only connectors refuse outbound actions.
+        if (connectorRegistry.getTrafficMode(connector_id) === 'inbound_only') {
+          return { success: false, code: 'TRAFFIC_INBOUND_ONLY', error: `Connector ${connector_id} is set to inbound_only — outbound actions are blocked by operator policy.` }
+        }
+
         const action = adapter.actions?.find(a => a.id === action_id)
         if (!action) return { success: false, error: `Unknown action "${action_id}". Call connector_list_actions to see available actions.` }
 
@@ -631,7 +641,7 @@ export function buildConnectorTools(projectId: string) {
               queued: true,
               action_request_id: ar.id,
               status: 'pending',
-              hint: `Action "${action_id}" is awaiting operator approval. Use action_request_wait({ action_request_id }) to block until decided.`,
+              hint: `Action "${action_id}" is queued for operator approval. The operator decision will run the action independently — you do not need to wait. Move on.`,
             }
           } catch (err) {
             if (err instanceof ActionRequestError) {
@@ -884,6 +894,11 @@ export function buildConnectorTools(projectId: string) {
             code: 'CONNECTOR_INACTIVE',
             error: `Connector "${connector.display_name}" (${connector.plugin_id}) is not active (status=${connector.status}).`,
           }
+        }
+
+        // Traffic-mode gate: inbound-only connectors refuse outbound sends.
+        if (connectorRegistry.getTrafficMode(target.connector_id) === 'inbound_only') {
+          return { success: false, code: 'TRAFFIC_INBOUND_ONLY', error: `Target "${target_name}" belongs to connector "${connector.display_name}" which is set to inbound_only — outbound sends are blocked by operator policy.` }
         }
 
         const sendTarget: ConnectorTarget = {

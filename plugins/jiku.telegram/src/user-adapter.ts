@@ -421,7 +421,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
     //   - updates namespace:  client.updates.on('new_message', handler)
     // Try each in order; first one that's a function wins. Failing all:
     // log + continue (outbound still works, just no inbound routing).
-    const handler = (raw: unknown) => {
+    const handler = async (raw: unknown) => {
       try {
         // Diagnostic: every raw mtcute message arrival, BEFORE normalize.
         // Lets operator confirm whether the wired pub-sub method is firing
@@ -441,16 +441,24 @@ class TelegramUserAdapter extends ConnectorAdapter {
         // OUTSIDE the routing pipeline, so connector_events table reflects
         // truth even if the router stalls. Without this, no row at all
         // appears in the Channels Events tab from inbound.
+        // Thread the arrival row id into event.metadata.arrival_event_id so the
+        // downstream event-router can UPDATE the same row instead of INSERTing
+        // a duplicate as it transitions through the routing pipeline.
         if (this.connectorId) {
-          logConnectorEvent({
-            connector_id: this.connectorId!,
-            event_type: event.type,
-            direction: 'inbound',
-            ref_keys: event.ref_keys,
-            payload: event as unknown as Record<string, unknown>,
-            raw_payload: raw,
-            status: 'received',
-          }).catch(() => {})
+          try {
+            const row = await logConnectorEvent({
+              connector_id: this.connectorId!,
+              event_type: event.type,
+              direction: 'inbound',
+              ref_keys: event.ref_keys,
+              payload: event as unknown as Record<string, unknown>,
+              raw_payload: raw,
+              status: 'received',
+            })
+            event.metadata = { ...(event.metadata ?? {}), arrival_event_id: row.id }
+          } catch (err) {
+            console.warn('[telegram.user] logArrival failed:', err)
+          }
         }
         ctx.onEvent(event).catch(err => console.warn('[telegram.user] onEvent error:', err))
       } catch (err) {
@@ -746,9 +754,9 @@ class TelegramUserAdapter extends ConnectorAdapter {
       name: 'Forward Message',
       description: 'Forward one or more messages from a source chat to a destination chat. With hide_sender:true (USERBOT-ONLY: works correctly), the "Forwarded from" header is suppressed AND animated Premium custom_emoji are preserved — Bot API copyMessage cannot do this.',
       params: {
-        from_chat_id: { type: 'string', description: 'Source chat_id (where the messages came from)', required: true },
+        from_chat_id: { type: 'string', description: 'Source chat_id — the chat where the messages LIVE. For group messages, this is the group id (e.g. -100xxxxxxxxxx), NOT the sender user_id. The userbot must have interacted with this peer (received a message from / sent a message to) for the access_hash to be in cache.', required: true },
         to_chat_id: { type: 'string', description: 'Destination chat_id', required: true },
-        message_ids: { type: 'string', description: 'Comma-separated message IDs to forward, e.g. "123,124,125"', required: true },
+        message_ids: { type: 'string', description: 'Comma-separated NUMERIC Telegram message IDs to forward, e.g. "123,124,125". NOT UUIDs / connector_events.id.', required: true },
         hide_sender: { type: 'boolean', description: 'Hide the "Forwarded from" header AND preserve Premium custom_emoji animation. Default true on userbot.', required: false },
       },
     },
@@ -818,11 +826,11 @@ class TelegramUserAdapter extends ConnectorAdapter {
     {
       id: 'copy_message',
       name: 'Copy Message',
-      description: 'Copy a message to another chat WITHOUT a "Forwarded from" header. Bot API behaves the same; userbot here delegates to forward_message with hide_sender:true for parity.',
+      description: 'Copy a message to another chat WITHOUT a "Forwarded from" header. Userbot delegates to forward_message with hide_sender:true. IMPORTANT: from_chat_id is the chat where the message LIVES (not the sender — for group messages this is the group id, e.g. -100xxxxxxxxxx). message_id is the numeric Telegram message id (e.g. 12345), NOT a connector_events.id UUID.',
       params: {
-        from_chat_id: { type: 'string', description: 'Source chat_id', required: true },
+        from_chat_id: { type: 'string', description: 'Source chat_id (chat where the message lives — for group messages, the group id, NOT the sender user_id)', required: true },
         to_chat_id: { type: 'string', description: 'Destination chat_id', required: true },
-        message_id: { type: 'string', description: 'Single message_id to copy', required: true },
+        message_id: { type: 'string', description: 'Numeric Telegram message_id (e.g. "12345"). NOT a UUID or connector_events.id.', required: true },
       },
     },
     {
@@ -896,9 +904,13 @@ class TelegramUserAdapter extends ConnectorAdapter {
     try {
       if (actionId === 'forward_message') {
         const hideSender = params['hide_sender'] !== false
+        const messageIds = idsOf(params['message_ids'])
+        if (messageIds.length === 0) {
+          return { success: false, code: 'INVALID_MESSAGE_ID', error: `forward_message requires numeric message_ids; received "${String(params['message_ids'])}". Telegram message ids are integers (e.g. 12345) — not UUIDs or event ids.` }
+        }
         const queued = await enqueue({ chatId: String(params['from_chat_id']) }, () => c.forwardMessagesById({
           fromChatId: peerOf(params['from_chat_id']),
-          messages: idsOf(params['message_ids']),
+          messages: messageIds,
           toChatId: peerOf(params['to_chat_id']),
           noAuthor: hideSender,
         }))
@@ -1007,9 +1019,13 @@ class TelegramUserAdapter extends ConnectorAdapter {
       if (actionId === 'copy_message') {
         // Userbot has no native "copy" — forward with hide_sender:true gives the
         // same UX (no header) but with custom_emoji preservation as bonus.
+        const msgId = Number(params['message_id'])
+        if (!Number.isFinite(msgId) || msgId <= 0) {
+          return { success: false, code: 'INVALID_MESSAGE_ID', error: `copy_message requires a numeric message_id; received "${String(params['message_id'])}". Telegram message ids are integers (e.g. 12345) — not UUIDs or event ids.` }
+        }
         const queued = await enqueue({ chatId: String(params['from_chat_id']) }, () => c.forwardMessagesById({
           fromChatId: peerOf(params['from_chat_id']),
-          messages: [Number(params['message_id'])],
+          messages: [msgId],
           toChatId: peerOf(params['to_chat_id']),
           noAuthor: true,
         }))

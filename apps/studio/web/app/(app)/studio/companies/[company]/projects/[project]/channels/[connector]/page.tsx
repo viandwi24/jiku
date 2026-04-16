@@ -1298,7 +1298,68 @@ export default function ConnectorDetailPage({ params }: PageProps) {
       </div>
 
       <OutboundApprovalSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
+      <TrafficModeSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
       <LogModeSection connector={connector} onChanged={() => qc.invalidateQueries({ queryKey: ['connector', connectorId] })} />
+    </div>
+  )
+}
+
+function TrafficModeSection({
+  connector, onChanged,
+}: {
+  connector: ConnectorItem
+  onChanged: () => void
+}) {
+  const initial = (connector.traffic_mode ?? 'both') as 'inbound_only' | 'outbound_only' | 'both'
+  const [mode, setMode] = useState<'inbound_only' | 'outbound_only' | 'both'>(initial)
+  const dirty = mode !== initial
+
+  const save = useMutation({
+    mutationFn: () => api.connectors.update(connector.id, { traffic_mode: mode }),
+    onSuccess: () => { toast.success('Traffic mode updated'); onChanged() },
+    onError: (err: Error) => toast.error(String(err.message ?? err)),
+  })
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">Traffic Mode</h2>
+        <p className="text-xs text-muted-foreground">
+          Scope the connector to a single direction based on your strategy. Polling/lifecycle is unaffected — this gates only what the routing pipeline + outbound tools are allowed to do.
+        </p>
+      </div>
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Direction</Label>
+            <Select value={mode} onValueChange={(v) => setMode(v as 'inbound_only' | 'outbound_only' | 'both')}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="both">Both — inbound routing + outbound sends (default)</SelectItem>
+                <SelectItem value="inbound_only">Inbound only — listen, do not reply (archive / monitor strategy)</SelectItem>
+                <SelectItem value="outbound_only">Outbound only — broadcast / notifier; ignore inbound</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {mode === 'both'
+                ? 'Default: inbound events route to bindings/agents, outbound sends + actions allowed.'
+                : mode === 'inbound_only'
+                  ? 'Inbound events are routed and logged, but the agent reply path is skipped and any connector_send / connector_run_action call returns code TRAFFIC_INBOUND_ONLY. Useful for archive / monitoring strategies.'
+                  : 'Inbound events are finalised as dropped (drop_reason: traffic_outbound_only) and never reach a binding. The connector remains usable for outbound notifications / broadcasts.'}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+            {dirty && (
+              <Button size="sm" variant="ghost" onClick={() => setMode(initial)}>
+                Reset
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

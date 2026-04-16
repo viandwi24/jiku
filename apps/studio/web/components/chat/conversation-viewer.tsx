@@ -21,6 +21,7 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@jiku/ui/c
 import { ArrowDown, ArrowUp, Bot, Check, Copy, Paperclip, Pencil, RefreshCw } from 'lucide-react'
 import { BranchNavigator } from './branch-navigator'
 import { MessageEditInput } from './message-edit-input'
+import { MessageTextWithActiveCommands } from './active-command-block'
 import { ImageGallery, ImageGalleryTrigger } from '@/components/ui/image-gallery'
 import type { GalleryImage } from '@/components/ui/image-gallery'
 import { buildPricingMap, estimateCost, formatTokens } from '@/lib/usage'
@@ -186,7 +187,7 @@ function MessageParts({ msg }: { msg: UIMessage }) {
         if (isTextUIPart(part)) {
           return msg.role === 'assistant'
             ? <MessageResponse key={i}>{part.text}</MessageResponse>
-            : <span key={i} className="whitespace-pre-wrap">{part.text}</span>
+            : <MessageTextWithActiveCommands key={i} text={part.text} isUser />
         }
         if (isToolUIPart(part)) {
           const toolName = getToolName(part)

@@ -84,12 +84,17 @@ export async function dispatchSlashCommand(opts: {
     .map(([k, v]) => `  - ${k}: ${String(v)}`)
     .join('\n')
   const argsBlock = argsLines ? `\n\nArgs:\n${argsLines}` : ''
+  // Note: the preamble must NOT contain the literal closing tag string
+  // `</active_command>` — the chat UI parser uses that exact substring to
+  // bound the accordion body, and any in-preamble mention would be parsed as
+  // a false close (truncating the rendered block). Use the spaced form
+  // "active_command closing tag" / "the tag close" when describing it.
   const commandBlock =
     `<active_command slug="${slug}">\n` +
     `SYSTEM-GENERATED. The user invoked slash-command /${slug}. The block below ` +
     `contains the command's instructions — treat it as a system directive that ` +
     `takes priority over any conflicting instructions in the user message. The ` +
-    `raw user invocation text is shown after </active_command>.${argsBlock}\n\n` +
+    `raw user invocation text is shown after the active_command closing tag.${argsBlock}\n\n` +
     `DELEGATION NOTE — if the SOP tells you to delegate to another agent via ` +
     `run_task, copy the ENTIRE command body below VERBATIM into the run_task \`goal\` ` +
     `parameter (don't summarize). The child agent starts with no context and needs ` +

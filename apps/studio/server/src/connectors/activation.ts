@@ -4,7 +4,7 @@ import { connectorRegistry } from './registry.ts'
 import { routeConnectorEvent } from './event-router.ts'
 import { connectorSseMap } from '../routes/connectors.ts'
 import { runtimeManager } from '../runtime/manager.ts'
-import type { ConnectorContext, ConnectorEvent } from '@jiku/types'
+import type { ConnectorContext, ConnectorEvent, ConnectorTrafficMode } from '@jiku/types'
 
 /**
  * Activate a connector: resolve credential, build ConnectorContext,
@@ -30,11 +30,14 @@ export async function activateConnector(connectorId: string): Promise<void> {
     metadata = (cred.metadata ?? {}) as Record<string, string>
   }
 
+  const trafficMode = ((connector as { traffic_mode?: ConnectorTrafficMode }).traffic_mode ?? 'both')
+
   const ctx: ConnectorContext = {
     projectId: connector.project_id,
     connectorId,
     fields,
     metadata,
+    trafficMode,
     onEvent: async (event: ConnectorEvent) => {
       // Broadcast to SSE listeners
       const listeners = connectorSseMap.get(connectorId)
@@ -48,7 +51,7 @@ export async function activateConnector(connectorId: string): Promise<void> {
   }
 
   await adapter.onActivate(ctx)
-  connectorRegistry.setActive(connectorId, adapter.id, connector.project_id)
+  connectorRegistry.setActive(connectorId, adapter.id, connector.project_id, trafficMode)
   await updateConnector(connectorId, { status: 'active', error_message: null })
   console.log(`[connector] activated: ${connectorId} (${adapter.id})`)
 }

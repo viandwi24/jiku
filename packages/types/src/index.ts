@@ -1229,6 +1229,24 @@ export interface ConnectorSendResult {
   raw_payload?: unknown
 }
 
+/**
+ * Per-connector traffic gate. Allows the operator to scope a connector to one
+ * direction based on strategy (e.g. broadcast-only notifier vs listen-only archive).
+ *
+ *  'both'          — default; inbound routing + outbound sends both allowed.
+ *  'inbound_only'  — inbound events still route to agents/bindings; outbound
+ *                    calls (connector_send, auto-reply, access-request notifs)
+ *                    are blocked with code TRAFFIC_INBOUND_ONLY.
+ *  'outbound_only' — inbound events are finalised with status='dropped' +
+ *                    drop_reason='traffic_outbound_only' and NOT routed to any
+ *                    agent; outbound calls proceed normally.
+ *
+ * Polling/lifecycle is NOT affected — adapters manage their own connect/start
+ * semantics. The mode is a pure routing/tool gate, surfaced to the adapter via
+ * ConnectorContext.trafficMode so adapters may also honour it if useful.
+ */
+export type ConnectorTrafficMode = 'inbound_only' | 'outbound_only' | 'both'
+
 export interface ConnectorContext {
   projectId: string
   connectorId: string
@@ -1236,6 +1254,8 @@ export interface ConnectorContext {
   fields: Record<string, string>
   /** Plain metadata from the credential */
   metadata: Record<string, string>
+  /** Per-connector traffic gate — adapters may honour this (usually informational). */
+  trafficMode: ConnectorTrafficMode
   /** Emit a parsed ConnectorEvent into the routing pipeline */
   onEvent(event: ConnectorEvent): Promise<void>
 }

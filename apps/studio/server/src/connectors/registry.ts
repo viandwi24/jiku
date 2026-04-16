@@ -1,4 +1,5 @@
 import type { ConnectorAdapter } from '@jiku/kit'
+import type { ConnectorTrafficMode } from '@jiku/types'
 
 /**
  * Plan 24 Phase 2 — Backward-compat aliases for renamed adapter ids.
@@ -17,7 +18,7 @@ const ADAPTER_ID_ALIASES: Record<string, string> = {
  */
 class ConnectorRegistry {
   private adapters = new Map<string, ConnectorAdapter>()
-  private activeContexts = new Map<string, { adapterId: string; projectId: string; connectorId: string }>()
+  private activeContexts = new Map<string, { adapterId: string; projectId: string; connectorId: string; trafficMode: ConnectorTrafficMode }>()
 
   register(adapter: ConnectorAdapter): void {
     this.adapters.set(adapter.id, adapter)
@@ -42,8 +43,23 @@ class ConnectorRegistry {
   }
 
   /** Track an active connector instance (per project) */
-  setActive(connectorId: string, adapterId: string, projectId: string): void {
-    this.activeContexts.set(connectorId, { adapterId, projectId, connectorId })
+  setActive(connectorId: string, adapterId: string, projectId: string, trafficMode: ConnectorTrafficMode = 'both'): void {
+    this.activeContexts.set(connectorId, { adapterId, projectId, connectorId, trafficMode })
+  }
+
+  /**
+   * Update the traffic mode for an already-active connector without restarting
+   * the adapter. PATCH /connectors/:id calls this after persisting the change
+   * so gates (routing + tools) pick up the new value immediately.
+   */
+  setTrafficMode(connectorId: string, trafficMode: ConnectorTrafficMode): void {
+    const ctx = this.activeContexts.get(connectorId)
+    if (ctx) this.activeContexts.set(connectorId, { ...ctx, trafficMode })
+  }
+
+  /** Returns the cached traffic mode, or 'both' if the connector isn't active. */
+  getTrafficMode(connectorId: string): ConnectorTrafficMode {
+    return this.activeContexts.get(connectorId)?.trafficMode ?? 'both'
   }
 
   removeActive(connectorId: string): void {

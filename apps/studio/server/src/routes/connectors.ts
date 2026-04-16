@@ -141,6 +141,12 @@ router.patch('/connectors/:id', authMiddleware, requireConnectorPermission('chan
   try {
     const connector = await updateConnector(req.params['id']!, req.body)
     if (!connector) { res.status(404).json({ error: 'Not found' }); return }
+    // Refresh in-memory traffic-mode cache so gates pick up the change without
+    // requiring a connector restart. No-op if the connector isn't currently active.
+    if (typeof req.body?.traffic_mode === 'string') {
+      const { connectorRegistry } = await import('../connectors/registry.ts')
+      connectorRegistry.setTrafficMode(req.params['id']!, req.body.traffic_mode as 'inbound_only' | 'outbound_only' | 'both')
+    }
     res.json({ connector })
   } catch (err) {
     res.status(500).json({ error: String(err) })

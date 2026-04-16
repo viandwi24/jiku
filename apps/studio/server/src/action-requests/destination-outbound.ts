@@ -6,8 +6,8 @@
  *               original payload stored in destination_ref.content.
  *   - rejected → no-op (the message is dropped silently from the operator side;
  *               the agent already saw `queued: true` from the original
- *               connector_send call and will see status='rejected' if it
- *               action_request.wait()s).
+ *               connector_send call and is not expected to wait — the flow is
+ *               always detached).
  *
  * Type-constraint (validated at create time): only AR type='boolean' is allowed
  * for this destination.
@@ -20,7 +20,7 @@ import { registerDestinationHandler } from './destinations.ts'
 export function registerOutboundApprovalHandler(): void {
   registerDestinationHandler('outbound_approval', async ({ action_request }) => {
     if (action_request.status !== 'approved') {
-      // rejected → silent drop. The agent's wait() resolves with status=rejected.
+      // rejected → silent drop. Detached flow: agent already moved on.
       return
     }
     const ref = action_request.destination_ref as

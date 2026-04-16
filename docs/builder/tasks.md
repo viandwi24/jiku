@@ -36,7 +36,7 @@
 - [ ] Chat UI: surface "Command Invoked: /slug" chip when dispatcher matches so users see which command fired.
 
 ### Connector follow-ups
-- [ ] Arrival row unification — downstream `event-router.ts` still INSERTs additional rows as status transitions (`pending_approval`, `handled`, `dropped`, `rate_limited`). Short term each inbound event produces `received` row + outcome row. Longer term those should be UPDATEs against the arrival row. Requires threading arrival event id into `routeConnectorEvent()`.
+- [x] Arrival row unification — Telegram adapters thread `arrival_event_id` via `event.metadata`; `routeConnectorEvent` now UPDATEs the arrival row via `finalizeEv` instead of INSERTing duplicates. Vocabulary collapsed: `pending_approval` removed (folded into `unhandled` with `drop_reason` describing the cause). Done 2026-04-16.
 - [ ] Flip `drop_pending_updates: false` in Telegram adapter's `deleteWebhook` + `bot.start` — currently pending messages during the activation window get triple-dropped (diagnosis ran 2026-04-14). Trade-off: crash-restart replays backlog. Decide + ship.
 - [ ] Per-binding "Reset all pairings" button — set all identities under a binding to `status='pending'` so admin can re-trigger approval flow after a settings change without deleting the whole connector.
 - [ ] Propagate `getHealth()` to other adapters (WhatsApp / Discord / Slack when they land) so HealthBadge renders uniformly across platforms.

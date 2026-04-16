@@ -915,3 +915,37 @@ Event and message tables get LARGE. Agents must NOT call `connector_get_events({
 ## `connector_list_targets` returns connector metadata per row; `connector_send_to_target` detects ambiguity
 
 Each target row includes `{ connector: { id, plugin_id, display_name, status } }` so the agent doesn't need a follow-up `connector_list` call. `connector_send_to_target` with omitted `connector_id` accepts unique target names, but returns `{ success: false, code: 'AMBIGUOUS_TARGET', candidates: [...] }` when the same name exists on multiple connectors — the agent retries with explicit `connector_id`. When adding similar "address by name" APIs, use the same pattern (enriched list + explicit ambiguity error) rather than silently picking the first match.
+
+## Connector traffic_mode = pure routing/tool gate, NOT a lifecycle gate
+
+`connectors.traffic_mode` ∈ `'both' | 'inbound_only' | 'outbound_only'` (default `'both'`). Cached in `connectorRegistry` activeContexts at activation. Polling/connect lifecycle is the ADAPTER'S concern — `traffic_mode` does NOT stop the adapter from polling, connecting, or maintaining sessions. It only gates: (1) `routeConnectorEvent` early-drops inbound when `outbound_only` (`drop_reason: 'traffic_outbound_only'`); (2) `executeConversationAdapter` early-returns when `inbound_only`; (3) outbound notifications (`👋 access request sent`, `✅ access granted`) skip when `inbound_only`; (4) tools `connector_send` / `connector_send_to_target` / `connector_run_action` return `{ code: 'TRAFFIC_INBOUND_ONLY' }` when `inbound_only`. PATCH route calls `connectorRegistry.setTrafficMode` so changes take effect WITHOUT connector restart. If you add new outbound paths (new tools, new auto-reactions in event-router), gate them with `connectorRegistry.getTrafficMode(connectorId) !== 'inbound_only'` — same pattern. New inbound paths (multi-adapter event-routers, new event types): gate at the top with the `outbound_only` check. Adapters can also read `ctx.trafficMode` if they want to skip work proactively, but it's optional — server-side gates are the source of truth.
+
+## Connector inbound = ONE event row per update; routing UPDATEs, doesn't INSERT
+
+Telegram adapter's `logArrivalImmediate` INSERTs the arrival row (`status='received'`) AND stamps `event.metadata.arrival_event_id` with the inserted row id. `event-router.ts:routeConnectorEvent` calls `finalizeEv(projectId, event, args)` which UPDATEs that row in place via `updateConnectorEvent(arrivalId, patch)` — falls back to INSERT only if `arrival_event_id` is missing (non-Telegram source). Don't reintroduce direct `logEv` calls inside the routing pipeline — duplicates the row in the Events tab and breaks the single-row invariant. If you add a new connector adapter, it MUST stamp `arrival_event_id` on `event.metadata` to participate in the pattern (otherwise the router falls back to INSERT and re-creates the duplication for that adapter).
+
+Status vocabulary for `connector_events` (canonical):
+- `received` — set by adapter's arrival logger before routing
+- `routed` — successfully dispatched to an agent / handler
+- `unhandled` — no binding matched OR identity pending approval (check `drop_reason`: `no_binding` vs `identity_pending`)
+- `dropped` — identity blocked (`drop_reason: 'blocked'`)
+- `rate_limited` — throttled
+- `error` — outbound action failed
+
+There is **no `pending_approval` status** — that was removed (folded into `unhandled` + drop_reason). Don't reintroduce it. SSE live UI dedupes by row id (`events-tab.tsx`) — arrival broadcast then routing broadcast for the SAME id is upserted in place, not appended.
+
+## Action Request agent flow is ALWAYS detached — no `wait` tool
+
+`action_request_wait` was removed by user request. Agents only have `action_request_create` (fire-and-forget) + `action_request_list` (read-only). The operator decision flows to its destination handler (`outbound_approval` runs the queued send, `task_resume` re-invokes the task) independently — agent doesn't block. Don't reintroduce a wait tool or "pair with wait" hints anywhere — the user explicitly chose detach as the only model. If you need the decision back in the agent's conversation, use `task_resume`. Pubsub `arChannel('ar:{id}')` and `subscribeActionRequest` were also removed (no remaining subscriber); only the project channel `project:{pid}:ar` survives for SSE UI.
+
+## Telegram userbot: peer access_hash must be cached before forward / copy
+
+mtcute throws `Peer X is not found in local cache` when `forwardMessagesById` / `copyMessage` references a peer whose access_hash isn't in the SQLite session storage (`userbot-${connectorId}.session`). For userbot, peers are auto-cached when seen in inbound updates, dialogs, or explicit sends. Two common agent-prompt mistakes that surface this error:
+1. **sender confused with chat** — the agent saves `sender.id` (e.g. user 1309769651) as `from_chat_id`, but the message actually lived in a group (`-100xxxxxxxxxx`). The userbot may never have DM'd the user, so the user-peer isn't in cache for direct addressing. Fix the prompt to save `chat.id`, not `sender.id`.
+2. **stale id after session reset** — re-running the userbot Setup wizard creates a new session file; old peer cache is gone. `get_dialogs` repopulates active chats.
+
+Other related agent-prompt mistake: passing `connector_events.id` (UUID) as `message_id` — Telegram message ids are integers. The error mapper now translates these (codes `PEER_NOT_CACHED` + `INVALID_MESSAGE_ID`) with actionable hints, but the underlying issue is in the agent's prompt design — fix the prompt instead of papering over with retries.
+
+## `PluginLoader.getResolvedTools()` / `getPromptSegmentsWithMetaAsync()` MUST be called with projectId
+
+Loader filter `plugin.meta.project_scope === true && !enabled.has(pluginId)` cuma jalan kalau argument `projectId` di-pass. Tanpa projectId, loader masuk branch "return all" — semua tools + prompts dari plugin project-scoped bocor ke setiap project yang belum activate plugin tersebut. `AgentRunner` punya `this.runtimeId` (= projectId) — selalu pakai itu saat panggil loader query method dari runner / runtime path. Pernah ke-skip di 4 call site (`runner.ts:212, 422, 886, 907` — `run()` + `previewRun()`) sehingga `jiku.web-reader` / `jiku.analytics` / `jiku.social` muncul di project yang belum di-enable. Kalau nanti tambah call site baru ke loader query method (mis. di adapter custom, route handler, background job), grep dulu apakah ada sumber projectId yang bisa di-pass — jangan biarkan default `undefined` dipakai diam-diam. Skills + storage + onProjectPluginActivated sudah aman karena propagation/keying sudah filter di sumber lain.

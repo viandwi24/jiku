@@ -431,7 +431,7 @@ export const api = {
         body: JSON.stringify(body),
       }),
     get: (id: string) => request<{ connector: ConnectorItem }>(`/api/connectors/${id}`),
-    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string; outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }; log_mode: 'all' | 'active_binding_only' }>) =>
+    update: (id: string, body: Partial<{ display_name: string; credential_id: string | null; config: Record<string, unknown>; status: string; outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }; log_mode: 'all' | 'active_binding_only'; traffic_mode: 'inbound_only' | 'outbound_only' | 'both' }>) =>
       request<{ connector: ConnectorItem }>(`/api/connectors/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -1823,6 +1823,8 @@ export interface ConnectorItem {
   outbound_approval?: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number } | null
   /** Inbound logging gate: 'all' logs every event, 'active_binding_only' skips chats with no binding/target. */
   log_mode?: 'all' | 'active_binding_only'
+  /** Traffic gate: 'both' (default), 'inbound_only' (block outbound sends/actions), 'outbound_only' (drop inbound). */
+  traffic_mode?: 'inbound_only' | 'outbound_only' | 'both'
   created_at: string
   updated_at: string
 }

@@ -7,7 +7,7 @@ import { api } from '@/lib/api'
 import type { ConversationItemWithAgent } from '@/lib/api'
 import { Button, Input, Empty, EmptyMedia, EmptyTitle, EmptyDescription } from '@jiku/ui'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@jiku/ui/components/ui/alert-dialog.tsx'
-import { MessageSquare, Plus, ChevronDown, Trash2 } from 'lucide-react'
+import { MessageSquare, Plus, ChevronDown, Trash2, PanelLeftClose } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isToday, isYesterday, isThisWeek, isThisMonth, subDays } from 'date-fns'
 
@@ -16,6 +16,8 @@ const PAGE_SIZE = 10
 interface ConversationListPanelProps {
   companySlug: string
   projectSlug: string
+  /** Called when the user clicks the collapse button in the header. Parent owns the open/closed state. */
+  onCollapse?: () => void
 }
 
 // ── Group label ────────────────────────────────────────────────────────────────
@@ -175,7 +177,7 @@ function GroupSection({ label, items, base, pathname, router, isFirst, onDelete 
 
 // ── Main panel ─────────────────────────────────────────────────────────────────
 
-export function ConversationListPanel({ companySlug, projectSlug }: ConversationListPanelProps) {
+export function ConversationListPanel({ companySlug, projectSlug, onCollapse }: ConversationListPanelProps) {
   const router = useRouter()
   const pathname = usePathname()
   const queryClient = useQueryClient()
@@ -225,10 +227,23 @@ export function ConversationListPanel({ companySlug, projectSlug }: Conversation
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b shrink-0">
         <h2 className="font-semibold text-sm">Chats</h2>
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={() => router.push(base)}>
-          <Plus className="h-3.5 w-3.5" />
-          New
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={() => router.push(base)}>
+            <Plus className="h-3.5 w-3.5" />
+            New
+          </Button>
+          {onCollapse && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0"
+              onClick={onCollapse}
+              title="Hide conversation list"
+            >
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Search */}

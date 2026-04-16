@@ -52,6 +52,7 @@ export async function updateConnector(id: string, data: Partial<{
   default_agent_id: string | null
   outbound_approval: { mode: 'none' | 'always' | 'tagged'; default_expires_in_seconds?: number }
   log_mode: 'all' | 'active_binding_only'
+  traffic_mode: 'inbound_only' | 'outbound_only' | 'both'
 }>) {
   const rows = await db
     .update(connectors)
@@ -323,6 +324,26 @@ export async function logConnectorEvent(data: {
     .values({ ...data, direction: data.direction ?? 'inbound', status: data.status ?? 'received' })
     .returning()
   return rows[0]!
+}
+
+export async function updateConnectorEvent(
+  id: string,
+  patch: {
+    binding_id?: string | null
+    identity_id?: string | null
+    target_ref_keys?: Record<string, string> | null
+    metadata?: Record<string, unknown> | null
+    status?: string
+    drop_reason?: string | null
+    processing_ms?: number | null
+  },
+) {
+  const rows = await db
+    .update(connector_events)
+    .set(patch)
+    .where(eq(connector_events.id, id))
+    .returning()
+  return rows[0] ?? null
 }
 
 export async function getConnectorEventById(id: string) {

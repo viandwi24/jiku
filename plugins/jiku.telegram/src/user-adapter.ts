@@ -7,7 +7,11 @@ import type {
 } from '@jiku/types'
 import telegramifyMarkdown from 'telegramify-markdown'
 import { TelegramClient } from '@mtcute/bun'
-import { logConnectorEvent } from '@jiku-studio/db'
+import {
+  logConnectorEvent,
+  createConnectorTarget,
+  getConnectorTargetByName,
+} from '@jiku-studio/db'
 import { getFilesystemService } from '../../../apps/studio/server/src/filesystem/service.ts'
 import { UserbotQueue, type UserbotQueuePolicy } from './userbot-queue.ts'
 import { REACTIVATE_WAIT_MS, TELEGRAM_MAX_LENGTH } from './shared/constants.ts'
@@ -437,6 +441,21 @@ class TelegramUserAdapter extends ConnectorAdapter {
           console.log(`[telegram.user] inbound DROPPED by normalize (msg_id=${String(r?.id ?? 'n/a')}) — likely missing required field`)
           return
         }
+
+        // Auto-register forum topic target on first sighting (fire-and-forget).
+        // Idempotent via getConnectorTargetByName — safe to call on every
+        // topic message. Mirrors bot-adapter.ts:841. Needs connectorId + the
+        // event to have thread_id (only populated when isTopicMessage=true).
+        const tid = event.ref_keys['thread_id']
+        if (tid && ctx.connectorId) {
+          const chatTitleRaw = (r?.chat as { title?: string } | undefined)?.title
+          void this.autoRegisterForumTopic(
+            String(r?.chat?.id ?? ''),
+            chatTitleRaw,
+            tid,
+            ctx.connectorId,
+          )
+        }
         // Mirror bot adapter's pattern: arrival row first (status=received),
         // OUTSIDE the routing pipeline, so connector_events table reflects
         // truth even if the router stalls. Without this, no row at all
@@ -585,10 +604,19 @@ class TelegramUserAdapter extends ConnectorAdapter {
   private normalizeInbound(raw: unknown, connectorIdHint?: string): ConnectorEvent | null {
     const m = raw as Record<string, unknown> & {
       id?: number
-      chat?: { id?: number | bigint; chatType?: string; title?: string; username?: string; firstName?: string }
+      chat?: { id?: number | bigint; chatType?: string; title?: string; username?: string; firstName?: string; isForum?: boolean }
       sender?: { id?: number | bigint; isBot?: boolean; username?: string; firstName?: string }
       text?: string
       date?: Date | number
+      isTopicMessage?: boolean
+      isMention?: boolean
+      entities?: Array<{ type?: string; offset?: number; length?: number; userId?: number | bigint; user?: { id?: number | bigint } }> | null
+      replyToMessage?: {
+        threadId?: number | null
+        isForumTopic?: boolean
+        sender?: { id?: number | bigint } | null
+        senderId?: number | bigint | null
+      } | null
     }
     if (!m || typeof m !== 'object' || !m.id || !m.chat) return null
     const chatId = String(m.chat.id ?? '')
@@ -612,8 +640,58 @@ class TelegramUserAdapter extends ConnectorAdapter {
     // branches so downstream / UI sees 'private' for DMs instead of 'n/a'.
     const ct = m.chat.chatType
     const isGroup = ct === 'group' || ct === 'supergroup' || ct === 'channel' || ct === 'gigagroup'
-    const scopeKey = isGroup ? `group:${chatId}` : undefined
     const chatType: string = ct ?? 'private'  // No chatType ⇒ Peer is User ⇒ DM
+
+    // Forum topics: mtcute flags `isTopicMessage: true` on messages inside a
+    // topic and exposes the topic's root message id via `replyToMessage.threadId`.
+    // Grammy's `message_thread_id` is the equivalent. Without this the router
+    // can't match topic-scoped bindings (ref_keys mismatch → event dropped),
+    // and auto-pairing creates chat-level drafts that ignore which topic the
+    // message came from. Mirrors bot-adapter.ts:1001 + scope_key convention.
+    const threadId = m.isTopicMessage && m.replyToMessage?.threadId != null
+      ? String(m.replyToMessage.threadId)
+      : undefined
+    const scopeKey = isGroup
+      ? (threadId ? `group:${chatId}:topic:${threadId}` : `group:${chatId}`)
+      : undefined
+
+    // Mention + reply-to-self detection — parity with bot-adapter.ts:918-944
+    // so binding `trigger_mode='mention'` works the same way on userbot as on
+    // bot. Layered strategy:
+    //   1. `m.isMention` — mtcute's precomputed "self is mentioned" flag,
+    //      populated server-side or from the entity table. Authoritative.
+    //   2. Entity scan fallback — covers cases where `isMention` is absent or
+    //      stale by cross-checking `@myUsername` + user-id text mentions.
+    //      Also handles forwards / edited messages where the precomputed flag
+    //      can drift.
+    //   3. `replyToMessage.sender.id === myUserId` → `bot_replied_to`. Note:
+    //      Telegram also attaches a synthetic `replyToMessage` for forum
+    //      topic membership (threadId = topic root, sender = topic creator).
+    //      That's captured here too if the topic-root sender happens to be
+    //      the userbot — which is semantically fine: we own the topic root.
+    let botMentioned = m.isMention === true
+    if (!botMentioned && Array.isArray(m.entities) && typeof m.text === 'string') {
+      const text = m.text
+      const username = (inst?.myUsername ?? this.myUsername)?.toLowerCase()
+      const uid = inst?.myUserId ?? this.myUserId
+      for (const ent of m.entities) {
+        if (!ent || typeof ent.type !== 'string') continue
+        if (ent.type === 'mention' && username && typeof ent.offset === 'number' && typeof ent.length === 'number') {
+          const slice = text.slice(ent.offset, ent.offset + ent.length).toLowerCase()
+          if (slice === `@${username}`) { botMentioned = true; break }
+        }
+        // mtcute exposes user-id text-mention as `type: 'text_mention'` on
+        // the wrapped entity (same name grammy uses at the Bot API layer);
+        // older builds surface it as `mentionName`. Accept both.
+        if ((ent.type === 'text_mention' || ent.type === 'mentionName') && uid) {
+          const entUid = ent.user?.id ?? ent.userId
+          if (entUid != null && String(entUid) === uid) { botMentioned = true; break }
+        }
+      }
+    }
+    const replySenderId = m.replyToMessage?.sender?.id ?? m.replyToMessage?.senderId
+    const myUid = inst?.myUserId ?? this.myUserId
+    const botRepliedTo = replySenderId != null && myUid != null && String(replySenderId) === myUid
 
     return {
       type: 'message',
@@ -623,7 +701,11 @@ class TelegramUserAdapter extends ConnectorAdapter {
       // Putting a UUID here makes EVERY event silently drop because no
       // plugin_id will match (bot adapter pattern is the same — `this.id`).
       connector_id: this.id,
-      ref_keys: { message_id: String(m.id), chat_id: chatId },
+      ref_keys: {
+        message_id: String(m.id),
+        chat_id: chatId,
+        ...(threadId ? { thread_id: threadId } : {}),
+      },
       scope_key: scopeKey,
       sender: {
         external_id: String(m.sender?.id ?? ''),
@@ -635,6 +717,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
       metadata: {
         chat_title: m.chat.title ?? m.chat.firstName,
         chat_type: chatType,
+        ...(botMentioned ? { bot_mentioned: true } : {}),
+        ...(botRepliedTo ? { bot_replied_to: true } : {}),
         // Plan 25 add-on — reply context. mtcute exposes RepliedMessageInfo
         // via `m.replyToMessage` (getter). Snapshot the useful fields so the
         // event-router can inject a Reply chain into connector_context. The
@@ -654,7 +738,19 @@ class TelegramUserAdapter extends ConnectorAdapter {
     if (!client) return { success: false, error: target.connector_id
       ? `No active userbot instance for connector_id=${target.connector_id}`
       : 'Userbot client not connected' }
-    const chatId = target.ref_keys['chat_id']
+
+    // Resolve chat + thread (topic) — explicit ref_keys > scope_key fallback.
+    // Same precedence as TelegramBotAdapter.sendMessage (bot-adapter.ts:1565-1575).
+    let chatId = target.ref_keys['chat_id']
+    let threadId = target.ref_keys['thread_id']
+    const scope = content.target_scope_key ?? target.scope_key
+    if (scope) {
+      const resolved = this.targetFromScopeKey(scope)
+      if (resolved) {
+        chatId = chatId ?? resolved.ref_keys['chat_id']
+        threadId = threadId ?? resolved.ref_keys['thread_id']
+      }
+    }
     if (!chatId) return { success: false, error: 'Missing chat_id' }
     const text = content.text ?? ''
     if (!text) return { success: false, error: 'Empty text' }
@@ -676,6 +772,38 @@ class TelegramUserAdapter extends ConnectorAdapter {
         opts[k] = v
       }
     }
+
+    // Build mtcute `replyTo` — single NUMBER (mtcute v0.27 `sendText` opts
+    // accept only `replyTo: number | Message`, plain `{messageId, threadId}`
+    // crashes at send-common.js:27). Order of preference:
+    //  1. Caller-provided `content.params.replyTo` (already in opts) wins if
+    //     it's already a number or Message instance — agent's explicit choice.
+    //  2. Literal reply to the user's inbound message via
+    //     `target.reply_to_ref_keys.message_id`. Telegram server auto-inherits
+    //     the topic from the replied message AND shows the chat-bubble quote.
+    //  3. Topic-route fallback via `threadId` — no message to reply to, just
+    //     drop the message into the right topic (replyTo=threadId is mtcute's
+    //     idiom for this; see answerText in send-answer.js:9).
+    const replyToMsgId = target.reply_to_ref_keys?.['message_id']
+    const existingReplyTo = opts['replyTo']
+    const callerAlreadySet = typeof existingReplyTo === 'number'
+      || (existingReplyTo && typeof existingReplyTo === 'object' && 'id' in (existingReplyTo as Record<string, unknown>))
+    if (!callerAlreadySet) {
+      if (replyToMsgId) {
+        opts['replyTo'] = Number(replyToMsgId)
+      } else if (threadId !== undefined) {
+        opts['replyTo'] = Number(threadId)
+      } else {
+        // If existing is a bogus object (e.g. caller passed `{messageId}` form
+        // which would crash mtcute), strip it rather than propagate the crash.
+        if (existingReplyTo && typeof existingReplyTo === 'object') {
+          const obj = existingReplyTo as Record<string, unknown>
+          if (typeof obj['messageId'] === 'number') opts['replyTo'] = obj['messageId']
+          else delete opts['replyTo']
+        }
+      }
+    }
+
     const peer = chatId.startsWith('-') || /^\d+$/.test(chatId) ? Number(chatId) : chatId
 
     // simulate_typing for userbot: real-account typing indicator + dwell time
@@ -753,6 +881,34 @@ class TelegramUserAdapter extends ConnectorAdapter {
     if (!chatId) return
     const peer: string | number = chatId.startsWith('-') || /^\d+$/.test(chatId) ? Number(chatId) : chatId
 
+    // Reply + topic routing — mtcute v0.27 `sendText` opts quirk:
+    //   - `replyTo` accepts a NUMBER (message id) OR a wrapped Message
+    //     instance. Plain objects like `{ messageId, threadId }` crash with
+    //     `params.replyTo?.chat.inputPeer` (send-common.js:27) because mtcute
+    //     tries to read `.chat.inputPeer` off the object to fill replyToPeer.
+    //   - The TL `top_msg_id` field (for forum topics) is NOT exposed at the
+    //     high-level send API in this version. mtcute's own `answerText`
+    //     (send-answer.js:9) hacks around this by using `replyTo = threadId`
+    //     for topic messages — i.e. "reply to the topic's root message" to
+    //     route the send into the topic.
+    //
+    // Strategy:
+    //   1. If we have the user's message id → `replyTo: <messageId>`.
+    //      Telegram server auto-inherits the topic from the replied message,
+    //      AND the chat bubble shows a "replying to …" quote. Best of both.
+    //   2. Else if only threadId is available → `replyTo: <threadId>` — just
+    //      route into the topic (no visual reply). Fallback for cases where
+    //      we somehow lose the source message_id.
+    //   3. Else → no opts, send naked.
+    const replyToMsgId = ctx.event.ref_keys['message_id']
+    const threadId = ctx.event.ref_keys['thread_id']
+    const sendOpts: Record<string, unknown> = {}
+    if (replyToMsgId) {
+      sendOpts['replyTo'] = Number(replyToMsgId)
+    } else if (threadId) {
+      sendOpts['replyTo'] = Number(threadId)
+    }
+
     const cExt = client as MtcuteClient & {
       editMessage?: (opts: { chatId: string | number | bigint; message: number; text: string }) => Promise<unknown>
     }
@@ -765,7 +921,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
       try {
         const queued = await queue.enqueue<{ id?: number } | undefined>(
           { chatId },
-          () => client.sendText(peer, '⌛') as Promise<{ id?: number } | undefined>,
+          () => client.sendText(peer, '⌛', sendOpts) as Promise<{ id?: number } | undefined>,
           'send_message',
         )
         const mid = queued.result?.id
@@ -903,7 +1059,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
           try {
             const queued = await queue.enqueue<{ id?: number } | undefined>(
               { chatId },
-              () => client.sendText(peer, '⌛') as Promise<{ id?: number } | undefined>,
+              () => client.sendText(peer, '⌛', sendOpts) as Promise<{ id?: number } | undefined>,
               'send_message',
             )
             const mid = queued.result?.id
@@ -1002,7 +1158,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
         try {
           const queued = await queue.enqueue<{ id?: number } | undefined>(
             { chatId },
-            () => client.sendText(peer, finalText) as Promise<{ id?: number } | undefined>,
+            () => client.sendText(peer, finalText, sendOpts) as Promise<{ id?: number } | undefined>,
             'send_message',
           )
           if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
@@ -1015,7 +1171,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
       try {
         const queued = await queue.enqueue<{ id?: number } | undefined>(
           { chatId },
-          () => client.sendText(peer, finalText) as Promise<{ id?: number } | undefined>,
+          () => client.sendText(peer, finalText, sendOpts) as Promise<{ id?: number } | undefined>,
           'send_message',
         )
         if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
@@ -1092,6 +1248,94 @@ class TelegramUserAdapter extends ConnectorAdapter {
     return this.client.getHistory(peer, { limit, offsetId })
   }
 
+  // ─── Forum topic auto-registration ──────────────────────────────────────
+  //
+  // Parity with TelegramBotAdapter.autoRegisterForumTopic (bot-adapter.ts:696).
+  // On first sighting of a topic message, materialise a `connector_target`
+  // row so the topic is rememberable + addressable in the Channels UI + by
+  // name in outbound tools. UX: user sees "Bitorex → topic-17" show up
+  // automatically and can rename/annotate it.
+  //
+  // Caveat: mtcute's inbound Message payload does NOT carry the forum topic
+  // name (grammy bot surfaces it via `reply_to_message.forum_topic_created.name`;
+  // mtcute exposes only `isForumTopic + threadId`). We use the fallback name
+  // `topic-<threadId>` and leave `thread_title: null`. Enriching via
+  // `client.getForumTopics(peer)` is a follow-up — it would add one RPC per
+  // first-sighting and needs FLOOD_WAIT handling, so not free.
+
+  private slugifyChannelTitle(title: string): string {
+    return title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 50) || 'chat'
+  }
+
+  private async autoRegisterForumTopic(
+    chatId: string,
+    chatTitle: string | undefined,
+    threadId: string,
+    connectorId: string,
+  ): Promise<void> {
+    if (!this.projectId) return
+    const chatSlug = this.slugifyChannelTitle(chatTitle ?? `chat-${chatId}`)
+    const targetName = `${chatSlug}__topic-${threadId}`
+    try {
+      const existing = await getConnectorTargetByName(this.projectId, targetName, connectorId).catch(() => null)
+      if (existing) return
+      await createConnectorTarget({
+        connector_id: connectorId,
+        name: targetName,
+        display_name: `${chatTitle ?? chatId} → topic-${threadId}`,
+        description: `Auto-registered forum topic (userbot) — first seen ${new Date().toISOString()}. Rename via UI if needed.`,
+        ref_keys: { chat_id: chatId, thread_id: threadId },
+        scope_key: `group:${chatId}:topic:${threadId}`,
+        metadata: {
+          auto_registered: true,
+          adapter: 'jiku.telegram.user',
+          chat_title: chatTitle,
+          thread_title: null,
+          thread_id: threadId,
+          registered_at: new Date().toISOString(),
+        },
+      })
+      console.log(`[telegram.user] auto-registered topic target "${targetName}" (group:${chatId}:topic:${threadId})`)
+    } catch (err) {
+      console.warn('[telegram.user] failed to auto-register topic target:', err)
+    }
+  }
+
+  // ─── Scope helpers (forum topic-aware) ─────────────────────────────────
+  //
+  // Parity with TelegramBotAdapter.computeScopeKey / targetFromScopeKey
+  // (bot-adapter.ts:178-200). Must match the same `group:{chatId}:topic:{threadId}`
+  // grammar so bindings + outbound routing are interchangeable between
+  // bot and userbot for the same chat/topic.
+
+  override computeScopeKey(event: { ref_keys: Record<string, string>; metadata?: Record<string, unknown> }): string | undefined {
+    const chatId = event.ref_keys['chat_id']
+    const chatType = event.metadata?.['chat_type'] as string | undefined
+    const threadId = event.ref_keys['thread_id']
+    if (!chatId) return undefined
+    if (chatType === 'private') return undefined  // DM
+    const base = `group:${chatId}`
+    if (threadId) return `${base}:topic:${threadId}`
+    return base
+  }
+
+  override targetFromScopeKey(scopeKey: string): ConnectorTarget | null {
+    const parts = scopeKey.split(':')
+    if (parts[0] !== 'group') return null
+    const chatId = parts[1]
+    if (!chatId) return null
+    const ref_keys: Record<string, string> = { chat_id: chatId }
+    const topicIdx = parts.indexOf('topic')
+    if (topicIdx !== -1 && parts[topicIdx + 1]) {
+      ref_keys['thread_id'] = parts[topicIdx + 1]!
+    }
+    return { ref_keys }
+  }
+
   // ─── Plan 24 Phase 4 — Action registry ────────────────────────────────────
 
   override readonly actions: ConnectorAction[] = [
@@ -1140,7 +1384,20 @@ class TelegramUserAdapter extends ConnectorAdapter {
         chat_id: { type: 'string', description: 'Chat ID', required: true },
         message_id: { type: 'string', description: 'Message ID', required: true },
         text: { type: 'string', description: 'New text', required: true },
-        markdown: { type: 'boolean', description: 'Parse text as MarkdownV2', required: false },
+        markdown: { type: 'boolean', description: 'Parse text as MarkdownV2. Mutually exclusive with `entities`.', required: false },
+        entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the new text — preserves bold/italic/link/spoiler/custom_emoji. Custom_emoji animates when self-bot is Premium. Mutually exclusive with `markdown`.', required: false },
+      },
+    },
+    {
+      id: 'send_text',
+      name: 'Send Text',
+      description: 'Send a plain text message with optional entities (bold/italic/link/spoiler/custom_emoji). Use this when the text is stored in a DB (editable by AI later) rather than forwarded from an existing message. For custom_emoji animation, self-bot must be Premium. For forwarding an existing message, use `copy_message` instead.',
+      params: {
+        chat_id: { type: 'string', description: 'Chat ID', required: true },
+        text: { type: 'string', description: 'Message text (Telegram cap: 4096 chars)', required: true },
+        markdown: { type: 'boolean', description: 'Parse text as MarkdownV2. Mutually exclusive with `entities`.', required: false },
+        entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the text — preserves bold/italic/link/spoiler/custom_emoji. Custom_emoji animates when self-bot is Premium. Mutually exclusive with `markdown`.', required: false },
+        reply_to_message_id: { type: 'string', description: 'Message id in the same chat to reply to', required: false },
       },
     },
     // ─── Parity with TelegramBotAdapter ────────────────────────────────────
@@ -1154,7 +1411,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
         path: { type: 'string', description: 'Local path on the project virtual disk (e.g. "/assets/banner.jpg"). Mutually exclusive with `url` / `file_id`.', required: false },
         file_id: { type: 'string', description: 'File id / remote reference the userbot already has. Ideal for re-sending media from an earlier message without re-uploading. Mutually exclusive with `url` / `path`.', required: false },
         caption: { type: 'string', description: 'Caption text (Telegram cap: 1024 chars)', required: false },
-        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
+        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2. Mutually exclusive with `caption_entities`.', required: false },
+        caption_entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the caption — use to preserve bold/italic/link/spoiler/custom_emoji that markdown cannot express. When the self-bot account is Premium, custom_emoji entities ANIMATE in the delivered message. Mutually exclusive with `markdown`.', required: false },
       },
     },
     {
@@ -1168,7 +1426,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
         file_id: { type: 'string', description: 'File id the userbot has seen before. Mutually exclusive with `url` / `path`.', required: false },
         filename: { type: 'string', description: 'Override file name shown in Telegram', required: false },
         caption: { type: 'string', description: 'Caption text', required: false },
-        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
+        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2. Mutually exclusive with `caption_entities`.', required: false },
+        caption_entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the caption — preserves bold/italic/link/spoiler/custom_emoji. Custom_emoji animates when self-bot is Premium. Mutually exclusive with `markdown`.', required: false },
       },
     },
     {
@@ -1181,7 +1440,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
         path: { type: 'string', description: 'Local path on the project virtual disk (e.g. "/videos/demo.mp4"). Mutually exclusive with `url` / `file_id`.', required: false },
         file_id: { type: 'string', description: 'File id the userbot has seen before. Mutually exclusive with `url` / `path`.', required: false },
         caption: { type: 'string', description: 'Caption text (Telegram cap: 1024 chars)', required: false },
-        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
+        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2. Mutually exclusive with `caption_entities`.', required: false },
+        caption_entities: { type: 'array', description: 'Raw Telegram MessageEntity[] for the caption — preserves bold/italic/link/spoiler/custom_emoji. Custom_emoji animates when self-bot is Premium. Mutually exclusive with `markdown`.', required: false },
       },
     },
     {
@@ -1190,7 +1450,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
       description: 'Send multiple photos, videos, or documents as a single album. Photos and videos can be mixed (max 10 items). Only the first item caption is shown prominently. Each item\'s source = one of `url` / `path` / `file_id`.',
       params: {
         chat_id: { type: 'string', description: 'Chat ID', required: true },
-        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, path?: string, file_id?: string, caption?: string, caption_markdown?: boolean }. Max 10 items. Each item must have exactly ONE of `url` / `path` / `file_id`.', required: true },
+        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, path?: string, file_id?: string, caption?: string, caption_markdown?: boolean, caption_entities?: MessageEntity[] }. Max 10 items. Each item must have exactly ONE of `url` / `path` / `file_id`. `caption_entities` preserves bold/italic/link/custom_emoji (animated when self-bot is Premium); mutually exclusive with `caption_markdown` per item.', required: true },
       },
     },
     {
@@ -1311,14 +1571,40 @@ class TelegramUserAdapter extends ConnectorAdapter {
         if (!c.editMessage) return { success: false, error: 'mtcute client does not expose editMessage in this build' }
         const text = String(params['text'] ?? '')
         const useMd = params['markdown'] === true
+        const entities = params['entities'] as unknown[] | undefined
+        if (useMd && entities) return { success: false, error: 'markdown and entities are mutually exclusive', hint: 'Pick one: markdown (convenience) or entities (precise control, required for custom_emoji).' }
         const finalText = useMd ? telegramifyMarkdown(text, 'escape') : text
+        // mtcute v0.27: `text` is InputText = string | TextWithEntities.
+        // When entities are provided, pass `{ text, entities }` object instead
+        // of string. parseMode becomes nonsensical in that case.
+        const textArg: unknown = entities ? { text: finalText, entities } : finalText
         const queued = await enqueue({ chatId: String(params['chat_id']) }, () => c.editMessage!({
           chatId: peerOf(params['chat_id']),
           message: Number(params['message_id']),
-          text: finalText,
+          text: textArg as string,
           parseMode: useMd ? 'MarkdownV2' : undefined,
         }))
         return { success: true, result: queued.result, delay_ms_applied: queued.delay_ms_applied }
+      }
+
+      if (actionId === 'send_text') {
+        const text = String(params['text'] ?? '')
+        if (!text) return { success: false, error: 'send_text requires non-empty `text`' }
+        const useMd = params['markdown'] === true
+        const entities = params['entities'] as unknown[] | undefined
+        if (useMd && entities) return { success: false, error: 'markdown and entities are mutually exclusive', hint: 'Pick one: markdown (convenience) or entities (precise control, required for custom_emoji).' }
+        const finalText = useMd ? telegramifyMarkdown(text, 'escape') : text
+        // mtcute v0.27 `sendText` accepts `InputText = string | TextWithEntities`.
+        // Pass { text, entities } to preserve custom_emoji + formatting.
+        const textArg: unknown = entities ? { text: finalText, entities } : finalText
+        const opts: Record<string, unknown> = {}
+        if (useMd) opts['parseMode'] = 'MarkdownV2'
+        if (params['reply_to_message_id']) opts['replyTo'] = Number(params['reply_to_message_id'])
+        const queued = await enqueue({ chatId: String(params['chat_id']) }, () =>
+          client.sendText(peerOf(params['chat_id']) as number, textArg as string, opts) as Promise<{ id?: number; chat?: { id?: number | bigint } } | undefined>
+        )
+        const res = queued.result
+        return { success: true, message_id: res?.id ? String(res.id) : undefined, chat_id: res?.chat?.id ? String(res.chat.id) : undefined, result: res, delay_ms_applied: queued.delay_ms_applied }
       }
 
       // ─── Parity actions ──────────────────────────────────────────────────
@@ -1366,9 +1652,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
         if (!send) return { success: false, error: 'mtcute build does not expose sendPhoto / sendMedia' }
         const caption = params['caption'] as string | undefined
         const useMd = params['markdown'] === true
+        const entities = params['caption_entities'] as unknown[] | undefined
+        if (useMd && entities) return { success: false, error: 'markdown and caption_entities are mutually exclusive', hint: 'Pick one: markdown (convenience) or caption_entities (precise control, required for custom_emoji).' }
         const opts: Record<string, unknown> = {}
         if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
         if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
+        if (entities) opts['entities'] = entities
         const resolved = await resolveMediaInput({ url, path, file_id })
         if (resolved.err) return { success: false, error: resolved.err }
         const queued = await enqueue({ chatId: String(params['chat_id']) }, () => send.call(cExt, peerOf(params['chat_id']), resolved.value, opts))
@@ -1383,9 +1672,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
         if (!send) return { success: false, error: 'mtcute build does not expose sendDocument / sendMedia' }
         const caption = params['caption'] as string | undefined
         const useMd = params['markdown'] === true
+        const entities = params['caption_entities'] as unknown[] | undefined
+        if (useMd && entities) return { success: false, error: 'markdown and caption_entities are mutually exclusive', hint: 'Pick one: markdown (convenience) or caption_entities (precise control, required for custom_emoji).' }
         const opts: Record<string, unknown> = {}
         if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
         if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
+        if (entities) opts['entities'] = entities
         if (params['filename']) opts['fileName'] = String(params['filename'])
         const resolved = await resolveMediaInput({ url, path, file_id })
         if (resolved.err) return { success: false, error: resolved.err }
@@ -1406,9 +1698,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
         }
         const caption = params['caption'] as string | undefined
         const useMd = params['markdown'] === true
+        const entities = params['caption_entities'] as unknown[] | undefined
+        if (useMd && entities) return { success: false, error: 'markdown and caption_entities are mutually exclusive', hint: 'Pick one: markdown (convenience) or caption_entities (precise control, required for custom_emoji).' }
         const opts: Record<string, unknown> = {}
         if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
         if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
+        if (entities) opts['entities'] = entities
         const resolved = await resolveMediaInput({ url, path, file_id })
         if (resolved.err) return { success: false, error: resolved.err }
         const queued = await enqueue({ chatId: String(params['chat_id']) }, () => {
@@ -1424,19 +1719,22 @@ class TelegramUserAdapter extends ConnectorAdapter {
         if (!cExt.sendMediaGroup) {
           return { success: false, error: 'mtcute build does not expose sendMediaGroup' }
         }
-        const items = params['media'] as Array<{ type: 'photo' | 'video' | 'document'; url?: string; path?: string; file_id?: string; caption?: string; caption_markdown?: boolean }> | undefined
+        const items = params['media'] as Array<{ type: 'photo' | 'video' | 'document'; url?: string; path?: string; file_id?: string; caption?: string; caption_markdown?: boolean; caption_entities?: unknown[] }> | undefined
         if (!Array.isArray(items) || items.length === 0) {
           return { success: false, error: 'send_media_group requires a non-empty `media` array' }
         }
         if (items.length > 10) {
           return { success: false, error: 'Telegram albums accept at most 10 items' }
         }
-        // Build `InputMediaLike[]` — each item has { type, file, caption?, parseMode? }.
+        // Build `InputMediaLike[]` — each item has { type, file, caption?, parseMode?, entities? }.
         const medias: unknown[] = []
         for (let i = 0; i < items.length; i++) {
           const it = items[i]!
           if (!['photo', 'video', 'document'].includes(it.type)) {
             return { success: false, error: `media[${i}].type must be one of "photo" | "video" | "document" (got "${it.type}")` }
+          }
+          if (it.caption_markdown && it.caption_entities) {
+            return { success: false, error: `media[${i}]: caption_markdown and caption_entities are mutually exclusive`, hint: 'Pick one per item: caption_markdown (convenience) or caption_entities (precise control, required for custom_emoji).' }
           }
           const resolved = await resolveMediaInput(it)
           if (resolved.err) return { success: false, error: `media[${i}]: ${resolved.err}` }
@@ -1445,6 +1743,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
             entry['caption'] = it.caption_markdown ? telegramifyMarkdown(it.caption, 'escape') : it.caption
             if (it.caption_markdown) entry['parseMode'] = 'MarkdownV2'
           }
+          if (it.caption_entities) entry['entities'] = it.caption_entities
           medias.push(entry)
         }
         const queued = await enqueue({ chatId: String(params['chat_id']) }, () =>

@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-04-16 — Telegram userbot: `replyTo` must be a plain number (not object) in mtcute v0.27 + single-value semantic
+
+Field bug from the prior streaming-reply fix: passing `replyTo: { messageId, threadId }` as a plain object crashed every send with `TypeError: undefined is not an object (evaluating 'params.replyTo?.chat.inputPeer')` at `@mtcute/core/send-common.js:27`. mtcute's high-level API overloads `replyTo`:
+
+- `number` → treated as a message id (TL `replyToMsgId`), `replyToPeerId` left undefined
+- `Message` instance → extracts `.id` AND reads `.chat.inputPeer` for `replyToPeerId`
+- anything else → crash at `.chat.inputPeer` access
+
+The TL construct (`inputReplyToMessage` at send-common.js:45-54) does NOT expose `top_msg_id` at all in this version — so there's no high-level way to say "reply to message X AND route to topic Y simultaneously". mtcute's own `answerText` (send-answer.js) hacks around this by using `replyTo = threadId` for topic messages (i.e. "reply to the topic's root message") which loses the quote-bubble UX.
+
+Fix — single-value `replyTo` with preference order:
+1. **Message id present** (`ctx.event.ref_keys.message_id` for streaming / `target.reply_to_ref_keys.message_id` for sendMessage) → `replyTo: Number(messageId)`. Telegram server auto-inherits the topic from the replied message, AND renders the "replying to…" quote. Best of both.
+2. **Only threadId** → `replyTo: Number(threadId)`. Posts into the topic (no quote). Matches mtcute's `answerText` idiom.
+3. **Neither** → no `replyTo`.
+
+`sendMessage()` also defends against agent-supplied `content.params.replyTo: { messageId: ... }` objects by normalising to number before the value reaches mtcute — otherwise the same crash surfaces from the tool-call path.
+
+Alternative considered: use mtcute's `client.replyText(message, text, params)` shortcut directly. Rejected because it requires the live `Message` instance from `event.raw_payload` — fragile if any pipeline step JSON-serialises the event.
+
+Files: `plugins/jiku.telegram/src/user-adapter.ts` (handleResolvedEvent `sendOpts` builder, sendMessage `replyTo` normaliser).
+
+## 2026-04-16 — Telegram userbot: streaming handoff threads threadId + literal reply (topic messages now land in the right topic, visible "replying to…" quote)
+
+Follow-on from the topic/thread_id inbound fix: binding routed correctly but the agent's reply still landed in the forum's General topic because `handleResolvedEvent` (`user-adapter.ts:859`) was calling `client.sendText(peer, '⌛')` without opts on four separate paths — initial placeholder, continuation placeholder (overflow split), edit-failure fallback, and no-edit final fallback. mtcute defaults to General when `replyTo` is absent. Separately, the userbot reply had no "replying to…" chat-bubble quote, so from the user's side there was nothing visually tying the bot's response to the message that triggered it (bot adapter has done this since Plan 22 via `reply_parameters`).
+
+Fix — parity with `bot-adapter.ts:1679-1686`:
+- Hoist `replyToMsgId = ctx.event.ref_keys['message_id']` + `threadId = ctx.event.ref_keys['thread_id']` at the top of `handleResolvedEvent`.
+- Build one `sendOpts: { replyTo: { messageId, threadId } }` (conditional — threadId only when message originated in a topic) and thread it into ALL FOUR `client.sendText` call sites. `editMessage` calls don't need the opts — the targeted message already carries its topic + reply context from the placeholder send.
+- Also extended `sendMessage()` (non-streaming outbound, `user-adapter.ts:720`) to consume `target.reply_to_ref_keys.message_id` when building `opts.replyTo`. Base-merge precedence: whatever the caller set via `content.params.replyTo` wins; we layer `messageId` / `threadId` on top only when they aren't already present. Preserves agent override ability for cases like "reply to a different message in the same topic".
+
+UX: placeholder `⌛` now appears as a reply to the user's inbound, landing in the same topic. Edit-in-place progresses the same message. Final text still attached as a reply quote → looks exactly like a normal Telegram bot responding.
+
+Files: `plugins/jiku.telegram/src/user-adapter.ts` (handleResolvedEvent header + 4 sendText calls + sendMessage replyTo builder).
+
+## 2026-04-16 — Telegram userbot: mention + reply-to-self detection (binding `trigger_mode='mention'` now works)
+
+Userbot inbound normalize was silently breaking the mention-gated binding mode. `event-router.ts:243-253` checks `event.metadata.bot_mentioned === true` when `trigger_mode='mention'` and no custom tokens configured — bot adapter populated this since Plan 22 (`bot-adapter.ts:918-935`), userbot never did. Result: every mention-filtered userbot binding silently skipped all events in groups (because `bot_mentioned` was undefined → filter returns false → binding rejected).
+
+Fix (`user-adapter.ts normalizeInbound`) — layered detection for maximum reliability:
+1. **Primary: `m.isMention === true`** — mtcute's precomputed "self is mentioned" flag (computed server-side + entity-table aware). Authoritative when present.
+2. **Entity scan fallback** — iterate `m.entities[]` for `type === 'mention'` substring-matching `@<myUsername>` (case-insensitive), plus `type === 'text_mention' | 'mentionName'` matching `entity.user?.id ?? entity.userId === myUserId`. Accepts both naming conventions because mtcute build variance surfaces user-id text mentions under either name.
+3. **`bot_replied_to`** — true when `m.replyToMessage.sender.id === myUserId` (falls back to `senderId` field). Covers "user replied to a message I sent earlier" semantics. Also correctly fires for forum-topic-root messages the userbot itself originated (semantically a reply-to-self).
+
+Metadata fields are spread conditionally — only present when true (matches bot adapter shape exactly so event-router's equality check passes identically for both adapters).
+
+Verified: binding `trigger_mode='mention'` with empty `trigger_mention_tokens` now gates on the adapter-populated flag identically between bot and userbot. Custom-token mode (tokens non-empty) was already adapter-agnostic — router does substring match on `event.content.text` directly.
+
+Files: `plugins/jiku.telegram/src/user-adapter.ts` (normalizeInbound, ~45 new lines).
+
+## 2026-04-16 — Telegram userbot: forum topic / thread_id parity with bot
+
+Reported bug: userbot inbound in a forum topic never routed to a topic-scoped binding — event-router matched `ref_keys.thread_id` strictly and userbot was never populating it. Bot adapter (grammy) has had topic support since Plan 22 (see `bot-adapter.ts:1001` + `computeScopeKey` + `autoRegisterForumTopic`); userbot was stuck at chat-level scope.
+
+Root cause: `normalizeInbound()` in `user-adapter.ts` built `ref_keys` with `message_id` + `chat_id` only, and set `scope_key = group:${chatId}` unconditionally. mtcute DOES expose topic info on inbound — `msg.isTopicMessage: boolean` + `msg.replyToMessage?.threadId: number` (already captured into `metadata.reply_to.thread_id` by `extractMtcuteReply`, but not surfaced to the router as a ref_key).
+
+- **Inbound extraction** (`user-adapter.ts:585 normalizeInbound`): read `m.isTopicMessage && m.replyToMessage?.threadId`, add `thread_id` to `ref_keys` and `:topic:<id>` to `scope_key`. Matches grammy's `msg.message_thread_id` branch exactly.
+- **Scope helpers** (`user-adapter.ts`): added `override computeScopeKey` + `override targetFromScopeKey` mirroring bot-adapter's grammar (`group:{chatId}[:topic:{threadId}]`). This is what lets outbound tools resolve a scope_key string back to `{ chat_id, thread_id }` when the agent supplies `target_scope_key` directly.
+- **Outbound routing** (`user-adapter.ts sendMessage`): resolve `threadId` with explicit-`ref_keys > scope_key fallback` precedence (mirrors `bot-adapter.ts:1565-1575`), then forward into mtcute's `opts.replyTo` as `InputReplyTo` shape — merges with whatever reply shape the caller may have passed. `replyTo: { threadId }` is the correct mtcute idiom for "send into this topic without replying to a specific message".
+- **Auto-register topic target** (`user-adapter.ts autoRegisterForumTopic`): on first topic message sighting, fire-and-forget create a `connector_target` row keyed `<chat-slug>__topic-<threadId>` so the topic is addressable by name AND remembered in Channels UI. Matches bot adapter pattern at `bot-adapter.ts:696-727`. Caveat: mtcute's inbound Message does NOT carry the forum topic name (grammy has `reply_to_message.forum_topic_created.name`; mtcute exposes only `isForumTopic + threadId`). We use fallback name `topic-<threadId>` and leave `thread_title: null`. Enriching via `client.getForumTopics(peer)` is a follow-up — adds one RPC per first-sighting and needs FLOOD_WAIT handling.
+
+Bot adapter verified unchanged — inbound (`bot-adapter.ts:1001`), scope helpers (`:178-200`), outbound (`:1565-1580`), auto-register (`:696-727`), action `thread_id` params (`:402,506,522,550,590`), `getParamSchema` (`:1631`) all intact.
+
+Files: `plugins/jiku.telegram/src/user-adapter.ts`.
+
+Follow-ups (see `tasks.md`):
+- Enrich userbot auto-registered topic targets with real names via `client.getForumTopics(peer)` — single RPC per first-sighting, needs FLOOD_WAIT guard.
+- Extract `slugifyChannelTitle` into `shared/helpers.ts` — currently duplicated between bot + userbot adapters.
+- Userbot action registry (`forward_message`, `send_photo`, `send_video`, `send_media_group`, `copy_message`, etc.) still ignores `thread_id` param — add topic targeting to each, matching bot's action schemas at `bot-adapter.ts:228+`.
+- Userbot `getParamSchema()` override — currently missing entirely; agents can't self-discover topic/reply params.
+
 ## 2026-04-16 — Plan 26: `jiku.sandbox` plugin + `run_js` tool + `RuntimeContext.llm` bridge
 
 System-scoped plugin for sandboxed JS/TS execution. Agents get one compute primitive (`run_js`) with three source modes — raw `code`, disk `path`, or `prompt` (LLM generates code from goal inside the tool, so agent context doesn't eat the full source). Sandbox is QuickJS isolate with hard memory/stack/CPU limits; no Node APIs leak in.

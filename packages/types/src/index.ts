@@ -1148,6 +1148,16 @@ export interface ConnectorEvent {
   content?: {
     text?: string
     media?: ConnectorEventMedia
+    /**
+     * Inbound media album — populated when a user sent multiple photos/videos/
+     * documents as a single "album" (Telegram: messages sharing a
+     * `media_group_id`; grouped at the adapter layer via a short debounce).
+     * When present, `media` is also populated with `media_items[0]` for
+     * back-compat. File ids for each item are in `metadata.media_items`
+     * (adapter-internal). `fetch_media` action accepts an optional `index`
+     * (0-based) to pick which item to download.
+     */
+    media_items?: ConnectorEventMedia[]
     raw?: unknown
   }
   metadata?: Record<string, unknown>
@@ -1182,6 +1192,13 @@ export interface ConnectorMediaItem {
   url?: string
   /** Raw bytes — for generated or pre-downloaded files */
   data?: Uint8Array
+  /**
+   * Platform file reference — lets the agent forward media the connector has
+   * already seen without re-uploading. Telegram: Bot API file_id string (only
+   * reusable by the SAME bot that received it). Exactly one of `url` / `data`
+   * / `file_id` should be set.
+   */
+  file_id?: string
   /** Filename (required for document, optional for image/video) */
   name?: string
   /** Caption shown under media. For media_group only the first item caption is prominent. */

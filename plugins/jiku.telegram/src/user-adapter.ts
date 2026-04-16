@@ -801,11 +801,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
     {
       id: 'send_photo',
       name: 'Send Photo',
-      description: 'Send a photo by URL or file path. Supports caption with markdown.',
+      description: 'Send a photo. Source = one of: `url` (public URL), `path` (project disk), `file_id` (a TDLib/Bot-API file_id string the userbot has seen before — instant reuse, no re-upload). Exactly ONE source param must be set.',
       params: {
         chat_id: { type: 'string', description: 'Chat ID', required: true },
-        url: { type: 'string', description: 'Public URL of the photo (https://...)', required: false },
-        path: { type: 'string', description: 'Local path on the project virtual disk (e.g. "/assets/banner.jpg")', required: false },
+        url: { type: 'string', description: 'Public URL of the photo (https://...). Mutually exclusive with `path` / `file_id`.', required: false },
+        path: { type: 'string', description: 'Local path on the project virtual disk (e.g. "/assets/banner.jpg"). Mutually exclusive with `url` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'File id / remote reference the userbot already has. Ideal for re-sending media from an earlier message without re-uploading. Mutually exclusive with `url` / `path`.', required: false },
         caption: { type: 'string', description: 'Caption text (Telegram cap: 1024 chars)', required: false },
         markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
       },
@@ -813,14 +814,37 @@ class TelegramUserAdapter extends ConnectorAdapter {
     {
       id: 'send_document',
       name: 'Send Document',
-      description: 'Send a file by URL or file path. Any non-photo content (PDFs, archives, generic files).',
+      description: 'Send a file (PDFs, archives, generic files). Source = one of: `url` / `path` / `file_id`. Exactly ONE must be set.',
       params: {
         chat_id: { type: 'string', description: 'Chat ID', required: true },
-        url: { type: 'string', description: 'Public URL of the document', required: false },
-        path: { type: 'string', description: 'Local path on the project disk', required: false },
+        url: { type: 'string', description: 'Public URL of the document. Mutually exclusive with `path` / `file_id`.', required: false },
+        path: { type: 'string', description: 'Local path on the project disk. Mutually exclusive with `url` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'File id the userbot has seen before. Mutually exclusive with `url` / `path`.', required: false },
         filename: { type: 'string', description: 'Override file name shown in Telegram', required: false },
         caption: { type: 'string', description: 'Caption text', required: false },
         markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
+      },
+    },
+    {
+      id: 'send_video',
+      name: 'Send Video',
+      description: 'Send a single video. Source = one of: `url` / `path` / `file_id`. Exactly ONE must be set. For sending MULTIPLE videos as one album, use `send_media_group` instead.',
+      params: {
+        chat_id: { type: 'string', description: 'Chat ID', required: true },
+        url: { type: 'string', description: 'Public URL of the video (https://...). Mutually exclusive with `path` / `file_id`.', required: false },
+        path: { type: 'string', description: 'Local path on the project virtual disk (e.g. "/videos/demo.mp4"). Mutually exclusive with `url` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'File id the userbot has seen before. Mutually exclusive with `url` / `path`.', required: false },
+        caption: { type: 'string', description: 'Caption text (Telegram cap: 1024 chars)', required: false },
+        markdown: { type: 'boolean', description: 'Parse caption as MarkdownV2', required: false },
+      },
+    },
+    {
+      id: 'send_media_group',
+      name: 'Send Media Group (Album)',
+      description: 'Send multiple photos, videos, or documents as a single album. Photos and videos can be mixed (max 10 items). Only the first item caption is shown prominently. Each item\'s source = one of `url` / `path` / `file_id`.',
+      params: {
+        chat_id: { type: 'string', description: 'Chat ID', required: true },
+        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, path?: string, file_id?: string, caption?: string, caption_markdown?: boolean }. Max 10 items. Each item must have exactly ONE of `url` / `path` / `file_id`.', required: true },
       },
     },
     {
@@ -954,7 +978,9 @@ class TelegramUserAdapter extends ConnectorAdapter {
       // ─── Parity actions ──────────────────────────────────────────────────
       const cExt = c as MtcuteClient & {
         sendMedia?: (chatId: string | number | bigint, media: unknown, opts?: Record<string, unknown>) => Promise<unknown>
+        sendMediaGroup?: (chatId: string | number | bigint, medias: unknown[], opts?: Record<string, unknown>) => Promise<unknown>
         sendPhoto?: (chatId: string | number | bigint, photo: unknown, opts?: Record<string, unknown>) => Promise<unknown>
+        sendVideo?: (chatId: string | number | bigint, video: unknown, opts?: Record<string, unknown>) => Promise<unknown>
         sendDocument?: (chatId: string | number | bigint, document: unknown, opts?: Record<string, unknown>) => Promise<unknown>
         readHistory?: (chatId: string | number | bigint, opts?: { maxId?: number }) => Promise<unknown>
         searchGlobal?: (query: string, opts?: { limit?: number }) => Promise<Array<Record<string, unknown>>>
@@ -964,10 +990,32 @@ class TelegramUserAdapter extends ConnectorAdapter {
         resolvePeer?: (peer: string | number | bigint) => Promise<Record<string, unknown>>
       }
 
+      // Shared helper: resolve a media item's source (`url` | `path` | `file_id`)
+      // to a value mtcute's sendMedia/sendPhoto/etc. accepts. mtcute's
+      // `UploadFileLike` accepts a bare string that is a TDLib / Bot-API
+      // compatible file_id — we pass URL and file_id through as strings and
+      // decode `__b64__:` filesystem paths to a Buffer.
+      const resolveMediaInput = async (item: { url?: string; path?: string; file_id?: string }): Promise<{ value: unknown; err?: string }> => {
+        const count = [item.url, item.path, item.file_id].filter(Boolean).length
+        if (count === 0) return { value: undefined, err: 'each item requires exactly one of `url` / `path` / `file_id`' }
+        if (count > 1) return { value: undefined, err: 'each item requires exactly one of `url` / `path` / `file_id` — not multiple' }
+        if (item.url) return { value: item.url }
+        if (item.file_id) return { value: item.file_id }
+        if (!this.projectId) return { value: undefined, err: 'No active project for path resolution' }
+        const fs = await getFilesystemService(this.projectId)
+        if (!fs) return { value: undefined, err: 'Filesystem not configured for this project' }
+        const file = await fs.read(item.path!)
+        return {
+          value: file.content.startsWith('__b64__:')
+            ? Buffer.from(file.content.replace('__b64__:', ''), 'base64')
+            : Buffer.from(file.content, 'utf-8'),
+        }
+      }
+
       if (actionId === 'send_photo') {
         const url = params['url'] as string | undefined
         const path = params['path'] as string | undefined
-        if (!url && !path) return { success: false, error: 'send_photo requires either `url` or `path`' }
+        const file_id = params['file_id'] as string | undefined
         const send = cExt.sendPhoto ?? cExt.sendMedia
         if (!send) return { success: false, error: 'mtcute build does not expose sendPhoto / sendMedia' }
         const caption = params['caption'] as string | undefined
@@ -975,25 +1023,16 @@ class TelegramUserAdapter extends ConnectorAdapter {
         const opts: Record<string, unknown> = {}
         if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
         if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
-        // For URL: pass directly. For path: read file from project virtual disk.
-        let media: unknown = url
-        if (!url && path) {
-          if (!this.projectId) return { success: false, error: 'No active project for path resolution' }
-          const fs = await getFilesystemService(this.projectId)
-          if (!fs) return { success: false, error: 'Filesystem not configured for this project' }
-          const file = await fs.read(path)
-          media = file.content.startsWith('__b64__:')
-            ? Buffer.from(file.content.replace('__b64__:', ''), 'base64')
-            : Buffer.from(file.content, 'utf-8')
-        }
-        const queued = await enqueue({ chatId: String(params['chat_id']) }, () => send.call(cExt, peerOf(params['chat_id']), media, opts))
+        const resolved = await resolveMediaInput({ url, path, file_id })
+        if (resolved.err) return { success: false, error: resolved.err }
+        const queued = await enqueue({ chatId: String(params['chat_id']) }, () => send.call(cExt, peerOf(params['chat_id']), resolved.value, opts))
         return { success: true, result: queued.result, delay_ms_applied: queued.delay_ms_applied }
       }
 
       if (actionId === 'send_document') {
         const url = params['url'] as string | undefined
         const path = params['path'] as string | undefined
-        if (!url && !path) return { success: false, error: 'send_document requires either `url` or `path`' }
+        const file_id = params['file_id'] as string | undefined
         const send = cExt.sendDocument ?? cExt.sendMedia
         if (!send) return { success: false, error: 'mtcute build does not expose sendDocument / sendMedia' }
         const caption = params['caption'] as string | undefined
@@ -1002,18 +1041,70 @@ class TelegramUserAdapter extends ConnectorAdapter {
         if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
         if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
         if (params['filename']) opts['fileName'] = String(params['filename'])
-        let media: unknown = url
-        if (!url && path) {
-          if (!this.projectId) return { success: false, error: 'No active project for path resolution' }
-          const fs = await getFilesystemService(this.projectId)
-          if (!fs) return { success: false, error: 'Filesystem not configured for this project' }
-          const file = await fs.read(path)
-          media = file.content.startsWith('__b64__:')
-            ? Buffer.from(file.content.replace('__b64__:', ''), 'base64')
-            : Buffer.from(file.content, 'utf-8')
-        }
-        const queued = await enqueue({ chatId: String(params['chat_id']) }, () => send.call(cExt, peerOf(params['chat_id']), media, opts))
+        const resolved = await resolveMediaInput({ url, path, file_id })
+        if (resolved.err) return { success: false, error: resolved.err }
+        const queued = await enqueue({ chatId: String(params['chat_id']) }, () => send.call(cExt, peerOf(params['chat_id']), resolved.value, opts))
         return { success: true, result: queued.result, delay_ms_applied: queued.delay_ms_applied }
+      }
+
+      if (actionId === 'send_video') {
+        const url = params['url'] as string | undefined
+        const path = params['path'] as string | undefined
+        const file_id = params['file_id'] as string | undefined
+        // mtcute: prefer sendVideo; fall back to sendMedia with explicit
+        // `type: 'video'` since `sendMedia` with a raw buffer cannot tell
+        // "video file" from "document" otherwise.
+        const useSendMedia = !cExt.sendVideo && !!cExt.sendMedia
+        if (!cExt.sendVideo && !cExt.sendMedia) {
+          return { success: false, error: 'mtcute build exposes neither sendVideo nor sendMedia' }
+        }
+        const caption = params['caption'] as string | undefined
+        const useMd = params['markdown'] === true
+        const opts: Record<string, unknown> = {}
+        if (caption) opts['caption'] = useMd ? telegramifyMarkdown(caption, 'escape') : caption
+        if (caption && useMd) opts['parseMode'] = 'MarkdownV2'
+        const resolved = await resolveMediaInput({ url, path, file_id })
+        if (resolved.err) return { success: false, error: resolved.err }
+        const queued = await enqueue({ chatId: String(params['chat_id']) }, () => {
+          if (useSendMedia) {
+            return cExt.sendMedia!.call(cExt, peerOf(params['chat_id']), { type: 'video', file: resolved.value, ...opts }, {})
+          }
+          return cExt.sendVideo!.call(cExt, peerOf(params['chat_id']), resolved.value, opts)
+        })
+        return { success: true, result: queued.result, delay_ms_applied: queued.delay_ms_applied }
+      }
+
+      if (actionId === 'send_media_group') {
+        if (!cExt.sendMediaGroup) {
+          return { success: false, error: 'mtcute build does not expose sendMediaGroup' }
+        }
+        const items = params['media'] as Array<{ type: 'photo' | 'video' | 'document'; url?: string; path?: string; file_id?: string; caption?: string; caption_markdown?: boolean }> | undefined
+        if (!Array.isArray(items) || items.length === 0) {
+          return { success: false, error: 'send_media_group requires a non-empty `media` array' }
+        }
+        if (items.length > 10) {
+          return { success: false, error: 'Telegram albums accept at most 10 items' }
+        }
+        // Build `InputMediaLike[]` — each item has { type, file, caption?, parseMode? }.
+        const medias: unknown[] = []
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i]!
+          if (!['photo', 'video', 'document'].includes(it.type)) {
+            return { success: false, error: `media[${i}].type must be one of "photo" | "video" | "document" (got "${it.type}")` }
+          }
+          const resolved = await resolveMediaInput(it)
+          if (resolved.err) return { success: false, error: `media[${i}]: ${resolved.err}` }
+          const entry: Record<string, unknown> = { type: it.type, file: resolved.value }
+          if (it.caption) {
+            entry['caption'] = it.caption_markdown ? telegramifyMarkdown(it.caption, 'escape') : it.caption
+            if (it.caption_markdown) entry['parseMode'] = 'MarkdownV2'
+          }
+          medias.push(entry)
+        }
+        const queued = await enqueue({ chatId: String(params['chat_id']) }, () =>
+          cExt.sendMediaGroup!.call(cExt, peerOf(params['chat_id']), medias, {})
+        )
+        return { success: true, result: queued.result, delay_ms_applied: queued.delay_ms_applied, count: medias.length }
       }
 
       if (actionId === 'copy_message') {

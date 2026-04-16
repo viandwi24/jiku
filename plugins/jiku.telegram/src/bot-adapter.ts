@@ -17,7 +17,8 @@ import {
   updateBinding,
 } from '@jiku-studio/db'
 import { getFilesystemService } from '../../../apps/studio/server/src/filesystem/service.ts'
-import { TELEGRAM_MAX_LENGTH, REACTIVATE_WAIT_MS } from './shared/constants.ts'
+import type { ConnectorEventMedia } from '@jiku/types'
+import { TELEGRAM_MAX_LENGTH, REACTIVATE_WAIT_MS, MEDIA_GROUP_DEBOUNCE_MS } from './shared/constants.ts'
 import { splitMessage, extractTelegramMedia, withTelegramRetry } from './shared/helpers.ts'
 import { enqueueForChat, enqueueInboundEvent, lastDeactivateByConnector } from './shared/queues.ts'
 import type { PluginConsoleAPI, PluginConsoleLogger } from '@jiku-plugin/studio'
@@ -63,6 +64,40 @@ async function logArrivalImmediate(
   } catch (err) {
     console.error('[telegram] logArrivalImmediate failed:', err)
   }
+}
+
+/**
+ * Inbound media-group (album) buffer.
+ *
+ * When a user sends an album (multiple photos/videos in one send), Telegram
+ * delivers them as N separate `message` updates, each sharing the same
+ * `media_group_id`. To avoid the agent receiving N triggers / replying N
+ * times, we buffer arrivals per (connector, chat, media_group_id) and emit
+ * ONE ConnectorEvent after `MEDIA_GROUP_DEBOUNCE_MS` of silence from the
+ * first item.
+ *
+ * Module-level Map (not per-instance) so the same multi-tenant adapter
+ * singleton shape used for `chatSendQueues` / `inboundQueue` applies here.
+ */
+interface MediaGroupBufferItem {
+  msg: any
+  gramCtxUpdate: unknown
+  media: ConnectorEventMedia | undefined
+  mediaMetadata: Record<string, unknown>
+  botMentioned: boolean
+  isReplyToBot: boolean
+}
+interface MediaGroupBuffer {
+  connectorId: string
+  chatId: string
+  mediaGroupId: string
+  items: MediaGroupBufferItem[]
+  timer: ReturnType<typeof setTimeout>
+  firstArrivalAt: number
+}
+const mediaGroupBuffers = new Map<string, MediaGroupBuffer>()
+function mediaGroupBufferKey(connectorId: string, chatId: string | number, mediaGroupId: string): string {
+  return `${connectorId}:${chatId}:${mediaGroupId}`
 }
 
 class TelegramBotAdapter extends ConnectorAdapter {
@@ -181,10 +216,12 @@ class TelegramBotAdapter extends ConnectorAdapter {
     {
       id: 'send_file',
       name: 'Send File',
-      description: 'Send a file from the project filesystem to a Telegram chat. The agent should write the file to the filesystem first using fs_write, then pass the file path here.',
+      description: 'Send a single document/file. Source = one of: `file_path` (project disk), `url` (public URL Telegram will fetch), `file_id` (Telegram file_id from an earlier message — instant reuse, no re-upload). Use for PDFs, archives, generic files. Exactly ONE of the three source params must be set.',
       params: {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
-        file_path: { type: 'string', description: 'File path in the project filesystem, e.g. "/reports/output.pdf"', required: true },
+        file_path: { type: 'string', description: 'File path in the project filesystem, e.g. "/reports/output.pdf". Mutually exclusive with `url` / `file_id`.', required: false },
+        url: { type: 'string', description: 'Public URL of the file. Mutually exclusive with `file_path` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'Telegram file_id of an already-uploaded document. Only works for file_ids this same bot has seen before (Bot API constraint). Ideal for re-forwarding media the bot received earlier without re-uploading. Mutually exclusive with `file_path` / `url`.', required: false },
         caption: { type: 'string', description: 'Optional caption for the file', required: false },
         caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
         reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
@@ -194,10 +231,27 @@ class TelegramBotAdapter extends ConnectorAdapter {
     {
       id: 'send_photo',
       name: 'Send Photo',
-      description: 'Send an image file from the project filesystem to a Telegram chat',
+      description: 'Send a single photo. Source = one of: `file_path` (project disk), `url` (public URL Telegram will fetch), `file_id` (Telegram file_id from an earlier message — instant reuse, no re-upload). Exactly ONE of the three source params must be set. For sending MULTIPLE photos as one album, use `send_media_group` instead.',
       params: {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
-        file_path: { type: 'string', description: 'Image file path in the project filesystem, e.g. "/images/chart.png"', required: true },
+        file_path: { type: 'string', description: 'Image file path in the project filesystem, e.g. "/images/chart.png". Mutually exclusive with `url` / `file_id`.', required: false },
+        url: { type: 'string', description: 'Public URL of the image. Mutually exclusive with `file_path` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'Telegram file_id of an already-uploaded photo. Only works for file_ids this same bot has seen before. Mutually exclusive with `file_path` / `url`.', required: false },
+        caption: { type: 'string', description: 'Optional caption', required: false },
+        caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
+        reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
+        thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
+      },
+    },
+    {
+      id: 'send_video',
+      name: 'Send Video',
+      description: 'Send a single video. Source = one of: `file_path` (project disk), `url` (public URL Telegram will fetch), `file_id` (Telegram file_id from an earlier message — instant reuse, no re-upload). Exactly ONE of the three source params must be set. For sending MULTIPLE videos as one album, use `send_media_group` instead.',
+      params: {
+        chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
+        file_path: { type: 'string', description: 'Video file path in the project filesystem, e.g. "/videos/demo.mp4". Mutually exclusive with `url` / `file_id`.', required: false },
+        url: { type: 'string', description: 'Public URL of the video. Mutually exclusive with `file_path` / `file_id`.', required: false },
+        file_id: { type: 'string', description: 'Telegram file_id of an already-uploaded video. Only works for file_ids this same bot has seen before. Mutually exclusive with `file_path` / `url`.', required: false },
         caption: { type: 'string', description: 'Optional caption', required: false },
         caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
         reply_to_message_id: { type: 'string', description: 'Message ID to reply to', required: false },
@@ -217,30 +271,31 @@ class TelegramBotAdapter extends ConnectorAdapter {
     {
       id: 'fetch_media',
       name: 'Fetch Media from Message',
-      description: 'Download media from a previously received message and save it to the project filesystem. Use the event_id from the "Media available" hint in the conversation context. Returns the saved file path + size.',
+      description: 'Download media from a previously received message and save it to the project filesystem. Use the event_id from the "Media available" hint in the conversation context. For media groups (albums), pass `index` (0-based) to pick which item to download — call once per item to fetch all. Returns the saved file path + size.',
       params: {
         event_id: { type: 'string', description: 'event_id from the inbound message that contained media (from context hint)', required: true },
         save_path: { type: 'string', description: 'Filesystem path to save the file. If omitted, auto-generates under /connector_media/.', required: false },
+        index: { type: 'number', description: 'For media groups (albums), the 0-based index of the item to download. Default 0 (first item). Ignored for single-media messages.', required: false },
       },
     },
     {
       id: 'send_media_group',
       name: 'Send Media Group (Album)',
-      description: 'Send multiple photos, videos, or documents as a single album message. Photos and videos can be mixed (max 10). Documents cannot mix with photo/video — if mixed, photos/videos go first as album then documents are sent individually. Only the first item caption is shown prominently.',
+      description: 'Send multiple photos, videos, or documents as a single album message. Photos and videos can be mixed (max 10). Documents cannot mix with photo/video — if mixed, photos/videos go first as album then documents are sent individually. Only the first item caption is shown prominently. Each item\'s source = one of `url` | `file_path` | `file_id` (e.g. re-use a file_id the bot received in an earlier message to forward media without re-upload).',
       params: {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
-        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, file_path?: string, caption?: string, caption_markdown?: boolean }. Max 10 items.', required: true },
+        media: { type: 'array', description: 'Array of media items: { type: "photo"|"video"|"document", url?: string, file_path?: string, file_id?: string, caption?: string, caption_markdown?: boolean, name?: string }. Max 10 items. Each item must have exactly ONE of `url` / `file_path` / `file_id`.', required: true },
         thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
       },
     },
     {
       id: 'send_url_media',
       name: 'Send Media from URL',
-      description: 'Send a single image or document from a public URL directly to a chat — no filesystem needed',
+      description: 'Send a single photo, video, or document from a public URL directly to a chat — no filesystem needed. For single sends, the dedicated actions (`send_photo`, `send_video`, `send_file`) also accept a `url` param and are equally valid.',
       params: {
         chat_id: { type: 'string', description: 'Telegram chat ID', required: true },
         url: { type: 'string', description: 'Public direct URL to the media file', required: true },
-        type: { type: 'string', description: '"photo" or "document"', required: true },
+        type: { type: 'string', description: '"photo", "video", or "document"', required: true },
         caption: { type: 'string', description: 'Optional caption', required: false },
         caption_markdown: { type: 'boolean', description: 'Parse caption as Markdown', required: false },
         thread_id: { type: 'string', description: 'Forum topic thread ID', required: false },
@@ -317,12 +372,27 @@ class TelegramBotAdapter extends ConnectorAdapter {
       }
 
       case 'send_file':
-      case 'send_photo': {
-        const { chat_id, file_path, caption, caption_markdown, reply_to_message_id, thread_id } = params as {
-          chat_id: string; file_path: string; caption?: string; caption_markdown?: boolean
+      case 'send_photo':
+      case 'send_video': {
+        const { chat_id, file_path, url, file_id, caption, caption_markdown, reply_to_message_id, thread_id } = params as {
+          chat_id: string; file_path?: string; url?: string; file_id?: string
+          caption?: string; caption_markdown?: boolean
           reply_to_message_id?: string; thread_id?: string
         }
-        const inputFile = await this.resolveFilesystemFile(file_path)
+        const sourceCount = [file_path, url, file_id].filter(Boolean).length
+        if (sourceCount === 0) {
+          return { success: false, error: `${actionId} requires exactly one of "file_path", "url", or "file_id"` }
+        }
+        if (sourceCount > 1) {
+          return { success: false, error: `${actionId}: pass exactly one of "file_path", "url", or "file_id" — not multiple` }
+        }
+        // file_path → upload bytes via InputFile.
+        // url → pass URL string; Telegram fetches server-side.
+        // file_id → pass file_id string; Telegram reuses the stored media. Only
+        //           valid for file_ids THIS bot has seen before (Bot API rule).
+        const input: InputFile | string = file_path
+          ? await this.resolveFilesystemFile(file_path)
+          : (url ?? file_id!)
         const extra: Record<string, unknown> = {}
         if (caption) {
           extra.caption = caption_markdown ? telegramifyMarkdown(caption, 'escape') : caption
@@ -331,9 +401,14 @@ class TelegramBotAdapter extends ConnectorAdapter {
         if (reply_to_message_id) extra.reply_parameters = { message_id: Number(reply_to_message_id) }
         if (thread_id) extra.message_thread_id = Number(thread_id)
 
-        const sent = actionId === 'send_photo'
-          ? await callChat(String(chat_id), 'sendPhoto', () => bot.api.sendPhoto(chat_id, inputFile, extra as any))
-          : await callChat(String(chat_id), 'sendDocument', () => bot.api.sendDocument(chat_id, inputFile, extra as any))
+        let sent
+        if (actionId === 'send_photo') {
+          sent = await callChat(String(chat_id), 'sendPhoto', () => bot.api.sendPhoto(chat_id, input as any, extra as any))
+        } else if (actionId === 'send_video') {
+          sent = await callChat(String(chat_id), 'sendVideo', () => bot.api.sendVideo(chat_id, input as any, extra as any))
+        } else {
+          sent = await callChat(String(chat_id), 'sendDocument', () => bot.api.sendDocument(chat_id, input as any, extra as any))
+        }
         return { success: true, message_id: String(sent.message_id), chat_id: String(sent.chat.id) }
       }
 
@@ -345,12 +420,39 @@ class TelegramBotAdapter extends ConnectorAdapter {
 
       // ── Plan 22 handlers ───────────────────────────────────────────
       case 'fetch_media': {
-        const { event_id, save_path } = params as { event_id: string; save_path?: string }
+        const { event_id, save_path, index } = params as { event_id: string; save_path?: string; index?: number }
         const row = await getConnectorEventById(event_id)
         if (!row) throw new Error(`connector_event not found: ${event_id}`)
         const md = (row.metadata ?? {}) as Record<string, unknown>
-        const fileId = md['media_file_id'] as string | undefined
-        if (!fileId) throw new Error(`No media file_id on event ${event_id}`)
+
+        // Media-group path: metadata.media_items[] carries one entry per album
+        // item. Pick by `index` (default 0). Fall back to the singular keys
+        // for non-album events.
+        const items = Array.isArray(md['media_items']) ? md['media_items'] as Array<Record<string, unknown>> : null
+        const idx = Math.max(0, Math.floor(index ?? 0))
+        let fileId: string | undefined
+        let fileName: string | undefined
+        let mimeType: string | undefined
+        let mediaType: string | undefined
+        if (items && items.length > 0) {
+          if (idx >= items.length) {
+            throw new Error(`index ${idx} out of range — event ${event_id} has ${items.length} media items (valid: 0..${items.length - 1})`)
+          }
+          const picked = items[idx]!
+          fileId = picked['media_file_id'] as string | undefined
+          fileName = picked['media_file_name'] as string | undefined
+          mimeType = picked['media_mime_type'] as string | undefined
+          mediaType = picked['media_type'] as string | undefined
+        } else {
+          if (index !== undefined && index > 0) {
+            throw new Error(`event ${event_id} is a single-media message; index must be 0 or omitted`)
+          }
+          fileId = md['media_file_id'] as string | undefined
+          fileName = md['media_file_name'] as string | undefined
+          mimeType = md['media_mime_type'] as string | undefined
+          mediaType = md['media_type'] as string | undefined
+        }
+        if (!fileId) throw new Error(`No media file_id on event ${event_id}${items ? ` at index ${idx}` : ''}`)
 
         // getFile goes through retry (no chat scope — session-global)
         const file = await withTelegramRetry(() => bot.api.getFile(fileId), 'bot.getFile')
@@ -361,8 +463,9 @@ class TelegramBotAdapter extends ConnectorAdapter {
         if (!resp.ok) throw new Error(`Failed to download media: ${resp.status}`)
         const buffer = Buffer.from(await resp.arrayBuffer())
 
-        const defaultName = (md['media_file_name'] as string | undefined)
-          ?? `media_${event_id.slice(0, 8)}_${Date.now()}${this.guessExt(md['media_mime_type'] as string | undefined, md['media_type'] as string | undefined)}`
+        const indexSuffix = items && items.length > 1 ? `_${idx}` : ''
+        const defaultName = fileName
+          ?? `media_${event_id.slice(0, 8)}${indexSuffix}_${Date.now()}${this.guessExt(mimeType, mediaType)}`
         const targetPath = save_path ?? `/connector_media/${defaultName}`
 
         if (!this.projectId) throw new Error('Project context not available')
@@ -370,17 +473,20 @@ class TelegramBotAdapter extends ConnectorAdapter {
         if (!fs) throw new Error('Filesystem is not configured for this project')
         const b64 = `__b64__:${buffer.toString('base64')}`
         await fs.write(targetPath, b64)
-        return { success: true, path: targetPath, size: buffer.length }
+        return { success: true, path: targetPath, size: buffer.length, index: items ? idx : undefined, total_items: items ? items.length : undefined }
       }
 
       case 'send_media_group': {
         // Delegates to sendMediaGroup which already enqueues per chat.
         const { chat_id, media, thread_id } = params as {
           chat_id: string
-          media: Array<{ type: 'photo' | 'video' | 'document'; url?: string; file_path?: string; caption?: string; caption_markdown?: boolean; name?: string }>
+          media: Array<{ type: 'photo' | 'video' | 'document'; url?: string; file_path?: string; file_id?: string; caption?: string; caption_markdown?: boolean; name?: string }>
           thread_id?: string
         }
-        const items: ConnectorMediaItem[] = await Promise.all(media.map(async (m) => {
+        const items: ConnectorMediaItem[] = await Promise.all(media.map(async (m, i) => {
+          const sourceCount = [m.url, m.file_path, m.file_id].filter(Boolean).length
+          if (sourceCount === 0) throw new Error(`media[${i}] requires exactly one of "url", "file_path", or "file_id"`)
+          if (sourceCount > 1) throw new Error(`media[${i}]: pass exactly one of "url", "file_path", or "file_id"`)
           const item: ConnectorMediaItem = {
             type: m.type === 'photo' ? 'image' : m.type,
             caption: m.caption,
@@ -388,6 +494,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
             name: m.name,
           }
           if (m.url) item.url = m.url
+          else if (m.file_id) item.file_id = m.file_id
           else if (m.file_path) {
             const buf = await this.loadFilesystemBuffer(m.file_path)
             item.data = buf.buffer
@@ -403,10 +510,10 @@ class TelegramBotAdapter extends ConnectorAdapter {
       case 'send_url_media': {
         // Delegates to sendSingleMedia which already enqueues per chat.
         const { chat_id, url, type, caption, caption_markdown, thread_id } = params as {
-          chat_id: string; url: string; type: 'photo' | 'document'; caption?: string; caption_markdown?: boolean; thread_id?: string
+          chat_id: string; url: string; type: 'photo' | 'video' | 'document'; caption?: string; caption_markdown?: boolean; thread_id?: string
         }
         const item: ConnectorMediaItem = {
-          type: type === 'photo' ? 'image' : 'document',
+          type: type === 'photo' ? 'image' : type,
           url,
           caption,
           caption_markdown,
@@ -579,6 +686,161 @@ class TelegramBotAdapter extends ConnectorAdapter {
     return slug || `channel-${Date.now()}`
   }
 
+  /**
+   * Auto-register a forum topic as a `connector_target` on first sighting.
+   * Target name = "<chat-slug>__<topic-slug>"; `scope_key` matches
+   * `computeScopeKey` so outbound via this target threads into the same
+   * scope conversation as inbound events. Idempotent via
+   * `getConnectorTargetByName`.
+   */
+  private async autoRegisterForumTopic(msg: any, forumTopicName: string | undefined, connectorId: string): Promise<void> {
+    if (!msg.message_thread_id || !forumTopicName || !this.projectId) return
+    const tid = String(msg.message_thread_id)
+    const chatSlug = this.slugifyChannelTitle(
+      'title' in msg.chat ? (msg.chat.title ?? `chat-${msg.chat.id}`) : `chat-${msg.chat.id}`,
+    )
+    const topicSlug = this.slugifyChannelTitle(forumTopicName)
+    const targetName = `${chatSlug}__${topicSlug}`
+    try {
+      const existing = await getConnectorTargetByName(this.projectId, targetName, connectorId).catch(() => null)
+      if (!existing) {
+        await createConnectorTarget({
+          connector_id: connectorId,
+          name: targetName,
+          display_name: `${msg.chat.title ?? msg.chat.id} → ${forumTopicName}`,
+          description: `Auto-registered forum topic — first seen ${new Date().toISOString()}`,
+          ref_keys: { chat_id: String(msg.chat.id), thread_id: tid },
+          scope_key: `group:${msg.chat.id}:topic:${tid}`,
+          metadata: {
+            auto_registered: true,
+            chat_type: msg.chat.type,
+            chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+            thread_title: forumTopicName,
+            registered_at: new Date().toISOString(),
+          },
+        })
+        console.log(`[telegram] auto-registered topic target "${targetName}" (group:${msg.chat.id}:topic:${tid})`)
+      }
+    } catch (err) {
+      console.warn('[telegram] failed to auto-register topic target:', err)
+    }
+  }
+
+  /**
+   * Assemble a single ConnectorEvent from a buffered media-group and hand it
+   * off to arrival-log + inbound queue. Caller has already removed the buffer
+   * from `mediaGroupBuffers` and cleared its timer.
+   *
+   * Aggregation rules:
+   *  - ref_keys.message_id = first item's message_id (earliest arrival).
+   *  - content.text = first non-empty caption across items (Telegram allows
+   *    only one caption per album in practice, but the API permits more).
+   *  - content.media = item[0].media (back-compat with callers that read
+   *    the singular field). content.media_items = all items.
+   *  - metadata.media_group_id + metadata.media_items = per-item internal
+   *    file ids, used by the `fetch_media` action's `index` param.
+   *  - metadata inlines item[0]'s media_file_id/etc. for back-compat with
+   *    code paths that read the singular keys (e.g. fetch_media without index).
+   *  - bot_mentioned / bot_replied_to = OR-accumulated across items (a
+   *    mention in any item's caption counts).
+   *  - raw_payload = { media_group: true, media_group_id, updates: [...] }.
+   */
+  private async flushMediaGroupBuffer(buf: MediaGroupBuffer, ctx: ConnectorContext): Promise<void> {
+    if (buf.items.length === 0) return
+    const primary = buf.items[0]!
+    const msg = primary.msg
+
+    const anyMentioned = buf.items.some(i => i.botMentioned)
+    const anyReply = buf.items.some(i => i.isReplyToBot)
+    const firstCaptionItem = buf.items.find(i => i.msg.caption !== undefined && i.msg.caption !== '')
+    const text = msg.text ?? firstCaptionItem?.msg.caption ?? undefined
+
+    const mediaList: ConnectorEventMedia[] = buf.items
+      .map(i => i.media)
+      .filter((m): m is ConnectorEventMedia => !!m)
+
+    const mediaItemsInternal = buf.items
+      .filter(i => typeof i.mediaMetadata['media_file_id'] === 'string')
+      .map(i => ({
+        message_id: String(i.msg.message_id),
+        media_file_id: i.mediaMetadata['media_file_id'],
+        media_type: i.mediaMetadata['media_type'],
+        media_file_name: i.mediaMetadata['media_file_name'],
+        media_mime_type: i.mediaMetadata['media_mime_type'],
+        media_file_size: i.mediaMetadata['media_file_size'],
+      }))
+
+    const forumTopicName: string | undefined =
+      msg.forum_topic_created?.name
+      ?? msg.forum_topic_edited?.name
+      ?? msg.reply_to_message?.forum_topic_created?.name
+      ?? undefined
+
+    const event: ConnectorEvent = {
+      type: 'message',
+      connector_id: this.id,
+      ref_keys: {
+        message_id: String(msg.message_id),
+        chat_id: String(msg.chat.id),
+        ...(msg.message_thread_id ? { thread_id: String(msg.message_thread_id) } : {}),
+      },
+      sender: {
+        external_id: String(msg.from?.id ?? msg.chat.id),
+        display_name: [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || undefined,
+        username: msg.from?.username,
+        is_bot: msg.from?.is_bot,
+      },
+      content: {
+        text,
+        media: mediaList[0],
+        media_items: mediaList,
+      },
+      metadata: {
+        language_code: msg.from?.language_code ?? null,
+        client_timestamp: new Date(msg.date * 1000).toISOString(),
+        chat_type: msg.chat.type,
+        chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
+        ...(forumTopicName ? { thread_title: forumTopicName } : {}),
+        ...(msg.is_topic_message ? { is_topic_message: true } : {}),
+        ...(anyMentioned ? { bot_mentioned: true } : {}),
+        ...(anyReply ? { bot_replied_to: true } : {}),
+        ...(msg.reply_to_message ? {
+          reply_to: {
+            origin: msg.reply_to_message.chat?.id === msg.chat.id ? 'same_chat' : 'other_chat',
+            message_id: String(msg.reply_to_message.message_id),
+            chat_id: msg.reply_to_message.chat ? String(msg.reply_to_message.chat.id) : null,
+            text: msg.reply_to_message.text ?? msg.reply_to_message.caption ?? null,
+            sender: msg.reply_to_message.from ? {
+              id: String(msg.reply_to_message.from.id),
+              username: msg.reply_to_message.from.username ?? null,
+              display_name: [msg.reply_to_message.from.first_name, msg.reply_to_message.from.last_name].filter(Boolean).join(' ') || null,
+              is_bot: msg.reply_to_message.from.is_bot ?? false,
+            } : null,
+            is_quote: false,
+          },
+        } : {}),
+        // item[0]'s singular media_* keys inlined for back-compat with
+        // fetch_media callers that don't pass `index` (default 0).
+        ...primary.mediaMetadata,
+        media_group_id: buf.mediaGroupId,
+        media_items: mediaItemsInternal,
+      },
+      timestamp: new Date(msg.date * 1000),
+      raw_payload: {
+        media_group: true,
+        media_group_id: buf.mediaGroupId,
+        updates: buf.items.map(i => i.gramCtxUpdate),
+      },
+    }
+
+    await logArrivalImmediate(buf.connectorId, event)
+    await enqueueInboundEvent(() => ctx.onEvent(event).catch(err => {
+      console.error('[telegram] inbound event handler error (media group):', err)
+    }))
+
+    await this.autoRegisterForumTopic(msg, forumTopicName, ctx.connectorId)
+  }
+
   private async loadFilesystemBuffer(filePath: string): Promise<{ buffer: Buffer; name: string; mime_type: string }> {
     if (!this.projectId) throw new Error('Project context not available')
     const fs = await getFilesystemService(this.projectId)
@@ -630,7 +892,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
 
     this.bot.on('message', async (gramCtx: any) => {
       const msg = gramCtx.message
-      const { media, mediaMetadata } = extractTelegramMedia(msg)
+      const { media, mediaMetadata, mediaGroupId } = extractTelegramMedia(msg)
 
       // Classify: real message vs service message. Telegram sends many
       // service messages (new_chat_members, left_chat_member, new_chat_title,
@@ -680,6 +942,42 @@ class TelegramBotAdapter extends ConnectorAdapter {
         && !!msg.reply_to_message?.from?.is_bot
         && msg.reply_to_message.from?.id === this.botUserId
         && !msg.reply_to_message.forum_topic_created
+
+      // ── Inbound media-group (album) debounce ─────────────────────────
+      // Telegram ships albums as N separate updates sharing `media_group_id`.
+      // Buffer them per (connector, chat, group) and emit ONE event after
+      // MEDIA_GROUP_DEBOUNCE_MS of silence from the first arrival.
+      if (mediaGroupId && type === 'message' && this.connectorId) {
+        const connectorId = this.connectorId
+        const key = mediaGroupBufferKey(connectorId, msg.chat.id, mediaGroupId)
+        const item: MediaGroupBufferItem = {
+          msg, gramCtxUpdate: gramCtx.update,
+          media, mediaMetadata, botMentioned, isReplyToBot,
+        }
+        const existing = mediaGroupBuffers.get(key)
+        if (existing) {
+          existing.items.push(item)
+        } else {
+          const timer = setTimeout(() => {
+            const buf = mediaGroupBuffers.get(key)
+            if (!buf) return
+            mediaGroupBuffers.delete(key)
+            this.flushMediaGroupBuffer(buf, ctx).catch(err => {
+              console.error('[telegram] media-group flush error:', err)
+            })
+          }, MEDIA_GROUP_DEBOUNCE_MS)
+          mediaGroupBuffers.set(key, {
+            connectorId,
+            chatId: String(msg.chat.id),
+            mediaGroupId,
+            items: [item],
+            timer,
+            firstArrivalAt: Date.now(),
+          })
+        }
+        this.lastEventAt = Date.now()
+        return  // arrival log + routing deferred to flush
+      }
 
       // Forum topic name — Telegram embeds the topic name in a few places depending on the message shape.
       //   - msg.forum_topic_created.name      → this IS the topic-creation event
@@ -754,41 +1052,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
         console.error('[telegram] inbound event handler error:', err)
       }))
 
-      // Auto-register forum topic as connector_target the first time we see
-      // one with a known title. Target name: "<chat-slug>__<topic-slug>".
-      // scope_key matches computeScopeKey format so outbound via this target
-      // joins the same scope conversation as inbound events.
-      if (msg.message_thread_id && forumTopicName && this.projectId && hasContent) {
-        const tid = String(msg.message_thread_id)
-        const chatSlug = this.slugifyChannelTitle(
-          'title' in msg.chat ? (msg.chat.title ?? `chat-${msg.chat.id}`) : `chat-${msg.chat.id}`,
-        )
-        const topicSlug = this.slugifyChannelTitle(forumTopicName)
-        const targetName = `${chatSlug}__${topicSlug}`
-        try {
-          const existing = await getConnectorTargetByName(this.projectId, targetName, ctx.connectorId).catch(() => null)
-          if (!existing) {
-            await createConnectorTarget({
-              connector_id: ctx.connectorId,
-              name: targetName,
-              display_name: `${msg.chat.title ?? msg.chat.id} → ${forumTopicName}`,
-              description: `Auto-registered forum topic — first seen ${new Date().toISOString()}`,
-              ref_keys: { chat_id: String(msg.chat.id), thread_id: tid },
-              scope_key: `group:${msg.chat.id}:topic:${tid}`,
-              metadata: {
-                auto_registered: true,
-                chat_type: msg.chat.type,
-                chat_title: 'title' in msg.chat ? msg.chat.title : undefined,
-                thread_title: forumTopicName,
-                registered_at: new Date().toISOString(),
-              },
-            })
-            console.log(`[telegram] auto-registered topic target "${targetName}" (group:${msg.chat.id}:topic:${tid})`)
-          }
-        } catch (err) {
-          console.warn('[telegram] failed to auto-register topic target:', err)
-        }
-      }
+      if (hasContent) await this.autoRegisterForumTopic(msg, forumTopicName, ctx.connectorId)
     })
 
     this.bot.on('message_reaction', async (gramCtx: any) => {
@@ -1191,6 +1455,16 @@ class TelegramBotAdapter extends ConnectorAdapter {
     // Only the matching instance has its polling stopped.
     try { await inst.bot.stop() } catch { /* best-effort */ }
     this.instances.delete(targetId)
+
+    // Drop any in-flight media-group buffers owned by this connector. Firing
+    // their flush timers after the bot has stopped would hand events to a
+    // teared-down ctx — user will re-send the album if they still want it.
+    for (const [key, buf] of mediaGroupBuffers) {
+      if (buf.connectorId === targetId) {
+        clearTimeout(buf.timer)
+        mediaGroupBuffers.delete(key)
+      }
+    }
 
     // Clear legacy scalars ONLY when deactivating the credential that owns them
     // (i.e. the most-recent activate) — keeps the legacy fallback usable for
@@ -1867,7 +2141,11 @@ class TelegramBotAdapter extends ConnectorAdapter {
     const capped = items.slice(0, 10)
 
     const resolveMedia = (item: ConnectorMediaItem, idx: number) => {
-      return item.url ? item.url : new InputFile(item.data!, item.name ?? `file_${idx}`)
+      // file_id and url are both passed to grammy as bare strings — Telegram
+      // Bot API accepts either shape. InputFile wraps raw bytes for upload.
+      if (item.url) return item.url
+      if (item.file_id) return item.file_id
+      return new InputFile(item.data!, item.name ?? `file_${idx}`)
     }
 
     const buildInputMedia = (item: ConnectorMediaItem, idx: number) => {
@@ -1926,7 +2204,11 @@ class TelegramBotAdapter extends ConnectorAdapter {
       : rawCaption
     const parse_mode = rawCaption && item.caption_markdown ? ('MarkdownV2' as const) : undefined
 
-    const media = item.url ? item.url : new InputFile(item.data!, item.name ?? 'file')
+    const media: InputFile | string = item.url
+      ? item.url
+      : item.file_id
+        ? item.file_id
+        : new InputFile(item.data!, item.name ?? 'file')
     const opts: Record<string, unknown> = { ...commonOpts }
     if (caption) opts.caption = caption
     if (parse_mode) opts.parse_mode = parse_mode

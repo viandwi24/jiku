@@ -123,9 +123,8 @@ export default function RunDetailPage({ params }: PageProps) {
           </div>
         </div>
 
-        {(goal || output || conv.error_message) && (
+        {(output || conv.error_message) && (
           <div className="text-xs text-muted-foreground space-y-1 pb-1">
-            {goal && <p><span className="font-medium text-foreground">Goal:</span> {goal}</p>}
             {conv.error_message && (
               <p className="text-destructive flex items-center gap-1">
                 <AlertCircle className="h-3 w-3 shrink-0" />

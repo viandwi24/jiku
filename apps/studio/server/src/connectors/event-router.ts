@@ -391,7 +391,24 @@ async function buildConnectorContextString(
   }
 
   // Plan 22 — media availability hint (lazy fetch via event_id)
-  if (event.content?.media) {
+  // Media-group (album) path takes precedence when the adapter batched N
+  // inbound items into one event (Telegram debounces by `media_group_id`).
+  const mediaItems = event.content?.media_items
+  if (mediaItems && mediaItems.length > 1) {
+    const evIdHint = eventId ? `event_id: "${eventId}"` : `message_id=${event.ref_keys['message_id']}, chat_id=${event.ref_keys['chat_id']}`
+    const totalBytes = mediaItems.reduce((n, m) => n + (m.file_size ?? 0), 0)
+    const sizeHint = totalBytes ? ` ~${Math.round(totalBytes / 1024)}KB total` : ''
+    const typeCounts = mediaItems.reduce<Record<string, number>>((acc, m) => {
+      acc[m.type] = (acc[m.type] ?? 0) + 1
+      return acc
+    }, {})
+    const breakdown = Object.entries(typeCounts).map(([t, n]) => `${n} ${t}${n > 1 ? 's' : ''}`).join(', ')
+    parts.push(
+      `Media group available: ${mediaItems.length} items (${breakdown})${sizeHint} (${evIdHint}) — ` +
+      `use connector_run_action("fetch_media", { event_id, index: 0..${mediaItems.length - 1}, save_path: "/your/path" }) — ` +
+      `call once per item to fetch all`,
+    )
+  } else if (event.content?.media) {
     const m = event.content.media
     const sizeHint = m.file_size ? ` ${Math.round(m.file_size / 1024)}KB` : ''
     const nameHint = m.file_name ? ` "${m.file_name}"` : ''

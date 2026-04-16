@@ -1,13 +1,47 @@
-## Phase (2026-04-15) — Disk: ZIP export/import + Move entry action ✅
+## Phase (2026-04-16) — Telegram: inbound album debounce + outbound single/album parity + file_id reuse ✅
 
-Two disk-page asks shipped together:
+Three stacked user asks in one pass:
 
-1. **ZIP export/import.** Backend `apps/studio/server/src/filesystem/zip.ts` (needs `jszip` — `bun install` required). Export: `POST /files/export-zip` body `{ paths: string[] }` returns a ZIP stream, binary files decoded back to raw bytes. Import: `POST /files/import-zip?path=&conflict=` with conflict ∈ `{overwrite, skip, rename}`. Same allow-list + size cap as the regular upload route; path-traversal guard; caps `MAX_ZIP_BYTES=50MB`, `MAX_ZIP_ENTRIES=5000`. UI: toolbar Download + FileArchive icons, per-entry "Export as ZIP" dropdown action, `ImportZipDialog` with 3-pill conflict selector and result panel.
-2. **Move action.** Long-missing UI gap — server already supported `fs.move` but the dropdown only had Rename/Copy Path/Delete. Added "Move to…" item opening `MoveDialog` with absolute-path input (validates leading slash + non-empty filename). Reuses existing `moveMutation`.
+1. **Inbound album debounce (bot)** — N-per-album `message` updates batched to ONE event after 5s silence. `content.media_items[]` (public) + `metadata.media_items[]` (per-item file_id etc.) + `metadata.media_group_id`. `fetch_media` gained `index` param. See ADR-103.
+2. **Outbound single/album parity** — bot gained `send_video`; userbot gained `send_video` + `send_media_group`. Agent can now pick single-photo / single-video / album / mixed across either adapter.
+3. **file_id source support** — `send_photo`/`send_video`/`send_file`/`send_document` + `send_media_group` items now accept `file_id` as an alternative source to `url` / `file_path`. Enables re-sending media the adapter saw earlier WITHOUT re-upload. `ConnectorMediaItem` extended with `file_id?`.
+
+file_id capture (user concern, confirmed intact):
+- Inbound single: `metadata.media_file_id` + `raw_payload.message.photo[].file_id` (or document/video).
+- Inbound album: `metadata.media_items[].media_file_id` + `metadata.media_file_id` (back-compat, item[0]) + `raw_payload.updates[].message.*.file_id`.
+- Public `content.media*` deliberately omits file_id per ADR-058.
+
+Verified typecheck: all newly-introduced code typechecks cleanly. Pre-existing errors in `bot-adapter.ts:1952-1956` (`runSnapshot` never-inference) + `user-adapter.ts:181/524/746/947` (mtcute type drift) are unrelated.
+
+### Files touched
+- `packages/types/src/index.ts` — `ConnectorEvent.content.media_items?[]`, `ConnectorMediaItem.file_id?`.
+- `plugins/jiku.telegram/src/shared/constants.ts` — `MEDIA_GROUP_DEBOUNCE_MS=5000`.
+- `plugins/jiku.telegram/src/shared/helpers.ts` — `extractTelegramMedia` returns `mediaGroupId`.
+- `plugins/jiku.telegram/src/bot-adapter.ts` — buffer + flush + `autoRegisterForumTopic` helper + `send_video` + url/file_id alt sources + `fetch_media({index})`.
+- `plugins/jiku.telegram/src/user-adapter.ts` — `send_video` + `send_media_group` + file_id alt sources, `resolveMediaInput` shared helper.
+- `apps/studio/server/src/connectors/event-router.ts` — group vs single media hint.
+- Docs: `changelog.md`, `decisions.md` (ADR-103), `tasks.md`, `feats/connectors.md`.
+
+### Follow-ups (on tasks.md)
+- Userbot inbound album debounce (mtcute `grouped_id`).
+- `fetch_all_media({event_id, save_dir})` convenience tool so agent doesn't loop `fetch_media({index})` itself.
+
+## Phase (2026-04-15) — Disk: ZIP + drag-drop move + full folder ops parity ✅
+
+Multi-pass evolution of the `/disk` feature based on field-test feedback:
+
+1. **ZIP export/import.** New `apps/studio/server/src/filesystem/zip.ts` (deps: `jszip` — run `bun install`). Export: `POST /files/export-zip` body `{ paths: string[] }` — returns ZIP stream with binary files decoded back to raw bytes via `__b64__:` prefix detection, AND empty folder markers via `project_folders` query so empty subdirs survive the round-trip. Import: `POST /files/import-zip?path=&conflict=` with conflict ∈ `{overwrite, skip, rename}` (rename suffixes ` (1)`, ` (2)`, …). Per-entry allow-list + path-traversal guard; caps `MAX_ZIP_BYTES=50MB`, `MAX_ZIP_ENTRIES=5000`.
+2. **ZIP import junk filter (field bug).** macOS Finder zips emit `__MACOSX/` resource forks + `._<file>` AppleDouble files containing null bytes that crash Postgres TEXT inserts. New `isPlatformJunk(entryPath)` silently drops `__MACOSX/*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `._*`. Counter `skipped_junk` surfaced in UI for transparency. Defense-in-depth: explicit null-byte check before DB write rejects any text-mode entry containing `\u0000`. ADR-102.
+3. **Empty folders round-trip.** Import processes dir entries (`.dir === true`) BEFORE files via `fs.mkdir`. Export queries `project_folders` for each requested root and emits trailing-slash `zip.folder()` markers.
+4. **Drag-and-drop move (replaces dialog).** Entry rows are `draggable`; folder entries + breadcrumb segments are drop targets. Visual feedback: ring-2 primary highlight on drop target, `opacity-40` on dragged row. `canDropAt` guard rejects self / current-parent / folder-into-descendant. Toast distinguishes "Renamed" vs "Moved" by comparing `dirOf(from)` vs `dirOf(to)`.
+5. **Folder move support.** `FilesystemService.move()` now detects file vs folder; folder branch walks every descendant file + nested folder row (`getFilesUnderFolder` + direct `project_folders` query) and rewrites paths/parent_path/depth in single transaction. Storage layer untouched (UUID-based keys are immutable).
+6. **Agent FS tools full folder parity.** New `fs_mkdir` agent tool (idempotent empty-folder create). `fs_move` description updated for folder support; tracker cleanup uses new `forgetFsReadsUnderPrefix(conversationId, fromPath)` so descendants don't carry stale `STALE_FILE_STATE`. `fs_delete` extended with file-vs-folder dispatch; folder deletes require explicit `{ recursive: true }` flag (returns `FOLDER_DELETE_REQUIRES_RECURSIVE` otherwise — safety guard against LLM wipes). New DB queries: `getFolderByPath`, `forgetFsReadsUnderPrefix`. ADR-101.
+
+Project invariant established (ADR-101): the virtual disk simulates a real filesystem — every file op has a folder counterpart in BOTH UI + agent tools, with root `/` as the only un-mutable path. Future FS-mutating tools / UI actions MUST audit folder support before shipping.
 
 Deploy: run `bun install` at repo root to pick up `jszip` dep.
 
-Files: `apps/studio/server/package.json` (+jszip), `apps/studio/server/src/filesystem/zip.ts` (new), `apps/studio/server/src/routes/filesystem.ts` (+2 routes), `apps/studio/web/lib/api.ts` (+2 methods), `apps/studio/web/components/filesystem/file-explorer.tsx` (toolbar buttons, dropdown items, MoveDialog, ImportZipDialog).
+Files: `apps/studio/server/package.json` (+jszip), `apps/studio/server/src/filesystem/{zip.ts (new), service.ts, tools.ts}`, `apps/studio/server/src/routes/filesystem.ts` (+2 routes), `apps/studio/db/src/queries/{filesystem.ts (+getFolderByPath), conversation-fs-reads.ts (+forgetFsReadsUnderPrefix)}`, `apps/studio/web/lib/api.ts` (+2 methods), `apps/studio/web/components/filesystem/file-explorer.tsx` (toolbar buttons, dropdown items, drag-drop handlers, ImportZipDialog).
 
 ## Phase (2026-04-15) — Chat UI: active_command accordion + collapsible sub-sidebar ✅
 

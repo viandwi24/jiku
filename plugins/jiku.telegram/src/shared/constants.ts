@@ -26,3 +26,13 @@ export const REACTIVATE_WAIT_MS = 30_000
  * FIFO order preserved across batches.
  */
 export const INBOUND_BATCH_SIZE = 5
+
+/**
+ * Album debounce window — when a user sends multiple photos/videos as a
+ * single "album", Telegram emits one update per item sharing the same
+ * `media_group_id`. Adapter buffers them under that key and flushes ONE
+ * ConnectorEvent after this many ms of silence (measured from first arrival).
+ * 5s = generous safety margin; in practice Telegram ships the full album
+ * within <1s of the first item.
+ */
+export const MEDIA_GROUP_DEBOUNCE_MS = 5_000

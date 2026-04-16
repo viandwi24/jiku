@@ -37,13 +37,21 @@
 
 ### Disk follow-ups
 - [x] ZIP export/import on `/disk` — bidirectional, conflict policy `overwrite|skip|rename`, per-entry allow-list + path-traversal guard, caps `MAX_ZIP_BYTES=50MB` + `MAX_ZIP_ENTRIES=5000`. Binary files round-trip via `__b64__:` prefix decode/encode. Done 2026-04-15.
-- [x] Move action in file/folder dropdown — was a UI-only gap (server already supported `fs.move`). Dialog with absolute-path input. Done 2026-04-15.
+- [x] ZIP import: skip macOS `__MACOSX/` / `._*`, Windows `Thumbs.db` / `desktop.ini` (silent drop, surfaced via `skipped_junk` counter). Plus defensive null-byte check before DB write. Done 2026-04-15.
+- [x] ZIP round-trip empty folders — import processes dir entries via `fs.mkdir`; export queries `project_folders` and emits trailing-slash dir markers. Done 2026-04-15.
+- [x] Move action in file/folder dropdown — first shipped as a dialog, then replaced with native HTML5 drag-and-drop (entry rows draggable, folder + breadcrumb drop targets). Done 2026-04-15.
+- [x] Folder move support in `FilesystemService.move()` + `fs_move` agent tool — descendant files + nested folder rows rewritten in single transaction; client + server reject folder-into-descendant loops. Done 2026-04-15.
+- [x] Agent FS tools full folder coverage — `fs_mkdir` (NEW), `fs_move` extended for folders, `fs_delete` extended with `{recursive: true}` safety guard for folders. Done 2026-04-15. ADR-101.
 - [ ] Multi-select on FileExplorer — currently export-from-dropdown is single entry. Server endpoint already accepts `paths: string[]` so it's a UI change (checkbox column + bulk export). Not urgent.
 - [ ] Drag-and-drop ZIP onto the file tree → auto-open ImportZipDialog pre-populated with the file. Nice-to-have UX polish.
+- [ ] Copy file/folder agent tool + UI action (`fs_copy`) — currently move only. Useful when an agent wants to fork a SOP/template. Service-side: file copy is straightforward (download, upload to new key, insert row); folder copy walks descendants similar to folder move.
 
 ### Connector follow-ups
 - [x] Arrival row unification — Telegram adapters thread `arrival_event_id` via `event.metadata`; `routeConnectorEvent` now UPDATEs the arrival row via `finalizeEv` instead of INSERTing duplicates. Vocabulary collapsed: `pending_approval` removed (folded into `unhandled` with `drop_reason` describing the cause). Done 2026-04-15.
 - [x] Per-connector traffic mode (`inbound_only` / `outbound_only` / `both`) — schema-only addition (user runs `db push`), gated at routing + outbound tools, live-refreshed via PATCH without restart. Surfaced via `ConnectorContext.trafficMode`. UI on channel detail page. ADR-099. Done 2026-04-15.
+- [x] Telegram bot: inbound media-group (album) debounce 5s → one ConnectorEvent carrying all items via `content.media_items[]` + `metadata.media_items[]`. `fetch_media` action gained optional `index` param for per-item download. Outbound parity: added `send_video` on both adapters + `send_media_group` on userbot; `send_url_media` type enum extended with `"video"`. Done 2026-04-16. ADR-103.
+- [ ] Telegram userbot inbound: media-group debounce (mtcute `grouped_id`). Current bot-adapter debounce does not cover userbot — userbot still emits one event per album item. Port the same buffer pattern to `user-adapter.ts` `normalizeInbound` / `handler` path.
+- [ ] Agent helper: `fetch_all_media({event_id, save_dir})` convenience tool that loops over every `media_items[]` entry and returns the list of saved paths — saves the agent from writing a loop over `fetch_media({index})`.
 - [ ] Optional: zero-DB-footprint mode for `outbound_only` connectors — currently arrival rows stay as `dropped` for observability. Add option to DELETE the arrival row instead (combine with `log_mode='active_binding_only'` for consistency). Trade-off: lose "X messages dropped" diagnostic. Decide if needed.
 - [ ] Flip `drop_pending_updates: false` in Telegram adapter's `deleteWebhook` + `bot.start` — currently pending messages during the activation window get triple-dropped (diagnosis ran 2026-04-14). Trade-off: crash-restart replays backlog. Decide + ship.
 - [ ] Per-binding "Reset all pairings" button — set all identities under a binding to `status='pending'` so admin can re-trigger approval flow after a settings change without deleting the whole connector.

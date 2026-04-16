@@ -1,5 +1,51 @@
 # Decisions
 
+## ADR-103 — Telegram inbound media-group debounced at the adapter, emitted as ONE event
+
+**Context:** Telegram ships an "album" (multiple photos/videos sent in one user action) as N separate `message` updates that happen to share a `media_group_id`. Before this change the bot adapter emitted one `ConnectorEvent` per update, which meant an agent binding fired N times — the user saw N replies (or a race where each reply only "saw" one of the N photos, since `ctx.onEvent` is called N times in parallel). Field feedback was unambiguous: the agent should see the album as a single inbound with all items attached.
+
+**Decision:** Buffer inbound messages in a module-level `Map<key, buffer>` keyed by `(connector_id, chat_id, media_group_id)`. First arrival arms a 5-second timer (`MEDIA_GROUP_DEBOUNCE_MS`); subsequent arrivals append to the buffer WITHOUT resetting the timer (Telegram ships the full album within <1s in practice — timer is a safety margin, not a sliding window that could delay indefinitely). On flush, the adapter composes ONE `ConnectorEvent`:
+- `content.media_items: ConnectorEventMedia[]` (new public field) — no file_id, same Plan 22 / ADR-058 rule.
+- `content.media` = item[0] (back-compat).
+- `metadata.media_items[]` — adapter-internal array with per-item `media_file_id` etc. This is what `fetch_media` reads, via a new optional `index` param (default 0).
+- `metadata.media_group_id` — the Telegram grouping id itself, for debugging / correlation.
+- First item's `media_file_id`/`media_type`/etc. also inlined at the metadata root for back-compat with callers that don't pass `index`.
+- `raw_payload = { media_group: true, media_group_id, updates: [...grammy updates...] }` — preserves each item's original Telegram update (including the photo/document object with `file_id`) for inspection in the admin Channels Events detail drawer.
+- `bot_mentioned` / `bot_replied_to` OR-accumulated across items.
+
+`event-router.ts` renders a dedicated hint when `content.media_items.length > 1`: `Media group available: N items (X photos, Y videos) …use connector_run_action("fetch_media", { event_id, index: 0..N-1 }) — call once per item to fetch all`.
+
+Outbound parity is independent but shipped alongside: bot adapter now exposes `send_video`; `send_photo`/`send_file` accept `url` (matching userbot). Userbot adapter now exposes `send_video` + `send_media_group` (via mtcute's `sendMediaGroup`). Agent can pick the action that matches the shape it has (single image, single video, multi-image, multi-video, or mixed album).
+
+**Consequences:**
+- Agent sees albums naturally: one run, full context. Reply UX matches what a human would expect.
+- 5s worst-case inbound latency on albums — acceptable trade-off against the N-duplicate-run problem. The buffer is per-group, so concurrent albums from different users / chats don't block each other.
+- `onDeactivate` must clear timers owned by the deactivating connector (done) — otherwise a flush fires into a torn-down ctx. Pending buffers are dropped on deactivate; user re-sends if needed.
+- Userbot adapter (mtcute) is NOT covered yet — backlog entry exists (`tasks.md`). The mtcute `grouped_id` equivalent needs the same buffer pattern wired into its `normalizeInbound` path; the shape is identical from the event-router's perspective so no downstream change is needed when it lands.
+- Any new adapter that wants album-aware inbound must populate `content.media_items[]` + `metadata.media_items[]` + `metadata.media_group_id` (or the platform's equivalent). Singular `media` / `media_file_id` should still be item[0] for back-compat.
+
+## ADR-102 — ZIP import silently drops platform junk + null-byte defense for Postgres TEXT
+
+**Context:** First field test of the `/disk` ZIP import surfaced `Failed query: insert into "project_files" …` for `__MACOSX/._test.csv`. macOS Finder / Archive Utility zips emit AppleDouble resource forks (`__MACOSX/` folder + sibling `._<filename>` files) containing binary metadata with null bytes. Postgres `text` columns explicitly reject `\u0000` — the import naïvely treated the AppleDouble bytes as text and crashed with a cryptic DB error. Windows zips have analogous noise (`Thumbs.db`, `desktop.ini`).
+
+**Decision:** Two-layer defense. (1) Junk filter `isPlatformJunk(entryPath)` matches `__MACOSX/*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, any path segment starting with `._`. Matched entries are silently dropped — NOT counted as imported/skipped/failed, just incremented on a separate `skipped_junk` counter so the UI can show "dropped N platform-junk entries" for transparency. (2) Defensive null-byte check after content encoding: for text-mode extensions, `content.includes('\u0000')` short-circuits with a readable `"File contains null bytes"` error before any DB write attempt. This catches future binary-in-text-extension edge cases (e.g. a `.csv` that's actually a resource fork that slipped the junk filter).
+
+**Consequences:** Mac-zipped archives import cleanly. Future similar artefacts can be added to the junk pattern list. The null-byte check generalises beyond the macOS case so any future bug-class around binary-content-in-text-extension surfaces as a clean error instead of a Postgres failure. If we add more import paths (skills bulk import, restore-from-backup, etc.), they should reuse both guards — there's a memory entry warning future implementers.
+
+## ADR-101 — Virtual disk simulates a real filesystem: folder ops have full parity with files (UI + agent tools)
+
+**Context:** Initial `/disk` and agent FS tooling had file-only assumptions baked in: `FilesystemService.move()` threw NotFoundError for folder paths, `fs_delete` agent tool only handled files, `fs_mkdir` didn't exist as an agent tool, the move UI dialog (later drag-drop) only worked for files. Each gap was reported separately during field testing — moving a folder via UI failed, asking an agent to "create empty folder /reports/2026-04" had no tool, asking to "delete the /old folder" returned NotFound. Patching them ad-hoc would scatter half-fixes; the user crystallised the principle: "we're simulating a filesystem; everything that works for a file must work for a folder, except root `/`".
+
+**Decision:** Codify and enforce folder-ops parity as a project invariant. Concretely: every CRUD op on `project_files` has a parallel op on `project_folders` (or a unified op that dispatches by path type). Root `/` is the single exception — non-deletable, non-renamable, non-movable. Implementation choices:
+
+- `FilesystemService.move()` is unified: try file-by-path, fall back to folder-by-path. Folder branch walks descendant files + nested folder rows (`getFilesUnderFolder` + direct `project_folders` query) and rewrites `path` / `folder_path` / `parent_path` / `depth` in a single DB transaction. Storage layer is untouched (Plan 16 UUID-based keys are immutable).
+- `fs_delete` agent tool dispatches by path type. Folders require explicit `{ recursive: true }` — without it, returns `{ code: 'FOLDER_DELETE_REQUIRES_RECURSIVE' }`. Safety guard against an LLM wiping a tree thinking it's a file.
+- New `fs_mkdir` agent tool wraps `fs.mkdir(path)` (idempotent, ancestor chain auto-upserted). Description steers agents away from "always mkdir before write" — `fs_write` already creates ancestors implicitly via `upsertAncestorFolders`; `fs_mkdir` is only for EMPTY folders.
+- New DB helpers: `getFolderByPath(projectId, path)` (folder counterpart of `getFileByPath`), `forgetFsReadsUnderPrefix(conversation_id, prefix)` (drops descendant tracker rows after folder move/delete so they don't surface as `STALE_FILE_STATE`).
+- UI side already had folder operations for some actions (delete, navigate, rename inline) but lacked move and ZIP. Drag-and-drop move + ZIP export/import both work for folders.
+
+**Consequences:** When adding a new FS-mutating tool or UI action, the implementer MUST audit whether it should accept folders — and if so, write a folder-rewrite path that does NOT load every file into memory (use `getFilesUnderFolder` + a single transaction). When adding a new FS UI action, decide if it makes sense for folders and wire it the same way (avoid file-only conditionals). The invariant covers UI + agent tools — both surfaces need the parity, otherwise agents and humans see different filesystem semantics. Memory entry "Filesystem invariant: every file op has a folder counterpart" mirrors this principle for future sessions.
+
 ## ADR-100 — `<active_command>` parser uses greedy `lastIndexOf` to handle preamble false-positives
 
 **Context:** The slash-command dispatcher wraps the SOP body in `<active_command slug="...">...</active_command>`. The chat UI parser segments user-message text into accordion blocks. The dispatcher's preamble (inside the wrapper) explained where to find the trigger text by mentioning the literal closing tag string `</active_command>`. The lazy first-match parser then bounded the body at THAT mention, truncating the accordion to just the preamble — the actual SOP body + the real closing tag spilled into a raw text segment after the accordion. A subtle, high-traffic bug found in the field.

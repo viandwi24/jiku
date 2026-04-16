@@ -27,25 +27,34 @@ export function splitMessage(text: string, maxLength = TELEGRAM_MAX_LENGTH): str
  * Returns:
  *  - media: public metadata (no file_id) for ConnectorEvent.content.media
  *  - mediaMetadata: internal data (file_id etc.) for connector_events.metadata
+ *  - mediaGroupId: Telegram album grouping id when the message is part of a
+ *    multi-item album. Adapter uses this to batch N inbound updates into one
+ *    ConnectorEvent (see bot-adapter media-group buffer).
  * file_id NEVER leaves this adapter/DB — AI only gets event_id + summary hint.
  */
 export function extractTelegramMedia(msg: any): {
   media: ConnectorEventMedia | undefined
   mediaMetadata: Record<string, unknown>
+  mediaGroupId: string | undefined
 } {
+  const mediaGroupId: string | undefined = msg?.media_group_id ? String(msg.media_group_id) : undefined
+  const wrap = (r: { media: ConnectorEventMedia | undefined; mediaMetadata: Record<string, unknown> }) => ({
+    ...r,
+    mediaGroupId,
+  })
   if (msg.photo?.length) {
     const largest = msg.photo[msg.photo.length - 1]
-    return {
+    return wrap({
       media: { type: 'photo', file_size: largest.file_size },
       mediaMetadata: {
         media_file_id: largest.file_id,
         media_type: 'photo',
         media_file_size: largest.file_size,
       },
-    }
+    })
   }
   if (msg.document) {
-    return {
+    return wrap({
       media: {
         type: 'document',
         file_name: msg.document.file_name,
@@ -59,10 +68,10 @@ export function extractTelegramMedia(msg: any): {
         media_mime_type: msg.document.mime_type,
         media_file_size: msg.document.file_size,
       },
-    }
+    })
   }
   if (msg.voice) {
-    return {
+    return wrap({
       media: { type: 'voice', mime_type: msg.voice.mime_type, file_size: msg.voice.file_size },
       mediaMetadata: {
         media_file_id: msg.voice.file_id,
@@ -70,10 +79,10 @@ export function extractTelegramMedia(msg: any): {
         media_mime_type: msg.voice.mime_type,
         media_file_size: msg.voice.file_size,
       },
-    }
+    })
   }
   if (msg.video) {
-    return {
+    return wrap({
       media: {
         type: 'video',
         file_name: msg.video.file_name,
@@ -87,19 +96,19 @@ export function extractTelegramMedia(msg: any): {
         media_mime_type: msg.video.mime_type,
         media_file_size: msg.video.file_size,
       },
-    }
+    })
   }
   if (msg.sticker) {
-    return {
+    return wrap({
       media: { type: 'sticker', file_size: msg.sticker.file_size },
       mediaMetadata: {
         media_file_id: msg.sticker.file_id,
         media_type: 'sticker',
         media_file_size: msg.sticker.file_size,
       },
-    }
+    })
   }
-  return { media: undefined, mediaMetadata: {} }
+  return wrap({ media: undefined, mediaMetadata: {} })
 }
 
 export function extractRetryAfterSeconds(err: unknown): number | null {

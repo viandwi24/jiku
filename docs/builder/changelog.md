@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-04-16 — Telegram: inbound media-group (album) debounce + outbound photo/video/group parity
+
+Field feedback: a user who sent an album of N photos triggered N separate bot runs (one per item, each with one photo), yielding N replies. Agent also didn't have parity across bot vs userbot for single photo / single video / multi-photo / multi-video send.
+
+### Inbound media-group debounce (bot adapter)
+- Module-level Map `mediaGroupBuffers` keyed by `${connector_id}:${chat_id}:${media_group_id}`. First arrival arms a 5s timer (`MEDIA_GROUP_DEBOUNCE_MS`), subsequent arrivals append without resetting. On flush the adapter emits ONE `ConnectorEvent` with `content.media_items[]` (public metadata, no file_id) + `metadata.media_items[]` (adapter-internal `{ message_id, media_file_id, media_type, media_file_name, media_mime_type, media_file_size }` per item) + `metadata.media_group_id`. `content.media` also populated with item[0] for back-compat. `raw_payload = { media_group: true, media_group_id, updates: [...grammy updates...] }` so every item's original photo/document object (with `file_id`) is preserved for inspection in the Channels Events detail drawer.
+- `bot_mentioned` / `bot_replied_to` OR-accumulated across items (a mention in any caption counts).
+- `onDeactivate` drops pending buffers for the deactivating connector (clears timers) — avoids firing events into a torn-down ctx.
+- Userbot adapter NOT covered yet; backlog entry added.
+- `fetch_media` action gained optional `index` param (0-based) — agent calls once per item. Returns `{ path, size, index, total_items }` for groups. Back-compat: omitting `index` on a group returns item[0]; passing `index>0` on a non-group event errors clearly.
+- `event-router.ts` context hint distinguishes group vs single: `Media group available: 5 items (4 photos, 1 video) ~2480KB total (event_id: "...") — use connector_run_action("fetch_media", { event_id, index: 0..4, save_path: "..." }) — call once per item to fetch all`.
+- Extracted forum-topic auto-register into `autoRegisterForumTopic(msg, forumTopicName, connectorId)` so both inbound paths (single + group-flush) share it.
+
+### Outbound parity (bot + userbot)
+- **Bot**: added `send_video` action. `send_photo` / `send_video` / `send_file` accept exactly one of `file_path` / `url` / `file_id` (file_id = re-send media the bot received earlier without re-upload — Bot API accepts file_id strings directly, same-bot constraint). `send_url_media` `type` enum extended with `"video"`. `send_media_group` items extended with `file_id?` so albums can mix uploaded + re-used media. `sendMediaGroup` + `sendSingleMedia` internals now dispatch `url` vs `file_id` vs uploaded-bytes based on item shape.
+- **Userbot**: added `send_video` (url / path / file_id; uses mtcute `sendVideo` with `sendMedia`+type:'video' fallback). Added `send_media_group` (uses mtcute `sendMediaGroup` with `{ type, file, caption?, parseMode? }[]` shape; max 10 items). Extended `send_photo` / `send_document` to accept `file_id` (mtcute's `UploadFileLike` takes a bare string as TDLib/Bot-API file_id). Shared `resolveMediaInput({ url, path, file_id })` helper enforces "exactly one source" across all four actions.
+
+### File-id capture (inbound, confirmed intact)
+Audit done per field question. file_id ends up in TWO places on every inbound media row — the agent-invisible `metadata` (for `fetch_media` lookup) AND the admin-visible `raw_payload` (for debugging in the Channels Events detail drawer).
+- Single media: `metadata.media_file_id` + `raw_payload.message.{photo[]|document|video|voice|sticker}.file_id`.
+- Album (after debounce flush): `metadata.media_items[].media_file_id` (per item) + `metadata.media_file_id` (item[0] back-compat) + `raw_payload.updates[].message.*.file_id` (full per-item grammy updates preserved).
+- Public `ConnectorEventMedia` / `content.media*` deliberately omits `file_id` per Plan 22 / ADR-058 — agent uses `fetch_media({ event_id, index? })` which reads from `metadata`.
+
+### Type changes
+- `packages/types/src/index.ts`: `ConnectorEvent.content.media_items?: ConnectorEventMedia[]` (new — populated by album-capable adapters; singular `media` kept for back-compat).
+- `packages/types/src/index.ts`: `ConnectorMediaItem.file_id?: string` (new — outbound re-use without re-upload).
+
+### Files
+`packages/types/src/index.ts`, `plugins/jiku.telegram/src/shared/{constants,helpers}.ts`, `plugins/jiku.telegram/src/bot-adapter.ts`, `plugins/jiku.telegram/src/user-adapter.ts`, `apps/studio/server/src/connectors/event-router.ts`. See ADR-103 and `docs/feats/connectors.md` Telegram-specific section.
+
 ## 2026-04-15 — Agent FS tools: full folder coverage (mkdir + move + delete)
 
 User-stated invariant: "we're simulating a filesystem; everything that works for files must work for folders too — except moving the root `/` itself". Three agent-tool gaps closed.

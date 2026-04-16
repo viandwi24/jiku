@@ -192,8 +192,23 @@ Only these live in `plugins/jiku.telegram/src/index.ts`:
 - `computeScopeKey` / `targetFromScopeKey` for `group:<chat_id>:topic:<thread_id>` format
 - Simulate-typing 3-stage progressive reveal
 - grammy long-poll lifecycle: `bot.api.deleteWebhook({ drop_pending_updates: true }) + bot.api.close()` pre-flight on activate; `await bot.stop()` on deactivate
+- **Inbound media-group (album) debounce** (ADR-103, bot adapter): `bot-adapter.ts` buffers arrivals with the same `media_group_id` for `MEDIA_GROUP_DEBOUNCE_MS=5000ms` and emits ONE `ConnectorEvent` with `content.media_items[]` (public) + `metadata.media_items[]` (adapter-internal, per-item `media_file_id`/`media_type`/etc. — keyed by `fetch_media`'s new optional `index` param). `metadata.media_group_id` + back-compat singular `media_file_id` (item[0]) also populated. Per-item grammy update preserved in `raw_payload.updates[]`. `onDeactivate` clears pending buffers for the teared-down connector. Userbot adapter NOT covered yet (follow-up in tasks.md).
+- **File-id preservation**: every inbound media event has the Telegram `file_id` captured in TWO places — `metadata.media_file_id` (singular fallback) AND `metadata.media_items[].media_file_id` (per-item) — plus the full `raw_payload` carries the original grammy update tree with `photo[].file_id` / `document.file_id`. file_ids NEVER surface in the public `content.media` / `content.media_items[]` objects (Plan 22 / ADR-058); the agent fetches via `fetch_media({ event_id, index? })`.
 
-A WhatsApp / Discord / Slack adapter replicates these patterns with platform-specific glue, then everything else lights up automatically.
+### Telegram outbound actions — single vs album, triple-source (2026-04-16)
+
+Both `TelegramBotAdapter` and `TelegramUserAdapter` register the same 4 shapes so an agent can pick by content, not by adapter:
+
+| Action | Single/Album | Source params (exactly one) |
+|---|---|---|
+| `send_photo` | single | `file_path` \| `url` \| `file_id` |
+| `send_video` | single | `file_path` \| `url` \| `file_id` |
+| `send_file` (bot) / `send_document` (userbot) | single | `file_path` \| `url` \| `file_id` |
+| `send_media_group` | album (max 10) | each item: `file_path`/`path` \| `url` \| `file_id` |
+
+`file_id` enables re-sending media the adapter has seen before WITHOUT re-uploading — the Bot API / TDLib file_id string is passed through as-is. For the bot adapter this is also what `fetch_media` + `re-send` would replace when the agent wants to forward an inbound album back out.
+
+Bot adapter also keeps `send_url_media` (single, URL-only, type ∈ photo/video/document) for back-compat; same thing as the specialty actions with `url` set.
 
 ## Multi-connector safety for named targets (2026-04-14)
 

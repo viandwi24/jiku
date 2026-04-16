@@ -60,6 +60,21 @@ router.post('/projects/:pid/cron-tasks', requirePermission('cron_tasks:write'), 
     run_at?: string
     prompt?: string
     enabled?: boolean
+    /**
+     * Optional delivery spec mirrored into `context.delivery`. When populated
+     * with an addressable field (`target_name` / `scope_key` / `chat_id`),
+     * the scheduler emits the strict [Cron Delivery] preamble + tool hints
+     * on fire; otherwise the task runs in silent/internal mode (see
+     * `cron/context.ts::hasUsableDelivery`).
+     */
+    delivery?: {
+      connector_id?: string
+      target_name?: string
+      chat_id?: string
+      thread_id?: string
+      scope_key?: string
+      platform?: string
+    }
   }
 
   const mode: 'recurring' | 'once' = body.mode === 'once' ? 'once' : 'recurring'
@@ -78,6 +93,19 @@ router.post('/projects/:pid/cron-tasks', requirePermission('cron_tasks:write'), 
     runAt = d
   }
 
+  // Build delivery subset — drop empty strings so server stores a clean shape
+  // (preamble builder's `hasUsableDelivery` only accepts actually-populated
+  // addressable fields; empty strings would pass a truthy check and mislead).
+  const deliveryIn = body.delivery
+  const deliveryOut: Record<string, string> = {}
+  if (deliveryIn) {
+    for (const k of ['connector_id', 'target_name', 'chat_id', 'thread_id', 'scope_key', 'platform'] as const) {
+      const v = deliveryIn[k]
+      if (typeof v === 'string' && v.trim()) deliveryOut[k] = v.trim()
+    }
+  }
+  const context = Object.keys(deliveryOut).length > 0 ? { delivery: deliveryOut } : {}
+
   const task = await createCronTask({
     project_id: projectId,
     agent_id: body.agent_id,
@@ -87,6 +115,7 @@ router.post('/projects/:pid/cron-tasks', requirePermission('cron_tasks:write'), 
     cron_expression: mode === 'recurring' ? (body.cron_expression?.trim() ?? null) : null,
     run_at: runAt,
     prompt: body.prompt.trim(),
+    context,
     enabled: body.enabled ?? true,
     status: 'active',
     caller_id: userId,

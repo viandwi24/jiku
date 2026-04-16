@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-04-16 — Cron UI: delivery channel picker on new-task form
+
+Follow-on from the preamble-conditional fix. The preamble now gracefully falls back to silent mode when no delivery is configured — but the UI still gave users NO way to configure delivery, so every UI-created cron was silent by default. Now user-intended deliveries can be wired up-front from Studio.
+
+- Form (`apps/studio/web/app/(app)/studio/companies/[company]/projects/[project]/cron-tasks/new/page.tsx`) gained an optional "Delivery channel" section between Prompt and Enabled. Fields:
+  - **Connector** dropdown — lists the project's active connectors. Default "None — silent task" keeps old behavior.
+  - **Target** dropdown (shown when a connector is picked) — lists that connector's named targets (via `api.connectors.targets.list`). Default "None — enter raw chat_id below".
+  - **Chat ID** + **Thread ID** raw inputs (shown only when no target is picked) — power-user fallback when no named target exists yet. Thread ID is for forum topics.
+- Submit logic only includes `delivery` in the request when at least one addressable field (`target_name` or `chat_id`) is populated — prevents storing meaningless `{ connector_id }`-only specs that'd still trip the silent-mode check.
+- `platform` label is auto-derived from `connector.plugin_id` convention (`jiku.telegram.bot` → "Telegram") so the agent sees a human-readable channel name in the preamble.
+- Server route `POST /projects/:pid/cron-tasks` (`apps/studio/server/src/routes/cron-tasks.ts`) accepts `body.delivery`, trims empties, writes to `cron_tasks.context.delivery`. API client type (`apps/studio/web/lib/api.ts`) mirrors the shape.
+
+Behavior on create: no delivery picked → task runs silent (matches previous default). Delivery picked with target → agent gets full `connector_send_to_target` prose in preamble. Delivery picked with raw chat_id → agent gets `connector_send` prose with the right `chat_id` (and `thread_id` if the target is a forum topic).
+
+Files: `apps/studio/server/src/routes/cron-tasks.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../cron-tasks/new/page.tsx`.
+
+Follow-ups (in `tasks.md`):
+- Edit-task form mirror — currently only the create form collects delivery. Editing a task's delivery after creation still requires a DB patch or agent-driven `cron_update`.
+- Server-side warning when prompt mentions user-facing verbs (`kirim`, `ingatkan`, `beritahu`, `notify`) but delivery is empty — non-blocking "yakin mau silent?" hint.
+- Auto-populate delivery when the task is created while a Connector Context is present (e.g. an agent-mode chat on a Telegram binding).
+
+## 2026-04-16 — Cron preamble: conditional on delivery presence — silent/internal tasks no longer refuse with "no delivery config"
+
+Field bug: cron tasks created without a `[Cron Delivery]` config (UI `cron-tasks/new` form collects zero delivery fields; agent-invoked `cron_create` has `delivery` optional) fired with a preamble that demanded the agent "MUST call a delivery tool from [Cron Delivery]" even though no such block existed. Agent correctly-but-frustratingly refused with "tidak ada konfigurasi Cron Delivery". Common failure mode: slash-command-only prompts like `/marky-send only_content link` (where the command already owns its own output), internal tasks (file writes, conditional cron_create, heartbeats), etc.
+
+Root cause design gap: the preamble was written for the "reminder-on-a-channel" case (user says "ingatkan saya jam 6" in Telegram → agent writes cron with delivery pointing back to that chat) and assumed `[Cron Delivery]` would always be present. Any task lacking it was silently mis-served with strict delivery prose.
+
+Fix (`apps/studio/server/src/cron/context.ts`):
+
+- New helper `hasUsableDelivery(delivery)` — returns true only when at least one addressable field is present (`target_name`, `scope_key`, or `chat_id`). A bare `{ connector_id }` / `{ platform }` is metadata-only and fails the check.
+- `buildCronTriggerPreamble(hasDelivery: boolean)` now accepts a flag:
+  - `true` → existing strict "CRITICAL DELIVERY RULE / REQUIRED OUTPUT FORMAT" prose.
+  - `false` → new "TASK MODE — SILENT / INTERNAL" variant telling the agent: execute the Instruction with the tools available; don't refuse with "no delivery config"; if the Instruction implies user-facing output but no channel was configured, do your best and end with an internal log line noting the misconfiguration (operators can see the task log even if users can't).
+- `composeCronRunInput` passes `hasUsableDelivery(ctx.delivery)` AND skips appending `buildDeliveryBlock` entirely when the spec isn't usable (no more empty/dangling header block).
+
+Behavior after fix:
+- Cron with `delivery: { target_name: "...", connector_id: "..." }` → strict mode, unchanged.
+- Cron with `delivery: {}` or `context: {}` (the UI default) → silent mode. Agent just executes the Instruction. Slash commands in the prompt work because the command dispatcher handles its own output.
+
+Follow-ups (in `tasks.md`):
+- UI `cron-tasks/new/page.tsx` still collects zero delivery fields. Add a Channel Target selector (dropdown from `connector_targets` for the project) + optional raw `chat_id`/`thread_id`/`scope_key` fallback inputs. When user picks a target, populate `context.delivery` on create.
+- Server-side warning on create: if prompt contains obvious user-facing verbs (`kirim`, `ingatkan`, `reply`, `notify`, `beritahu`) and delivery is empty, surface a non-blocking warning in the UI.
+
+Files: `apps/studio/server/src/cron/context.ts`.
+
 ## 2026-04-16 — Telegram userbot: `replyTo` must be a plain number (not object) in mtcute v0.27 + single-value semantic
 
 Field bug from the prior streaming-reply fix: passing `replyTo: { messageId, threadId }` as a plain object crashed every send with `TypeError: undefined is not an object (evaluating 'params.replyTo?.chat.inputPeer')` at `@mtcute/core/send-common.js:27`. mtcute's high-level API overloads `replyTo`:

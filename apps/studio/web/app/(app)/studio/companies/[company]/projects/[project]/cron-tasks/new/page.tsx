@@ -36,6 +36,17 @@ function toISOFromLocal(local: string): string | null {
   return d.toISOString()
 }
 
+/**
+ * Best-effort human label from a connector's plugin_id. Convention:
+ * `jiku.<platform>[.<variant>]` → capitalised `<platform>` (e.g.
+ * `jiku.telegram.bot` → "Telegram"). Used only for the `delivery.platform`
+ * metadata hint surfaced to the agent in the [Cron Delivery] preamble.
+ */
+function platformFromPluginId(pluginId: string): string {
+  const mid = pluginId.split('.')[1] ?? pluginId
+  return mid.charAt(0).toUpperCase() + mid.slice(1)
+}
+
 export default function NewCronTaskPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const router = useRouter()
@@ -73,9 +84,58 @@ export default function NewCronTaskPage({ params }: PageProps) {
   const [prompt, setPrompt] = useState('')
   const [enabled, setEnabled] = useState(true)
 
+  // Delivery spec — optional. When populated, the scheduler emits the strict
+  // [Cron Delivery] preamble on fire; otherwise the task runs silently.
+  const [deliveryConnectorId, setDeliveryConnectorId] = useState('')
+  const [deliveryTargetName, setDeliveryTargetName] = useState('')
+  const [deliveryChatId, setDeliveryChatId] = useState('')
+  const [deliveryThreadId, setDeliveryThreadId] = useState('')
+
+  const { data: connectorsData } = useQuery({
+    queryKey: ['connectors', projectId],
+    queryFn: () => api.connectors.list(projectId),
+    enabled: !!projectId,
+  })
+
+  const { data: targetsData } = useQuery({
+    queryKey: ['connector-targets', deliveryConnectorId],
+    queryFn: () => api.connectors.targets.list(deliveryConnectorId),
+    enabled: !!deliveryConnectorId,
+  })
+
   const createMutation = useMutation({
     mutationFn: () => {
       const runAtISO = mode === 'once' ? toISOFromLocal(runAtLocal) : null
+
+      // Build delivery payload — only include fields the user actually filled.
+      // Server (`cron-tasks.ts`) further trims empties, but we normalise here
+      // so an unintentional partial (connector picked, no address) still
+      // falls back to silent mode rather than storing a meaningless spec.
+      let delivery: {
+        connector_id?: string
+        target_name?: string
+        chat_id?: string
+        thread_id?: string
+        platform?: string
+      } | undefined
+      if (deliveryConnectorId) {
+        const connector = connectorsData?.connectors.find(c => c.id === deliveryConnectorId)
+        const spec: NonNullable<typeof delivery> = {
+          connector_id: deliveryConnectorId,
+          ...(connector ? { platform: platformFromPluginId(connector.plugin_id) } : {}),
+        }
+        if (deliveryTargetName) {
+          spec.target_name = deliveryTargetName
+        } else {
+          const cid = deliveryChatId.trim()
+          const tid = deliveryThreadId.trim()
+          if (cid) spec.chat_id = cid
+          if (tid) spec.thread_id = tid
+        }
+        // Require at least one addressable field — otherwise don't send.
+        if (spec.target_name || spec.chat_id) delivery = spec
+      }
+
       return api.cronTasks.create(projectId, {
         agent_id: agentId,
         name: name.trim(),
@@ -85,6 +145,7 @@ export default function NewCronTaskPage({ params }: PageProps) {
         run_at: runAtISO,
         prompt: prompt.trim(),
         enabled,
+        delivery,
       })
     },
     onSuccess: () => {
@@ -209,6 +270,92 @@ export default function NewCronTaskPage({ params }: PageProps) {
           placeholder="Enter the prompt to send to the agent when this task runs..."
           className="text-sm min-h-30"
         />
+      </div>
+
+      {/* Delivery (optional) */}
+      <div className="space-y-3 border rounded-lg p-4">
+        <div>
+          <p className="text-sm font-medium">Delivery channel (optional)</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Where the task should send user-facing output. Leave empty for silent / internal tasks
+            (file writes, slash-commands that deliver themselves, conditional schedulers).
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Connector</Label>
+          <Select
+            value={deliveryConnectorId || 'none'}
+            onValueChange={(v) => {
+              setDeliveryConnectorId(v === 'none' ? '' : v)
+              setDeliveryTargetName('')
+              setDeliveryChatId('')
+              setDeliveryThreadId('')
+            }}
+          >
+            <SelectTrigger className="text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None — silent task</SelectItem>
+              {(connectorsData?.connectors ?? []).map(c => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.display_name} · {platformFromPluginId(c.plugin_id)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {deliveryConnectorId && (
+          <>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Target</Label>
+              <Select
+                value={deliveryTargetName || '__raw__'}
+                onValueChange={(v) => setDeliveryTargetName(v === '__raw__' ? '' : v)}
+              >
+                <SelectTrigger className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__raw__">None — enter raw chat_id below</SelectItem>
+                  {(targetsData?.targets ?? []).map(t => (
+                    <SelectItem key={t.id} value={t.name}>
+                      {t.display_name || t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Named targets are auto-registered on first inbound from a channel / forum topic, or created manually under Channels → Targets.
+              </p>
+            </div>
+
+            {!deliveryTargetName && (
+              <>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Chat ID</Label>
+                  <Input
+                    value={deliveryChatId}
+                    onChange={e => setDeliveryChatId(e.target.value)}
+                    placeholder="e.g. -1003647779020"
+                    className="text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Thread ID (forum topic)</Label>
+                  <Input
+                    value={deliveryThreadId}
+                    onChange={e => setDeliveryThreadId(e.target.value)}
+                    placeholder="Leave empty for main chat"
+                    className="text-sm"
+                  />
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {/* Enabled toggle */}

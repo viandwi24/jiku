@@ -40,11 +40,25 @@ export interface CronContext {
   notes?: string
 }
 
-export function buildCronTriggerPreamble(): string {
-  return [
+/**
+ * A delivery spec is "usable" when it carries at least one addressable field
+ * the agent could send to (`target_name`, `scope_key`, or `chat_id`). A bare
+ * `{ connector_id }` or `{ platform }` is metadata only — no tool line can be
+ * generated from it, so the task must be treated as silent/internal.
+ */
+export function hasUsableDelivery(delivery: CronDeliverySpec | null | undefined): boolean {
+  if (!delivery) return false
+  return !!(delivery.target_name || delivery.scope_key || delivery.chat_id)
+}
+
+export function buildCronTriggerPreamble(hasDelivery: boolean): string {
+  const header = [
     '[Cron Trigger]',
     'The scheduler is invoking you now — there is NO new user message in this run, and the user is NOT watching this task log.',
     '',
+  ]
+
+  const deliveryMode = [
     'CRITICAL DELIVERY RULE:',
     'Any text you write as a normal response is logged in the internal task conversation ONLY — the user receives NOTHING from it. The user only sees output that you explicitly send via a delivery tool (see [Cron Delivery]).',
     'Producing the reminder text without calling a delivery tool = silent failure. The cron fired, the task ran, the user got nothing.',
@@ -55,11 +69,34 @@ export function buildCronTriggerPreamble(): string {
     '  3. After the tool result, optionally one short sentence confirming success.',
     '  Do NOT split this across multiple responses — do step 1 and step 2 in the SAME response.',
     '',
+  ]
+
+  // Silent/internal variant — no [Cron Delivery] block will follow. Covers:
+  //  • Tasks that invoke slash commands which manage their own output (e.g.
+  //    `/marky-send …` handles its own channel send).
+  //  • Internal jobs: file writes, DB mutations, conditional `cron_create`,
+  //    heartbeats, self-reflection loops.
+  //  • Tasks whose delivery was deliberately omitted at creation time.
+  //
+  // The agent must NOT refuse with "no delivery config" — that was the old
+  // failure mode when the strict preamble demanded a block that didn't exist.
+  // Instead: execute the Instruction using whatever tools are available.
+  const silentMode = [
+    'TASK MODE — SILENT / INTERNAL:',
+    'No delivery channel is pre-configured for this cron (no [Cron Delivery] block below). Execute the Instruction using the tools you have.',
+    'This mode covers: slash-command triggers that handle their own output, file/DB side-effects, conditional schedulers (e.g. `cron_create` based on state), heartbeats, and any task whose output is internal.',
+    'Do NOT refuse with "no delivery config" — that is a legacy mistake. Either the Instruction fully describes what to do (just do it), or it implies user-facing output that genuinely needs a channel — in the latter case, do your best with available `connector_send*` / slash-command tools and end the run with a short internal log line noting the missing delivery configuration (operators will see it in the task log; the user will not).',
+    '',
+  ]
+
+  const commonTail = [
     'OTHER RULES:',
     '- Do not ask the user clarifying questions — they are not in the loop right now.',
     '- If the Instruction describes conditional logic (e.g. "kalau X maka buat cron baru"): you MAY call cron_create / cron_update / cron_delete — dynamic scheduling is supported.',
     '- Never interpret the Instruction as a fresh request to set up a reminder unless it explicitly says so — the reminder already exists (it is this task).',
-  ].join('\n')
+  ]
+
+  return [...header, ...(hasDelivery ? deliveryMode : silentMode), ...commonTail].join('\n')
 }
 
 function buildOriginBlock(origin?: CronOriginSpec): string {
@@ -117,14 +154,15 @@ function buildDeliveryBlock(delivery?: CronDeliverySpec): string {
  */
 export function composeCronRunInput(storedPrompt: string, context: CronContext | null | undefined): string {
   const ctx = context ?? {}
+  const hasDelivery = hasUsableDelivery(ctx.delivery)
   const parts = [
-    buildCronTriggerPreamble(),
+    buildCronTriggerPreamble(hasDelivery),
     buildOriginBlock(ctx.origin),
     buildSubjectBlock(ctx.subject),
     '',
     'Instruction:',
     storedPrompt,
-    buildDeliveryBlock(ctx.delivery),
+    hasDelivery ? buildDeliveryBlock(ctx.delivery) : '',
   ]
   return parts.filter(p => p !== '').join('\n')
 }

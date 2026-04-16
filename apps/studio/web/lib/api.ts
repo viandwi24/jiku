@@ -922,6 +922,20 @@ export const api = {
       run_at?: string | null
       prompt: string
       enabled?: boolean
+      /**
+       * Optional delivery hint. Populated into `cron_tasks.context.delivery`.
+       * At fire time the scheduler emits the strict [Cron Delivery] preamble
+       * only when `target_name` / `scope_key` / `chat_id` is set; otherwise
+       * the task runs in silent/internal mode (see `cron/context.ts`).
+       */
+      delivery?: {
+        connector_id?: string
+        target_name?: string
+        chat_id?: string
+        thread_id?: string
+        scope_key?: string
+        platform?: string
+      }
     }) =>
       request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks`, {
         method: 'POST',

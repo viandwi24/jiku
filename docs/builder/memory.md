@@ -1,5 +1,9 @@
 # Memory
 
+## `JikuRunParams.extra_runtime_context` is how Studio threads per-run state into tool handlers
+
+Generic `Record<string, unknown>` field on `JikuRunParams` (`packages/types/src/index.ts`). The runner (`packages/core/src/runner.ts`) spreads it into the `RuntimeContext` that tool handlers receive as `toolCtx.runtime`. Used by Studio's event-router to surface the Connector Context to tools that need to self-wire (e.g. `cron_create` auto-populates `delivery` from `toolCtx.runtime.connector_hint = { connector_id, chat_id, thread_id, scope_key, platform }`). Keys MUST be namespaced (prefer `<feature>_hint` / `<feature>_context`) because they share the flat RuntimeContext with plugin-contributed providers — generic names like `connector_id` can collide. Spread order in runner: hardcoded fields → `llm` bridge → `extra_runtime_context` → `plugins.resolveProviders(caller)` (plugin providers can intentionally override).
+
 ## Cron task preamble is TWO variants — strict (delivery configured) vs silent (no delivery)
 
 `apps/studio/server/src/cron/context.ts` gates the preamble on `hasUsableDelivery(ctx.delivery)` — true only when the spec has `target_name` / `scope_key` / `chat_id` (bare `connector_id` / `platform` counts as metadata, not addressable). The STRICT variant demands the agent call a delivery tool from `[Cron Delivery]` — used when user asked for a channel reminder. The SILENT variant tells the agent "execute the Instruction, this is internal; don't refuse with 'no delivery config'" — used for slash-command prompts (`/marky-send …`), file writes, conditional `cron_create`, heartbeats. Cron UI create form (`cron-tasks/new/page.tsx`) collects no delivery fields — so UI-created tasks default to silent. Agent-created via `cron_create` can include delivery when reacting to a `[Connector Context]`. Follow-up: add a channel target selector to the UI form so tasks that SHOULD deliver can opt in explicitly.

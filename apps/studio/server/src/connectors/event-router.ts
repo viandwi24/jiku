@@ -316,6 +316,38 @@ const LANG_TO_TIMEZONE: Record<string, string> = {
   he: 'Asia/Jerusalem',
 }
 
+/**
+ * Plan 22 follow-up — structured connector context surfaced on `RuntimeContext`
+ * for tool handlers that need to auto-derive a delivery target (e.g.
+ * `cron_create` filling `delivery` when the agent omits it). Intentionally a
+ * FLAT string record with narrow keys so tools don't need to chase the full
+ * `ConnectorBinding` / `ConnectorIdentity` shapes.
+ *
+ * Keys populated:
+ *   - connector_id        — UUID of the active connector row
+ *   - platform            — human label derived from `display_name` or plugin id
+ *   - chat_id             — from event.ref_keys
+ *   - thread_id           — from event.ref_keys (forum topic membership)
+ *   - scope_key           — from the event itself
+ *
+ * Consumers MUST tolerate missing keys — a DM inbound has no thread_id, an
+ * adapter that doesn't set scope_key won't populate that field, etc.
+ */
+function buildConnectorHint(
+  event: ConnectorEvent,
+  connectorId: string,
+  connectorDisplayName?: string | null,
+): Record<string, string> {
+  const hint: Record<string, string> = { connector_id: connectorId }
+  if (connectorDisplayName) hint['platform'] = connectorDisplayName
+  const chatId = event.ref_keys?.['chat_id']
+  if (chatId) hint['chat_id'] = chatId
+  const threadId = event.ref_keys?.['thread_id']
+  if (threadId) hint['thread_id'] = threadId
+  if (event.scope_key) hint['scope_key'] = event.scope_key
+  return hint
+}
+
 async function buildConnectorContextString(
   event: ConnectorEvent,
   binding: ConnectorBinding,
@@ -1381,6 +1413,12 @@ async function executeConversationAdapter(
           mode: 'chat',
           input,
           extra_system_segments: (refSegments && refSegments.length > 0) ? refSegments : undefined,
+          // Plan 22 follow-up — surface the connector context to tool handlers
+          // (e.g. `cron_create` auto-populates `delivery` from these when the
+          // agent doesn't supply it explicitly).
+          extra_runtime_context: {
+            connector_hint: buildConnectorHint(event, connectorId, connectorDisplayName),
+          },
         }),
         registerObserverStream: (obsStream: ReadableStream<unknown>) => {
           const { broadcast, bufferChunk, done: registryDone } = streamRegistry.startRun(conversationId)
@@ -1444,6 +1482,9 @@ async function executeConversationAdapter(
       mode: 'chat',
       input,
       extra_system_segments: (refSegments && refSegments.length > 0) ? refSegments : undefined,
+      extra_runtime_context: {
+        connector_hint: buildConnectorHint(event, connectorId, connectorDisplayName),
+      },
     })
 
     // Register in streamRegistry so web observers (other tabs, run detail) get realtime updates

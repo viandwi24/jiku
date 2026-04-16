@@ -642,6 +642,10 @@ export class AgentRunner {
       // without needing a separate injection mechanism.
       project_id: this.runtimeId,
       llm: llmBridge,
+      // Plan 22 follow-up — caller-supplied runtime keys (e.g. connector_hint
+      // from event-router) spread BEFORE plugin providers so a plugin that
+      // contributes the same key can intentionally override, not be shadowed.
+      ...(params.extra_runtime_context ?? {}),
       ...this.plugins.resolveProviders(caller),
     }
 

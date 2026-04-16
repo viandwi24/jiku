@@ -71,6 +71,13 @@ function fromLocalInput(local: string): string | null {
   return d.toISOString()
 }
 
+/** Mirrors the helper in the new-task page. Derives a human platform label
+ *  (e.g. "Telegram") from a connector's `plugin_id`. */
+function platformFromPluginId(pluginId: string): string {
+  const mid = pluginId.split('.')[1] ?? pluginId
+  return mid.charAt(0).toUpperCase() + mid.slice(1)
+}
+
 export default function CronTaskDetailPage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug, id: taskId } = use(params)
   const router = useRouter()
@@ -115,6 +122,24 @@ export default function CronTaskDetailPage({ params }: PageProps) {
   const [prompt, setPrompt] = useState('')
   const [enabled, setEnabled] = useState(true)
 
+  // Delivery — hydrated from task.context.delivery.
+  const [deliveryConnectorId, setDeliveryConnectorId] = useState('')
+  const [deliveryTargetName, setDeliveryTargetName] = useState('')
+  const [deliveryChatId, setDeliveryChatId] = useState('')
+  const [deliveryThreadId, setDeliveryThreadId] = useState('')
+
+  const { data: connectorsData } = useQuery({
+    queryKey: ['connectors', projectId],
+    queryFn: () => api.connectors.list(projectId),
+    enabled: !!projectId,
+  })
+
+  const { data: targetsData } = useQuery({
+    queryKey: ['connector-targets', deliveryConnectorId],
+    queryFn: () => api.connectors.targets.list(deliveryConnectorId),
+    enabled: !!deliveryConnectorId,
+  })
+
   useEffect(() => {
     if (!task) return
     setName(task.name)
@@ -125,6 +150,11 @@ export default function CronTaskDetailPage({ params }: PageProps) {
     setRunAtLocal(toLocalInputValue(task.run_at))
     setPrompt(task.prompt)
     setEnabled(task.enabled)
+    const d = task.context?.delivery
+    setDeliveryConnectorId(d?.connector_id ?? '')
+    setDeliveryTargetName(d?.target_name ?? '')
+    setDeliveryChatId(d?.chat_id ?? '')
+    setDeliveryThreadId(d?.thread_id ?? '')
   }, [task])
 
   const invalidate = () => {
@@ -134,16 +164,46 @@ export default function CronTaskDetailPage({ params }: PageProps) {
   }
 
   const saveMutation = useMutation({
-    mutationFn: () => api.cronTasks.update(projectId, taskId, {
-      name: name.trim(),
-      description: description.trim() || null,
-      agent_id: agentId,
-      mode,
-      cron_expression: mode === 'recurring' ? cronExpression.trim() : null,
-      run_at: mode === 'once' ? fromLocalInput(runAtLocal) : null,
-      prompt: prompt.trim(),
-      enabled,
-    }),
+    mutationFn: () => {
+      // Build delivery patch — `null` clears, object sets, missing field = untouched.
+      // Matches the new-task page's shape: require at least one addressable field
+      // (target_name or chat_id) before sending a non-null spec; otherwise clear.
+      type DeliveryPayload = {
+        connector_id?: string
+        target_name?: string
+        chat_id?: string
+        thread_id?: string
+        platform?: string
+      }
+      let delivery: DeliveryPayload | null = null
+      if (deliveryConnectorId) {
+        const connector = connectorsData?.connectors.find(c => c.id === deliveryConnectorId)
+        const spec: DeliveryPayload = {
+          connector_id: deliveryConnectorId,
+          ...(connector ? { platform: platformFromPluginId(connector.plugin_id) } : {}),
+        }
+        if (deliveryTargetName) {
+          spec.target_name = deliveryTargetName
+        } else {
+          const cid = deliveryChatId.trim()
+          const tid = deliveryThreadId.trim()
+          if (cid) spec.chat_id = cid
+          if (tid) spec.thread_id = tid
+        }
+        if (spec.target_name || spec.chat_id) delivery = spec
+      }
+      return api.cronTasks.update(projectId, taskId, {
+        name: name.trim(),
+        description: description.trim() || null,
+        agent_id: agentId,
+        mode,
+        cron_expression: mode === 'recurring' ? cronExpression.trim() : null,
+        run_at: mode === 'once' ? fromLocalInput(runAtLocal) : null,
+        prompt: prompt.trim(),
+        enabled,
+        delivery,
+      })
+    },
     onSuccess: () => {
       invalidate()
       toast.success('Cron task saved')
@@ -375,6 +435,92 @@ export default function CronTaskDetailPage({ params }: PageProps) {
           onChange={e => setPrompt(e.target.value)}
           className="text-sm min-h-30"
         />
+      </div>
+
+      {/* Delivery (optional) — mirrors new-task page */}
+      <div className="space-y-3 border rounded-lg p-4">
+        <div>
+          <p className="text-sm font-medium">Delivery channel (optional)</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Where the task should send user-facing output. Clearing returns the task to silent /
+            internal mode (file writes, slash-commands that deliver themselves, conditional schedulers).
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Connector</Label>
+          <Select
+            value={deliveryConnectorId || 'none'}
+            onValueChange={(v) => {
+              setDeliveryConnectorId(v === 'none' ? '' : v)
+              setDeliveryTargetName('')
+              setDeliveryChatId('')
+              setDeliveryThreadId('')
+            }}
+          >
+            <SelectTrigger className="text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None — silent task</SelectItem>
+              {(connectorsData?.connectors ?? []).map(c => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.display_name} · {platformFromPluginId(c.plugin_id)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {deliveryConnectorId && (
+          <>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Target</Label>
+              <Select
+                value={deliveryTargetName || '__raw__'}
+                onValueChange={(v) => setDeliveryTargetName(v === '__raw__' ? '' : v)}
+              >
+                <SelectTrigger className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__raw__">None — enter raw chat_id below</SelectItem>
+                  {(targetsData?.targets ?? []).map(t => (
+                    <SelectItem key={t.id} value={t.name}>
+                      {t.display_name || t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Named targets are auto-registered on first inbound from a channel / forum topic, or created manually under Channels → Targets.
+              </p>
+            </div>
+
+            {!deliveryTargetName && (
+              <>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Chat ID</Label>
+                  <Input
+                    value={deliveryChatId}
+                    onChange={e => setDeliveryChatId(e.target.value)}
+                    placeholder="e.g. -1003647779020"
+                    className="text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Thread ID (forum topic)</Label>
+                  <Input
+                    value={deliveryThreadId}
+                    onChange={e => setDeliveryThreadId(e.target.value)}
+                    placeholder="Leave empty for main chat"
+                    className="text-sm"
+                  />
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {/* Enabled toggle */}

@@ -111,16 +111,17 @@ export default function NewCronTaskPage({ params }: PageProps) {
       // Server (`cron-tasks.ts`) further trims empties, but we normalise here
       // so an unintentional partial (connector picked, no address) still
       // falls back to silent mode rather than storing a meaningless spec.
-      let delivery: {
+      type DeliveryPayload = {
         connector_id?: string
         target_name?: string
         chat_id?: string
         thread_id?: string
         platform?: string
-      } | undefined
+      }
+      let delivery: DeliveryPayload | undefined
       if (deliveryConnectorId) {
         const connector = connectorsData?.connectors.find(c => c.id === deliveryConnectorId)
-        const spec: NonNullable<typeof delivery> = {
+        const spec: DeliveryPayload = {
           connector_id: deliveryConnectorId,
           ...(connector ? { platform: platformFromPluginId(connector.plugin_id) } : {}),
         }
@@ -148,8 +149,14 @@ export default function NewCronTaskPage({ params }: PageProps) {
         delivery,
       })
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success('Cron task created')
+      // Surface server-emitted warnings (e.g. "prompt suggests user-facing
+      // output but delivery is empty") as separate toasts so they don't
+      // blend with the success. Duration is long enough to read + act on.
+      for (const w of data.warnings ?? []) {
+        toast.warning(w, { duration: 8000 })
+      }
       router.push(`/studio/companies/${companySlug}/projects/${projectSlug}/cron-tasks`)
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to create'),

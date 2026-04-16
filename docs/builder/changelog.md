@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-04-16 — Cron: edit-form delivery editor, server warning, auto-populate from Connector Context
+
+Three follow-ups from the earlier cron-delivery work:
+
+### 1. Edit-form delivery editor (`cron-tasks/[id]/page.tsx`)
+Same section as the new-task form: Connector dropdown → Target dropdown → raw Chat ID / Thread ID fallbacks. Hydrates from `task.context.delivery` on load. Save mutation threads a `delivery: CronDeliverySpec | null` field — `null` clears (task → silent), a spec with at least one addressable field (`target_name` or `chat_id`) sets.
+
+Server PATCH (`routes/cron-tasks.ts`) accepts the same `delivery` body field. Merging semantics: when `delivery` is supplied, replace `context.delivery` while preserving other `context` keys (`origin` / `subject` — managed by the agent's `cron_create` tool, not UI). `null` → drop only the delivery key. Missing field → context untouched.
+
+Type shape mirrored client-side: new `CronDeliverySpec` export on `lib/api.ts`; `CronTask.context` now typed. `cronTasks.update` body accepts `delivery?: CronDeliverySpec | null`.
+
+### 2. Non-blocking create warning (`routes/cron-tasks.ts`)
+On `POST /projects/:pid/cron-tasks`, if delivery ends up empty AND the prompt matches a loose imperative-verb heuristic (`kirim|kirimkan|ingatkan|ingetin|beritahu|bilang|tanyakan|sampaikan|notify|notif|send|remind|tell|ping|alert|message`), the response includes a `warnings: string[]` field alongside `cron_task`. UI surfaces as `toast.warning(...)` on the new-task page (8s duration, doesn't block navigation).
+
+False-positive-tolerant by design: users who genuinely want a silent task with matching verbs (e.g. "kirim ke file output.json") just dismiss the toast. False-negatives (missing a silent-but-should-have-delivered task) are more expensive.
+
+### 3. Auto-populate delivery from Connector Context (`cron/tools.ts` + `event-router.ts` + core runtime)
+When an agent calls `cron_create` from within a connector-initiated run (user chats on Telegram → agent creates cron), the tool now auto-fills `delivery` from the active connector context even if the agent doesn't supply it. Eliminates the "agent forgot to wire `delivery` → user never gets the reminder" silent failure.
+
+Mechanism:
+- **New `JikuRunParams.extra_runtime_context`** (`packages/types/src/index.ts`) — generic `Record<string, unknown>` the caller spreads into `RuntimeContext` for one run. Keys must be namespaced to avoid clashing with plugin-provider contributions.
+- **Runner** (`packages/core/src/runner.ts`) — spreads `params.extra_runtime_context` into `runtimeCtx` BEFORE `plugins.resolveProviders(caller)` so plugins can intentionally override.
+- **Event-router** (`apps/studio/server/src/connectors/event-router.ts`) — new `buildConnectorHint(event, connectorId, displayName)` helper produces `{ connector_id, platform, chat_id?, thread_id?, scope_key? }`. Passed via `extra_runtime_context: { connector_hint: {...} }` at BOTH `runtimeManager.run(...)` call sites inside `executeConversationAdapter` (streaming handoff path + legacy fallback path).
+- **`cron_create` tool** (`apps/studio/server/src/cron/tools.ts`) — gained a `toolCtx` parameter on `execute`. After merging agent-provided `delivery`, if the spec still lacks an addressable field AND the prompt matches `promptImpliesUserFacingOutput`, copy `connector_id` / `chat_id` / `thread_id` / `scope_key` / `platform` from `toolCtx.runtime.connector_hint` into `context.delivery`. Agent-supplied fields win; auto-fill only backs off when the slot is empty.
+
+Guardrails:
+- Prompt-intent heuristic prevents auto-populating truly-internal cron tasks (file writes, conditional `cron_create` chains).
+- Agent can still opt out by clearing delivery explicitly (`delivery: {}`) — auto-fill only runs when no addressable field is present AND no explicit empty spec was passed. (Passing `{ connector_id: "..." }` with no address triggers auto-fill; passing nothing also does. Passing `{ target_name: "xyz" }` opts out of auto-fill entirely.)
+
+Files: `packages/types/src/index.ts`, `packages/core/src/runner.ts`, `apps/studio/server/src/connectors/event-router.ts`, `apps/studio/server/src/cron/tools.ts`, `apps/studio/server/src/routes/cron-tasks.ts`, `apps/studio/web/lib/api.ts`, `apps/studio/web/app/.../cron-tasks/{new,[id]}/page.tsx`.
+
 ## 2026-04-16 — Cron UI: delivery channel picker on new-task form
 
 Follow-on from the preamble-conditional fix. The preamble now gracefully falls back to silent mode when no delivery is configured — but the UI still gave users NO way to configure delivery, so every UI-created cron was silent by default. Now user-intended deliveries can be wired up-front from Studio.

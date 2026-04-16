@@ -678,6 +678,16 @@ export interface JikuRunParams {
    * weak agents otherwise default to "I can't" because base_prompt persona dominates).
    */
   extra_system_prepend?: Array<{ label: string; content: string }>
+  /**
+   * Plan 22 follow-up — extra keys to spread into the `RuntimeContext` passed
+   * to tool handlers for this single run. Used by the event-router to surface
+   * the connector context (connector_id / chat_id / thread_id / scope_key /
+   * target_name / platform) so tools like `cron_create` can auto-populate
+   * delivery without the agent having to parse the prompt. Keep keys
+   * namespaced (e.g. `connector_hint`) to avoid clashing with plugin
+   * provider contributions that share the same flat RuntimeContext.
+   */
+  extra_runtime_context?: Record<string, unknown>
   /** Plan 15.2: Semantic similarity scores from Qdrant (memoryId → score 0-1). Injected by studio layer. */
   semantic_scores?: Map<string, number>
   /**

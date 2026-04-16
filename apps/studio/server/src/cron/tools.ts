@@ -9,9 +9,20 @@ import {
   restoreCronTask,
   type CronTaskStatus,
 } from '@jiku-studio/db'
-import type { ToolDefinition } from '@jiku/types'
+import type { ToolContext, ToolDefinition } from '@jiku/types'
 import { cronTaskScheduler } from './scheduler.ts'
 import type { CronContext } from './context.ts'
+
+/**
+ * Loose heuristic — does the prompt imply the cron should produce user-facing
+ * output when it fires? Used to decide whether to auto-populate `delivery`
+ * from the active Connector Context. False positives are OK (user can still
+ * omit a channel explicitly by leaving the connector context out of their
+ * chat run); false negatives waste the auto-population.
+ */
+function promptImpliesUserFacingOutput(prompt: string): boolean {
+  return /\b(kirim|kirimkan|ingatkan|ingatin|ingetin|beritahu|bilang|tanyakan|sampaikan|notify|notif|send|remind|tell|ping|alert|message|reply)\b/i.test(prompt)
+}
 
 interface CallerSnapshotContext {
   callerId: string | null
@@ -114,7 +125,7 @@ export function buildCronCreateTool(
       }).optional().describe('Optional — who the task is ABOUT. Distinct from originator: originator = who asked; subject = who is affected.'),
       enabled: z.boolean().default(true).describe('Whether the task is enabled immediately'),
     }),
-    execute: async (input: unknown) => {
+    execute: async (input: unknown, toolCtx: ToolContext) => {
       const parsed = input as {
         name: string
         description?: string
@@ -165,6 +176,36 @@ export function buildCronCreateTool(
       if (parsed.origin) context.origin = parsed.origin
       if (parsed.delivery) context.delivery = parsed.delivery
       if (parsed.subject) context.subject = parsed.subject
+
+      // Auto-populate delivery from the active Connector Context when the
+      // agent didn't supply one. Event-router surfaces `connector_hint` on
+      // `RuntimeContext` for every connector-initiated run (see
+      // `event-router.ts::buildConnectorHint`). The heuristic: if the prompt
+      // is user-facing (implies the cron should deliver something back) AND
+      // delivery is missing/incomplete AND we have a connector hint → copy
+      // connector_id + chat_id + thread_id + scope_key + platform into
+      // `context.delivery`. This is the "reminder on this chat" path — user
+      // chats in Telegram → agent creates cron → fire-time delivery lands
+      // back in the same chat without the agent needing to remember to wire
+      // the fields. Not applied if the prompt is clearly internal (file
+      // write, cron_create chain, etc.) or if the agent already set a
+      // delivery target.
+      const runtime = (toolCtx as { runtime?: Record<string, unknown> } | undefined)?.runtime
+      const connectorHint = runtime?.['connector_hint'] as Record<string, string> | undefined
+      const hasUsableDeliveryField = !!(
+        context.delivery?.target_name
+        || context.delivery?.chat_id
+        || context.delivery?.scope_key
+      )
+      if (!hasUsableDeliveryField && connectorHint && promptImpliesUserFacingOutput(parsed.prompt)) {
+        const auto: NonNullable<CronContext['delivery']> = { ...(context.delivery ?? {}) }
+        if (!auto.connector_id && connectorHint['connector_id']) auto.connector_id = connectorHint['connector_id']
+        if (!auto.chat_id && connectorHint['chat_id']) auto.chat_id = connectorHint['chat_id']
+        if (!auto.thread_id && connectorHint['thread_id']) auto.thread_id = connectorHint['thread_id']
+        if (!auto.scope_key && connectorHint['scope_key']) auto.scope_key = connectorHint['scope_key']
+        if (!auto.platform && connectorHint['platform']) auto.platform = connectorHint['platform']
+        context.delivery = auto
+      }
 
       const task = await createCronTask({
         project_id: projectId,

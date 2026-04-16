@@ -130,8 +130,32 @@ router.post('/projects/:pid/cron-tasks', requirePermission('cron_tasks:write'), 
     )
   }
 
-  res.status(201).json({ cron_task: task })
+  // Non-blocking warning: prompt suggests user-facing output but no delivery
+  // was configured → task will fire in silent mode and never reach a user.
+  // We surface this to the UI (toast) rather than rejecting — silent tasks
+  // that happen to match the regex (e.g. "kirim ke file output.json") are
+  // legitimate and shouldn't be blocked.
+  const warnings: string[] = []
+  if (Object.keys(deliveryOut).length === 0 && promptSuggestsUserFacingOutput(body.prompt.trim())) {
+    warnings.push(
+      'Prompt seems to imply user-facing output (mention of kirim/ingatkan/beritahu/notify/send/remind) but no Delivery channel is set. Task will run SILENT — the user will not receive the output. Set a Delivery channel if this was unintended.',
+    )
+  }
+
+  res.status(201).json({ cron_task: task, ...(warnings.length > 0 ? { warnings } : {}) })
 })
+
+/**
+ * Heuristic check — does the prompt language suggest the task is supposed
+ * to produce user-facing output? Matches Indonesian and English imperative
+ * verbs commonly used when asking for a reminder / notification / message.
+ * Intentionally loose: false positives are fine (user just closes the toast);
+ * false negatives cost more (silent cron that should have been delivering).
+ */
+function promptSuggestsUserFacingOutput(prompt: string): boolean {
+  const re = /\b(kirim|kirimkan|ingatkan|ingatin|ingetin|beritahu|bilang|tanyakan|sampaikan|notify|notif|send|remind|tell|ping|alert|message)\b/i
+  return re.test(prompt)
+}
 
 /** GET /projects/:pid/cron-tasks/:id — get a single cron task */
 router.get('/projects/:pid/cron-tasks/:id', requirePermission('cron_tasks:read'), async (req, res) => {
@@ -170,6 +194,20 @@ router.patch('/projects/:pid/cron-tasks/:id', requirePermission('cron_tasks:writ
     prompt?: string
     enabled?: boolean
     agent_id?: string
+    /**
+     * Pass a `CronDeliverySpec` to set, or `null` to clear delivery entirely
+     * (task becomes silent). Other `context` keys (`origin`, `subject`) are
+     * preserved — they're managed by the `cron_create` agent tool, not the UI.
+     * Omit the field to leave context untouched.
+     */
+    delivery?: {
+      connector_id?: string
+      target_name?: string
+      chat_id?: string
+      thread_id?: string
+      scope_key?: string
+      platform?: string
+    } | null
   }
 
   const updates: Parameters<typeof updateCronTask>[1] = {}
@@ -191,6 +229,24 @@ router.patch('/projects/:pid/cron-tasks/:id', requirePermission('cron_tasks:writ
   if (body.prompt !== undefined) updates.prompt = body.prompt.trim()
   if (body.enabled !== undefined) updates.enabled = body.enabled
   if (body.agent_id !== undefined) updates.agent_id = body.agent_id
+
+  if (body.delivery !== undefined) {
+    const existingCtx = (existing.context ?? {}) as Record<string, unknown>
+    if (body.delivery === null) {
+      // Clear delivery only — preserve origin/subject if present.
+      const { delivery: _drop, ...rest } = existingCtx
+      updates.context = rest
+    } else {
+      const deliveryOut: Record<string, string> = {}
+      for (const k of ['connector_id', 'target_name', 'chat_id', 'thread_id', 'scope_key', 'platform'] as const) {
+        const v = body.delivery[k]
+        if (typeof v === 'string' && v.trim()) deliveryOut[k] = v.trim()
+      }
+      updates.context = Object.keys(deliveryOut).length > 0
+        ? { ...existingCtx, delivery: deliveryOut }
+        : (() => { const { delivery: _drop, ...rest } = existingCtx; return rest })()
+    }
+  }
 
   const task = await updateCronTask(taskId, updates)
 

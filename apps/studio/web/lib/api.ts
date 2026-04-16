@@ -937,7 +937,7 @@ export const api = {
         platform?: string
       }
     }) =>
-      request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks`, {
+      request<{ cron_task: CronTask; warnings?: string[] }>(`/api/projects/${projectId}/cron-tasks`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
@@ -952,6 +952,13 @@ export const api = {
       prompt: string
       enabled: boolean
       agent_id: string
+      /**
+       * Pass a full `CronDeliverySpec` to set, or `null` to clear delivery
+       * entirely (task becomes silent). Server writes this into
+       * `context.delivery` — other `context` keys (origin/subject) are left
+       * untouched.
+       */
+      delivery: CronDeliverySpec | null
     }>) =>
       request<{ cron_task: CronTask }>(`/api/projects/${projectId}/cron-tasks/${id}`, {
         method: 'PATCH',
@@ -1453,6 +1460,15 @@ export interface AvailabilitySchedule {
 export type CronTaskMode = 'recurring' | 'once'
 export type CronTaskStatus = 'active' | 'archived'
 
+export interface CronDeliverySpec {
+  connector_id?: string
+  target_name?: string
+  chat_id?: string
+  thread_id?: string
+  scope_key?: string
+  platform?: string
+}
+
 export interface CronTask {
   id: string
   project_id: string
@@ -1465,6 +1481,16 @@ export interface CronTask {
   status: CronTaskStatus
   prompt: string
   enabled: boolean
+  /**
+   * Plan 22 — structured context consumed by the scheduler at fire time.
+   * `delivery` is what drives the [Cron Delivery] preamble; `origin` / `subject`
+   * are ambient hints for the agent (populated by `cron_create` tool only).
+   */
+  context?: {
+    delivery?: CronDeliverySpec
+    origin?: Record<string, unknown>
+    subject?: Record<string, unknown>
+  }
   caller_id: string | null
   caller_role: string | null
   caller_is_superadmin: boolean

@@ -106,6 +106,9 @@ The sidebar list (`conversation-list-panel.tsx`) now displays:
 - **Pagination**: Load-more button, PAGE_SIZE = 10. Fetches next page on click.
 - **Truncation**: Last message preview uses `truncate` (text-overflow: ellipsis). Uses plain `overflow-y-auto` div — NOT Radix `ScrollArea` (see ADR-011).
 - **Search**: Filter input at top narrows visible conversations by name/content.
+- **Collapsible**: Optional `onCollapse?: () => void` prop. When the parent passes one, the panel renders a `PanelLeftClose` ghost button next to the New-chat button in its header. Parent owns open/closed state.
+
+`chats/layout.tsx` controls the open/closed state with `localStorage['chats.sidebar.open']` persistence. Default: open on viewport ≥768px, closed on <768px (mobile-friendly). When collapsed, a small `PanelLeftOpen` ghost button floats top-left of the chat area to re-open. State is per-user via localStorage; no server roundtrip.
 
 ## Context Bar
 

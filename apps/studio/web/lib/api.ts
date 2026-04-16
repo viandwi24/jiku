@@ -687,6 +687,80 @@ export const api = {
       if (!r.ok) throw new Error(body.error ?? 'Upload failed')
       return body as { files: FilesystemFileEntry[] }
     },
+    /**
+     * Export selected paths (mix of files and folders; folders expand to all
+     * files under them) as a single ZIP. Returns the Blob so the caller can
+     * trigger a download. Throws on empty / no-match / 403 / 500.
+     */
+    exportZip: async (projectId: string, paths: string[]) => {
+      const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+      const r = await fetch(`${BASE_URL}/api/projects/${projectId}/files/export-zip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ paths }),
+      })
+      if (!r.ok) {
+        // Try to parse JSON error envelope; fall back to status text.
+        let msg = `Export failed (${r.status})`
+        try { const j = await r.json() as { error?: string }; if (j.error) msg = j.error } catch { /* binary body */ }
+        throw new Error(msg)
+      }
+      const blob = await r.blob()
+      const fileCount = Number(r.headers.get('X-File-Count') ?? '0')
+      const folderCount = Number(r.headers.get('X-Folder-Count') ?? '0')
+      return { blob, fileCount, folderCount }
+    },
+    /**
+     * Upload a ZIP and extract under `folderPath`. `conflict` decides what
+     * happens for entries whose target path already exists:
+     *   overwrite — write through (bumps version)
+     *   skip      — leave existing alone
+     *   rename    — suffix new with " (1)", " (2)", … until free
+     */
+    importZip: async (
+      projectId: string,
+      folderPath: string,
+      conflict: 'overwrite' | 'skip' | 'rename',
+      file: File,
+    ) => {
+      const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+      const form = new FormData()
+      form.append('file', file)
+      const qs = new URLSearchParams({ path: folderPath, conflict })
+      const r = await fetch(`${BASE_URL}/api/projects/${projectId}/files/import-zip?${qs}`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() },
+        body: form,
+      })
+      const body = await r.json() as {
+        ok?: boolean
+        target_folder?: string
+        conflict?: string
+        imported?: number
+        overwritten?: number
+        skipped?: number
+        renamed?: number
+        failed?: number
+        skipped_junk?: number
+        folders_created?: number
+        errors?: Array<{ path: string; reason: string }>
+        error?: string
+      }
+      if (!r.ok || !body.ok) throw new Error(body.error ?? 'Import failed')
+      return body as {
+        ok: true
+        target_folder: string
+        conflict: 'overwrite' | 'skip' | 'rename'
+        imported: number
+        overwritten: number
+        skipped: number
+        renamed: number
+        failed: number
+        skipped_junk: number
+        folders_created: number
+        errors: Array<{ path: string; reason: string }>
+      }
+    },
   },
 
   browser: {

@@ -1,10 +1,23 @@
+## Phase (2026-04-15) — Disk: ZIP export/import + Move entry action ✅
+
+Two disk-page asks shipped together:
+
+1. **ZIP export/import.** Backend `apps/studio/server/src/filesystem/zip.ts` (needs `jszip` — `bun install` required). Export: `POST /files/export-zip` body `{ paths: string[] }` returns a ZIP stream, binary files decoded back to raw bytes. Import: `POST /files/import-zip?path=&conflict=` with conflict ∈ `{overwrite, skip, rename}`. Same allow-list + size cap as the regular upload route; path-traversal guard; caps `MAX_ZIP_BYTES=50MB`, `MAX_ZIP_ENTRIES=5000`. UI: toolbar Download + FileArchive icons, per-entry "Export as ZIP" dropdown action, `ImportZipDialog` with 3-pill conflict selector and result panel.
+2. **Move action.** Long-missing UI gap — server already supported `fs.move` but the dropdown only had Rename/Copy Path/Delete. Added "Move to…" item opening `MoveDialog` with absolute-path input (validates leading slash + non-empty filename). Reuses existing `moveMutation`.
+
+Deploy: run `bun install` at repo root to pick up `jszip` dep.
+
+Files: `apps/studio/server/package.json` (+jszip), `apps/studio/server/src/filesystem/zip.ts` (new), `apps/studio/server/src/routes/filesystem.ts` (+2 routes), `apps/studio/web/lib/api.ts` (+2 methods), `apps/studio/web/components/filesystem/file-explorer.tsx` (toolbar buttons, dropdown items, MoveDialog, ImportZipDialog).
+
 ## Phase (2026-04-15) — Chat UI: active_command accordion + collapsible sub-sidebar ✅
 
-Two chat UI tasks in same pass:
+Three chat UI tasks in same pass:
 
 1. **`<active_command>` accordion shared + streaming-aware.** Conversation viewer (history view) rendered user messages as raw `<span>{text}</span>` so the dispatcher's `<active_command slug="...">...</active_command>` wrapper leaked as XML. Extracted `MessageTextWithActiveCommands` + `ActiveCommandBlock` + streaming-aware parser to `apps/studio/web/components/chat/active-command-block.tsx`. Used by both `chat-interface.tsx` (replaced local duplicate) and `conversation-viewer.tsx`. Streaming: opening tag without a close yet renders the same accordion chip with a pulsing amber dot + "streaming" label and a trailing `…` inside the body preview.
 
-2. **Collapsible chat sub-sidebar with mobile default.** `chats/layout.tsx` was a fixed `w-72` rail. Now togglable via header button (in panel) + floating `PanelLeftOpen` button (over chat area when collapsed). State persisted in `localStorage['chats.sidebar.open']`. Default: open on ≥768px viewport, closed on <768px. `ConversationListPanel` gained optional `onCollapse` prop.
+2. **Parser greedy-close fix (field bug).** Lazy first-match parser was bounded by the literal `</active_command>` substring that the dispatcher embeds INSIDE the body preamble (describing where the trigger text appears). Body got truncated at the fake-close, real SOP spilled outside the accordion. Two-layer fix: (a) parser uses `lastIndexOf(CLOSE_TAG)` capped at the next opening tag; (b) dispatcher rephrases the preamble to avoid the literal close-tag string. Old DB rows render correctly via the parser fix. See ADR-100.
+
+3. **Collapsible chat sub-sidebar with mobile default.** `chats/layout.tsx` was a fixed `w-72` rail. Now togglable via header button (in panel) + floating `PanelLeftOpen` button (over chat area when collapsed). State persisted in `localStorage['chats.sidebar.open']`. Default: open on ≥768px viewport, closed on <768px. `ConversationListPanel` gained optional `onCollapse` prop.
 
 ## Phase (2026-04-15) — Connector traffic_mode (inbound_only / outbound_only / both) ✅
 

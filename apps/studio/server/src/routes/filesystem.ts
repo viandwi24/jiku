@@ -404,6 +404,98 @@ router.post('/projects/:pid/files/upload', uploadRateLimit, requirePermission('d
   }).catch(() => done(500, { error: 'Internal server error' }))
 })
 
+// ─── Export to ZIP ────────────────────────────────────────────────────────────
+
+// POST /projects/:pid/files/export-zip  body: { paths: string[] }
+// Returns the archive as application/zip with a Content-Disposition filename.
+// Paths may mix files and folders; folders expand to descendants.
+router.post('/projects/:pid/files/export-zip', requirePermission('disk:read'), async (req, res) => {
+  const projectId = req.params['pid']!
+  const body = req.body as { paths?: string[] }
+  const paths = Array.isArray(body?.paths) ? body.paths.filter(p => typeof p === 'string') : []
+  if (paths.length === 0) return res.status(400).json({ error: 'paths array required (non-empty)' })
+
+  try {
+    const fs = await getFilesystemService(projectId)
+    if (!fs) return res.status(503).json({ error: 'Filesystem not configured' })
+    const { exportZipWith } = await import('../filesystem/zip.ts')
+    const { buffer, fileCount, folderCount } = await exportZipWith(fs, projectId, paths)
+
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const filename = `disk-export-${stamp}.zip`
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Content-Length', String(buffer.length))
+    res.setHeader('X-File-Count', String(fileCount))
+    res.setHeader('X-Folder-Count', String(folderCount))
+    return res.end(buffer)
+  } catch (err) {
+    return handleFsError(res, err)
+  }
+})
+
+// ─── Import from ZIP ──────────────────────────────────────────────────────────
+
+// POST /projects/:pid/files/import-zip?path=/&conflict=overwrite|skip|rename
+// Body: multipart with a single `file` field (the archive). Returns counts +
+// per-file failure list so the UI can summarise.
+router.post('/projects/:pid/files/import-zip', uploadRateLimit, requirePermission('disk:write'), (req, res) => {
+  const projectId = req.params['pid']!
+  const targetFolder = normalizePath((req.query['path'] as string) ?? '/')
+  const conflictRaw = (req.query['conflict'] as string) ?? 'skip'
+  const conflict = (['overwrite', 'skip', 'rename'].includes(conflictRaw) ? conflictRaw : 'skip') as 'overwrite' | 'skip' | 'rename'
+  const userId = (res.locals['user_id'] as string | undefined) ?? undefined
+
+  let settled = false
+  function done(code: number, body: unknown) {
+    if (settled) return
+    settled = true
+    res.status(code).json(body)
+  }
+
+  getFilesystemService(projectId).then(fs => {
+    if (!fs) return done(503, { error: 'Filesystem not configured' })
+
+    // Reuse the global upload byte cap as the ZIP byte cap so we don't admit
+    // a ZIP larger than the largest single file we'd otherwise accept. The
+    // zip helper enforces its own MAX_ZIP_BYTES too — whichever is smaller
+    // wins.
+    const bb = busboy({ headers: req.headers, limits: { fileSize: MAX_UPLOAD_BYTES + 1 } })
+    let zipBuffer: Buffer | null = null
+    let tooBig = false
+
+    bb.on('file', (_field, fileStream, _info) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      fileStream.on('data', (chunk: Buffer) => {
+        size += chunk.length
+        if (size > MAX_UPLOAD_BYTES) { tooBig = true; fileStream.resume(); return }
+        chunks.push(chunk)
+      })
+      fileStream.on('end', () => {
+        if (!tooBig) zipBuffer = Buffer.concat(chunks)
+      })
+    })
+
+    bb.on('finish', async () => {
+      if (tooBig) return done(413, { error: `ZIP exceeds ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB limit` })
+      if (!zipBuffer) return done(400, { error: 'Missing ZIP file in form-data (expected field "file")' })
+      try {
+        const { importZip } = await import('../filesystem/zip.ts')
+        const result = await importZip(fs, projectId, zipBuffer, { targetFolder, conflict, userId })
+        return done(200, { ok: true, target_folder: targetFolder, conflict, ...result })
+      } catch (err) {
+        if (err instanceof ValidationError) return done(422, { error: err.message })
+        console.error('[filesystem.import-zip]', err)
+        return done(500, { error: err instanceof Error ? err.message : 'Import failed' })
+      }
+    })
+
+    bb.on('error', () => done(500, { error: 'Upload parsing failed' }))
+    req.pipe(bb)
+  }).catch(() => done(500, { error: 'Internal server error' }))
+})
+
 // ─── Migration ────────────────────────────────────────────────────────────────
 
 // POST /projects/:pid/filesystem/migrate

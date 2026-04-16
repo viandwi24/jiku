@@ -2,6 +2,8 @@ import { eq, and, like, or, count, sum, asc, desc, ilike, inArray } from 'drizzl
 import { db } from '../client.ts'
 import { project_filesystem_config, project_files } from '../schema/filesystem.ts'
 import type { ProjectFilesystemConfig, ProjectFile, NewProjectFile } from '../schema/filesystem.ts'
+import { project_folders } from '../schema/filesystem-folders.ts'
+import type { ProjectFolder } from '../schema/filesystem-folders.ts'
 
 // ─── Config queries ──────────────────────────────────────────────────────────
 
@@ -55,6 +57,17 @@ export async function getFileByPath(projectId: string, filePath: string): Promis
     where: and(
       eq(project_files.project_id, projectId),
       eq(project_files.path, filePath),
+    ),
+  })
+  return row ?? null
+}
+
+/** Look up a folder row by exact virtual path. Returns null if not present. */
+export async function getFolderByPath(projectId: string, folderPath: string): Promise<ProjectFolder | null> {
+  const row = await db.query.project_folders.findFirst({
+    where: and(
+      eq(project_folders.project_id, projectId),
+      eq(project_folders.path, folderPath),
     ),
   })
   return row ?? null

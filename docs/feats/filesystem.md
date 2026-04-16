@@ -53,16 +53,19 @@ To save tokens and prevent lost writes, mutating tools now enforce two invariant
 
 ## Agent Tools
 
-| Tool | Description |
-|------|-------------|
-| `fs_list` | List files and virtual folders at path |
-| `fs_read` | Read file content (registers version in session tracker). Intercepts binary files |
-| `fs_edit` | Replace a substring in an existing file. Requires prior `fs_read` + not stale |
-| `fs_append` | **Preferred for append-only workflows** (logs, journals). No read required, clears tracker after |
-| `fs_write` | Write/create file |
-| `fs_move` | Move/rename file |
-| `fs_delete` | Delete file |
-| `fs_search` | Search files by name/path pattern |
+| Tool | Scope | Description |
+|------|-------|-------------|
+| `fs_list` | folder | List files and virtual folders at path |
+| `fs_read` | file | Read file content (registers version in session tracker). Intercepts binary files |
+| `fs_edit` | file | Replace a substring in an existing file. Requires prior `fs_read` + not stale |
+| `fs_append` | file | **Preferred for append-only workflows** (logs, journals). No read required, clears tracker after |
+| `fs_write` | file | Write/create file (creates ancestor folders implicitly) |
+| `fs_mkdir` | folder | Create an EMPTY folder (idempotent; ancestors created automatically) |
+| `fs_move` | file + folder | Move/rename. For folders, every descendant is rewritten in one DB transaction |
+| `fs_delete` | file + folder | Delete. Folder requires explicit `{ recursive: true }` flag as a safety guard |
+| `fs_search` | file | Search files by name/path pattern |
+
+Project invariant: every file op has a folder counterpart in both UI and agent tools — except root `/` which cannot be moved/renamed/deleted. Folder writes (`fs_write` ancestor upsert vs explicit `fs_mkdir`) are the one nuance: empty folders need `fs_mkdir`, non-empty ones materialise on first file write.
 
 All tagged `group: 'filesystem'`, `permission: '*'`. Active in `chat` and `task` modes.
 
@@ -94,7 +97,17 @@ DELETE /api/projects/:pid/files?path=/x            → delete file
 DELETE /api/projects/:pid/files/folder?path=/src   → delete folder (recursive)
 GET    /api/projects/:pid/files/search?q=&ext=     → search
 POST   /api/projects/:pid/files/upload             → multipart upload
+POST   /api/projects/:pid/files/export-zip         → body { paths: string[] } → zip stream
+POST   /api/projects/:pid/files/import-zip         → multipart + ?path=&conflict=overwrite|skip|rename
 ```
+
+## ZIP export / import
+
+End-to-end ZIP round-tripping (added 2026-04-15):
+
+- **Export** — `POST /files/export-zip` with `{ paths: string[] }`. Paths can mix files and folders; folders expand to all descendants. Server returns `application/zip` with `Content-Disposition: attachment; filename="…"` and a `X-File-Count` header. Binary files (`__b64__:` cached) are decoded back to raw bytes before being added to the archive — so a round-trip preserves the original binary content. Gated by `disk:read`. UI: toolbar Download icon (current folder) + per-entry "Export as ZIP" / "Export folder as ZIP" dropdown action.
+- **Import** — `POST /files/import-zip?path=&conflict=` with multipart `file` field. Conflict policy ∈ `{ overwrite, skip, rename }` — `skip` is the default (safe). `rename` suffixes the new file with ` (1)`, ` (2)`, … until free. Each entry runs through the SAME `isAllowedFile` allow-list as the regular multipart upload (extension + size cap) — ZIP is not a side-channel around the disk's content rules. Path-traversal guard rejects any entry with a `..` segment. Caps: `MAX_ZIP_BYTES = 50MB`, `MAX_ZIP_ENTRIES = 5000`. Returns per-policy counters + per-file error list. Gated by `disk:write` + `uploadRateLimit`. UI: toolbar FileArchive icon → `ImportZipDialog` (3-pill conflict selector + result panel with stat tiles).
+- Service: `apps/studio/server/src/filesystem/zip.ts` (`exportZipWith` + `importZip`). Backed by `jszip ^3.10.1`. All writes go through `FilesystemService.write()` so audit / version / ancestor-folder upsert stay consistent with manual writes.
 
 ## Web UI
 

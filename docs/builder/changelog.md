@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-04-15 — Agent FS tools: full folder coverage (mkdir + move + delete)
+
+User-stated invariant: "we're simulating a filesystem; everything that works for files must work for folders too — except moving the root `/` itself". Three agent-tool gaps closed.
+
+- **`fs_mkdir` (NEW)** in `apps/studio/server/src/filesystem/tools.ts`. Wraps `fs.mkdir(path)`. Idempotent (existing folder is OK), creates ancestor chain. Permission gate uses `'write'` on the target path. Description says: "call this only when you need an EMPTY folder" — `fs_write` still creates folders implicitly via `upsertAncestorFolders`, no need to mkdir before writing.
+- **`fs_move` description + tracker cleanup** updated: explicitly mentions folder support, calls new `forgetFsReadsUnderPrefix(conversationId, fromPath)` after the move so descendant tracker rows don't carry stale `STALE_FILE_STATE` errors keyed under the old folder path.
+- **`fs_delete` extended**: detects file vs folder via `getFileByPath` then `getFolderByPath`. For folders, requires explicit `recursive: true` flag — without it returns `{ code: 'FOLDER_DELETE_REQUIRES_RECURSIVE' }` as a safety guard against an LLM accidentally wiping a tree thinking it's a file. Same descendant tracker cleanup as fs_move.
+- **DB queries**: new `getFolderByPath(projectId, path)` in `queries/filesystem.ts`; new `forgetFsReadsUnderPrefix(conversation_id, prefix)` in `queries/conversation-fs-reads.ts`.
+- File-only assumptions previously baked into `fs_move` / `fs_delete` descriptions caused agents to refuse folder ops or call them and get cryptic errors. New descriptions are explicit so agents pick the right tool first try.
+
+## 2026-04-15 — Disk move: support folders (was file-only)
+
+Field test: dragging a folder threw "Path not found" — `FilesystemService.move()` only handled files (`getFileByPath` then throw). Folders never worked, even from the old dialog.
+
+- `service.ts move(from, to)`: try file lookup first; if missing, look up `project_folders` row. For folders: validate target doesn't conflict (no existing folder OR file at `to`), reject self-move + folder-into-own-descendant. Walk all descendant files (`getFilesUnderFolder`) and folder rows (prefix match), rewrite each path/folder_path/parent_path/depth in a single DB transaction (atomic). `to`'s ancestors get upserted afterwards so they exist if user dropped into a brand-new branch.
+- Storage layer untouched — `storage_key` is UUID-based and immutable since Plan 16, so a folder rename is pure DB row updates. No S3 round-trips.
+- Frontend already supported folder drag because the button renders `draggable` for both file and folder entries; client-side `canDropAt` guard already rejected folder-into-descendant — both checks now have server-side counterparts (defense in depth).
+
+## 2026-04-15 — Disk: replace "Move to…" dialog with native drag-and-drop
+
+User-requested UX change. The dialog-based move action (text input for absolute path) was clunky for the common case of "drop file into adjacent folder". Replaced with HTML5 drag-and-drop on the file tree.
+
+- `file-explorer.tsx`: removed `MoveDialog` component + `movingEntry` state + `onMove` prop on `EntryDropdown`. Entry rows are now `draggable={canWrite}` (cursor `grab` / `grabbing`). Folder entries AND breadcrumb segments accept drops via `onDragOver` / `onDragLeave` / `onDrop`. Drop target shows a primary-coloured ring + bg highlight; dragged row drops to `opacity-40`.
+- `canDropAt(target)` guard rejects: dragging onto self, into the entry's current parent (no-op), or a folder onto its own descendant (loop). Drop on `/` (root crumb) moves to root.
+- `moveMutation.onSuccess` now distinguishes "Renamed" vs "Moved" by comparing `dirOf(from)` with `dirOf(to)` — same folder → rename, different → move. Helpers `dirOf` + `basenameOf` added at module level.
+- `dragOverPath` cleared by a `relatedTarget`-aware `handleDragLeave` that ignores leaving into a child element (avoids flicker when the cursor moves inside the same drop target).
+- Removed unused `Move` lucide icon import.
+
+## 2026-04-15 — Disk ZIP: round-trip empty folders (both directions)
+
+Field-check follow-up: empty folders weren't surviving the ZIP round-trip — import filtered out dir entries with `!e.dir` and export only queried files (not `project_folders`), so a folder you created via the UI would vanish after export → re-import.
+
+- `filesystem/zip.ts importZip`: split `zip.files` into `dirEntries` (trailing slash / `.dir === true`) + `fileEntries`. Loop dirs FIRST, skip platform-junk (`__MACOSX/*` etc.) + path-traversal segments, call `fs.mkdir(normalized)` for each. `fs.mkdir` already chains ancestor `onConflictDoNothing` inserts so nested-empty-folder hierarchies work.
+- `exportZipWith`: track folder roots from the input `paths` and query `project_folders` for each (whole-disk shortcut when root is `/`). Emit `zip.folder(entryPath)` dir markers before file entries — JSZip / unzippers both honour trailing-slash entries as dir-only records. Non-empty folders get redundant markers (no-op) but empty ones now survive.
+- `ImportResult` gained `folders_created: number`; dialog renders a "Folders" stat tile when > 0; toast summary includes the count.
+- Export return shape gained `folderCount`; exposed via new `X-Folder-Count` response header; web toast reads both counts.
+
+## 2026-04-15 — Disk ZIP import: skip platform junk + null-byte defense
+
+Field-test failure: user imported a Mac-zipped archive and got `__MACOSX/._test.csv` failing with a Postgres insert error. Root cause: macOS Finder emits AppleDouble resource forks (`__MACOSX/` folder + `._*` sibling files) that contain binary data with null bytes, which Postgres `text` columns explicitly reject.
+
+- `filesystem/zip.ts`: new `isPlatformJunk(entryPath)` helper — matches `__MACOSX/*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, any `._<name>` AppleDouble file. Silently dropped (not counted as imported/skipped/failed) but surfaced as new `skipped_junk` counter so the UI can show "dropped N platform-junk entries" for transparency.
+- `ImportResult` gained `skipped_junk: number`.
+- Defense-in-depth: after encoding content to text, explicitly reject null bytes for text-mode extensions BEFORE the DB write — produces a clean "File contains null bytes" error instead of letting the cryptic Postgres query failure propagate. Check runs before conflict resolution so counters never need rollback.
+- UI (`ImportZipDialog`): renders a muted hint line when `skipped_junk > 0` listing the common platform-junk patterns.
+
+## 2026-04-15 — Disk: ZIP export/import + Move action in entry dropdown
+
+End-to-end ZIP round-tripping for the project virtual disk + a long-missing Move action on file/folder rows.
+
+**Backend**
+- New dep `jszip ^3.10.1` in `apps/studio/server/package.json` (run `bun install`).
+- New module `apps/studio/server/src/filesystem/zip.ts` — `exportZipWith(fs, projectId, paths)` walks a mixed list of file/folder paths (folders expand to descendants), pulls raw bytes (decoding `__b64__:` prefix for binary files), and packs into a JSZip archive. `importZip(fs, projectId, buffer, { targetFolder, conflict })` extracts each entry, validates against the allow-list / size cap, and writes via `FilesystemService.write()`. Conflict policy: `overwrite | skip | rename` (rename suffixes ` (1)`, ` (2)`, … until free, capped at 999 attempts).
+- Caps: `MAX_ZIP_BYTES` 50MB, `MAX_ZIP_ENTRIES` 5000 — defends against zip-bomb / OOM.
+- Path-traversal guard: any entry containing `..` segment is rejected with a per-file error rather than crashing the whole import.
+- Routes: `POST /projects/:pid/files/export-zip` body `{ paths: string[] }` (gated `disk:read`) responds `application/zip` with `Content-Disposition` filename and `X-File-Count` header. `POST /projects/:pid/files/import-zip?path=&conflict=` (gated `disk:write` + `uploadRateLimit`) accepts multipart `file` field, returns `{ ok, target_folder, conflict, imported, overwritten, skipped, renamed, failed, errors[] }`.
+- Reuses `MAX_UPLOAD_BYTES` for the multipart body cap so import body limits stay aligned with single-file upload limits.
+
+**Web**
+- `api.filesystem.exportZip(projectId, paths)` returns `{ blob, fileCount }` — caller triggers download via `URL.createObjectURL`.
+- `api.filesystem.importZip(projectId, folderPath, conflict, file)` returns the structured result.
+- `FileExplorer` toolbar (`components/filesystem/file-explorer.tsx`): two new icon buttons next to Refresh — Export current folder as ZIP (Download icon, also for `disk:read` users) and Import ZIP (FileArchive icon, gated `canWrite`). Spinner when export in flight.
+- `EntryDropdown` adds two new actions: **Move to…** (opens `MoveDialog` — Dialog with absolute-path input, Enter submits, validates leading slash + non-empty filename) and **Export as ZIP** / **Export folder as ZIP** (depending on entry type). Move uses the existing `moveMutation` / `api.filesystem.move` — server already supported the operation; was a UI gap.
+- New components: `MoveDialog` (in-file) and `ImportZipDialog` (in-file) — the latter has 3-pill conflict selector (Skip default / Overwrite / Rename) and a result panel with per-policy stat tiles + scrollable per-file error list.
+
 ## 2026-04-15 — Chat sub-sidebar: collapsible + mobile-friendly default
 
 Chat page's conversation-list panel (`chats/layout.tsx`) was a fixed `w-72` rail with no way to hide — took too much screen on mobile. Now togglable, state persisted in `localStorage['chats.sidebar.open']`.

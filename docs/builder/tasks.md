@@ -35,8 +35,16 @@
 - [ ] Agent-commands page: when `command_access_mode='all'`, UI should surface "all project commands available" instead of the allow-list.
 - [ ] Chat UI: surface "Command Invoked: /slug" chip when dispatcher matches so users see which command fired.
 
+### Disk follow-ups
+- [x] ZIP export/import on `/disk` — bidirectional, conflict policy `overwrite|skip|rename`, per-entry allow-list + path-traversal guard, caps `MAX_ZIP_BYTES=50MB` + `MAX_ZIP_ENTRIES=5000`. Binary files round-trip via `__b64__:` prefix decode/encode. Done 2026-04-15.
+- [x] Move action in file/folder dropdown — was a UI-only gap (server already supported `fs.move`). Dialog with absolute-path input. Done 2026-04-15.
+- [ ] Multi-select on FileExplorer — currently export-from-dropdown is single entry. Server endpoint already accepts `paths: string[]` so it's a UI change (checkbox column + bulk export). Not urgent.
+- [ ] Drag-and-drop ZIP onto the file tree → auto-open ImportZipDialog pre-populated with the file. Nice-to-have UX polish.
+
 ### Connector follow-ups
-- [x] Arrival row unification — Telegram adapters thread `arrival_event_id` via `event.metadata`; `routeConnectorEvent` now UPDATEs the arrival row via `finalizeEv` instead of INSERTing duplicates. Vocabulary collapsed: `pending_approval` removed (folded into `unhandled` with `drop_reason` describing the cause). Done 2026-04-16.
+- [x] Arrival row unification — Telegram adapters thread `arrival_event_id` via `event.metadata`; `routeConnectorEvent` now UPDATEs the arrival row via `finalizeEv` instead of INSERTing duplicates. Vocabulary collapsed: `pending_approval` removed (folded into `unhandled` with `drop_reason` describing the cause). Done 2026-04-15.
+- [x] Per-connector traffic mode (`inbound_only` / `outbound_only` / `both`) — schema-only addition (user runs `db push`), gated at routing + outbound tools, live-refreshed via PATCH without restart. Surfaced via `ConnectorContext.trafficMode`. UI on channel detail page. ADR-099. Done 2026-04-15.
+- [ ] Optional: zero-DB-footprint mode for `outbound_only` connectors — currently arrival rows stay as `dropped` for observability. Add option to DELETE the arrival row instead (combine with `log_mode='active_binding_only'` for consistency). Trade-off: lose "X messages dropped" diagnostic. Decide if needed.
 - [ ] Flip `drop_pending_updates: false` in Telegram adapter's `deleteWebhook` + `bot.start` — currently pending messages during the activation window get triple-dropped (diagnosis ran 2026-04-14). Trade-off: crash-restart replays backlog. Decide + ship.
 - [ ] Per-binding "Reset all pairings" button — set all identities under a binding to `status='pending'` so admin can re-trigger approval flow after a settings change without deleting the whole connector.
 - [ ] Propagate `getHealth()` to other adapters (WhatsApp / Discord / Slack when they land) so HealthBadge renders uniformly across platforms.

@@ -43,6 +43,34 @@ Plus lazy binding-draft creation in event-router when a group/topic message arri
 - **Per-chat outbound**: `chatSendQueues: Map<chatId, Promise<unknown>>` — all `sendMessage()` calls to a given `chat_id` serialize. `withTelegramRetry(fn)` respects `err.parameters.retry_after` on 429, capped at 45s.
 - **Global inbound FIFO batch**: `enqueueInboundEvent(task)` + `drainInboundQueue()` — batch size 5, `Promise.allSettled`, FIFO across batches. All five `ctx.onEvent(event)` call sites (message / reaction / unreaction / edit / delete / my_chat_member) flow through it.
 - **Arrival log is UNqueued**: `logArrivalImmediate(connectorId, event)` writes `connector_events.status='received'` synchronously before the inbound queue. Ops-critical invariant (ADR-080) — do not move this into the queue.
+- **Single-row arrival pattern (ADR-098)**: `logArrivalImmediate` returns the inserted row id and stamps it on `event.metadata.arrival_event_id`. Downstream `routeConnectorEvent` calls `finalizeEv(projectId, event, args)` which UPDATEs the same row using that id (instead of INSERTing a duplicate). One row per inbound. New adapters MUST stamp `arrival_event_id` to participate; otherwise routing falls back to INSERT and the table sees duplicates.
+
+## Event status vocabulary (ADR-098)
+
+`connector_events.status` is canonical: **`received | routed | unhandled | dropped | rate_limited | error`**. Set by:
+
+| Status | Set by | Meaning |
+|---|---|---|
+| `received` | adapter `logArrivalImmediate` | Initial arrival, before routing |
+| `routed` | event-router success path | Dispatched to an agent / handler (inbound) OR outbound action succeeded |
+| `unhandled` | event-router | No binding matched (`drop_reason='no_binding'`) OR identity is pending approval (`drop_reason='identity_pending'`) |
+| `dropped` | event-router | Identity blocked (`drop_reason='blocked'`) OR connector is `traffic_mode='outbound_only'` (`drop_reason='traffic_outbound_only'`) |
+| `rate_limited` | event-router | Per-binding rate limit hit |
+| `error` | outbound tool path | `connector_run_action` adapter call threw |
+
+There is **no `pending_approval` status** — was removed. `connector_messages` mirrors most of these (no `received` / `error`); cross-table semantics are aligned.
+
+## Traffic mode (ADR-099)
+
+`connectors.traffic_mode` ∈ `{ both, inbound_only, outbound_only }` (default `'both'`). Per-connector direction gate for strategy reasons (broadcast-only notifier vs listen-only archive). Polling/lifecycle is the ADAPTER'S concern — `traffic_mode` does NOT stop polling or sessions.
+
+| Mode | Inbound effect | Outbound effect |
+|---|---|---|
+| `both` (default) | normal routing | sends/actions allowed |
+| `inbound_only` | normal routing + identity logs; `executeConversationAdapter` early-returns (no agent run / no reply); access-request notif sends are skipped | `connector_send` / `connector_send_to_target` / `connector_run_action` return `{ code: 'TRAFFIC_INBOUND_ONLY' }` |
+| `outbound_only` | early `finalizeEv` with `status='dropped' + drop_reason='traffic_outbound_only'`; no binding match, no identity creation, no auto-register, no pairing requests | sends/actions allowed |
+
+Mode is cached in `connectorRegistry.activeContexts.trafficMode`. PATCH `/connectors/:id` calls `setTrafficMode(connectorId, mode)` so changes take effect WITHOUT restart. Adapters receive the mode via `ConnectorContext.trafficMode` (informational; server-side gates are the source of truth). Schema-only addition — no migration file shipped; user runs `db generate`/`db push`.
 
 ### Polling resilience
 

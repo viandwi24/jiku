@@ -1,4 +1,4 @@
-import { and, eq, lt } from 'drizzle-orm'
+import { and, eq, like, lt, or } from 'drizzle-orm'
 import { db } from '../client.ts'
 import { conversation_fs_reads } from '../schema/conversation-fs-reads.ts'
 
@@ -47,6 +47,21 @@ export async function forgetFsRead(conversation_id: string, path: string) {
     .where(and(
       eq(conversation_fs_reads.conversation_id, conversation_id),
       eq(conversation_fs_reads.path, path),
+    ))
+}
+
+/**
+ * Drop all tracker rows whose path is under the given folder prefix. Called
+ * after folder move/delete so descendant files don't carry stale read records
+ * keyed under the OLD folder path. The folder itself is not included — caller
+ * pairs this with `forgetFsRead(folderPath)` if needed.
+ */
+export async function forgetFsReadsUnderPrefix(conversation_id: string, prefix: string) {
+  await db
+    .delete(conversation_fs_reads)
+    .where(and(
+      eq(conversation_fs_reads.conversation_id, conversation_id),
+      like(conversation_fs_reads.path, `${prefix}/%`),
     ))
 }
 

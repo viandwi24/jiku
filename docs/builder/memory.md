@@ -916,6 +916,35 @@ Event and message tables get LARGE. Agents must NOT call `connector_get_events({
 
 Each target row includes `{ connector: { id, plugin_id, display_name, status } }` so the agent doesn't need a follow-up `connector_list` call. `connector_send_to_target` with omitted `connector_id` accepts unique target names, but returns `{ success: false, code: 'AMBIGUOUS_TARGET', candidates: [...] }` when the same name exists on multiple connectors — the agent retries with explicit `connector_id`. When adding similar "address by name" APIs, use the same pattern (enriched list + explicit ambiguity error) rather than silently picking the first match.
 
+## Filesystem invariant: every file op has a folder counterpart (UI + agent tools)
+
+Project rule: the virtual disk simulates a real filesystem — anything you can do to a file you can do to a folder. Root `/` is the only exception (cannot be moved/renamed/deleted). The full matrix:
+
+- Create: `fs_write` (file), `fs_mkdir` (folder, only for EMPTY folders — non-empty folders auto-create via `upsertAncestorFolders` when their files are written)
+- Read: `fs_read` (file), `fs_list` (folder)
+- Rename: `fs_move` with same parent (both)
+- Move: `fs_move` (both — folder move rewrites all descendant paths in one transaction)
+- Delete: `fs_delete` (both — folder requires explicit `{ recursive: true }` as a safety guard against LLM wipes)
+- Edit content: `fs_write` / `fs_edit` / `fs_append` (file only — folders have no content)
+
+UI mirrors this: Rename dialog, drag-and-drop move, Delete confirm all work on folders. When adding a new FS-mutating agent tool, audit whether it should accept folders — and if so, write a folder-rewrite path that does NOT load every file into memory (use `getFilesUnderFolder` + a single transaction). When adding a new FS UI action, decide if it makes sense for folders and wire it the same way (avoid file-only conditionals).
+
+## Disk ZIP import: filter macOS `__MACOSX/` + null-byte defense for Postgres TEXT
+
+macOS Finder / Archive Utility zips emit AppleDouble resource forks as `__MACOSX/` folder + `._<filename>` sibling files. These contain binary metadata with null bytes, and Postgres `text` columns explicitly reject `\u0000` — so importing naïvely crashes with a cryptic "Failed query: insert into project_files…" error. `isPlatformJunk(entryPath)` in `filesystem/zip.ts` silently drops: `__MACOSX/*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, any path segment starting with `._`. Surfaced via `ImportResult.skipped_junk` for transparency (UI shows "dropped N platform-junk entries"), not in the error list. Defense-in-depth: after encoding content to text, an explicit null-byte check rejects the entry with a readable error before it ever hits the DB — prevents future binary-in-text-extension edge cases from surfacing as Postgres query failures. If you add another file-import entry point (skills import, bulk restore, etc.) that writes user-supplied text content, copy both guards.
+
+## Disk ZIP export/import: binary round-trip via `__b64__:` prefix; allow-list applies to import too
+
+Disk export collects all files for selected paths (folders expand to descendants) and for each one decodes the `__b64__:` cache prefix back to raw bytes BEFORE adding to the zip — otherwise the archive would contain literal `__b64__:base64...` strings instead of actual binaries (images, xlsx, etc.). On the import side, raw bytes from the archive go through `isBinaryExtension(ext)` to decide whether to re-prefix as `__b64__:` before write — same encoding rule as the multipart upload route. Skipping either step round-trips broken binaries silently.
+
+Import enforces the SAME `isAllowedFile` allow-list (extension + size cap) per archive entry that the multipart upload route uses — otherwise ZIP becomes a side-channel for forbidden file types. Plus a path-traversal guard rejects any entry containing `..` segments. Caps: `MAX_ZIP_BYTES = 50MB`, `MAX_ZIP_ENTRIES = 5000` — defends against zip-bomb / OOM.
+
+Conflict policy for import = `'overwrite' | 'skip' | 'rename'`. Rename suffixes ` (1)`, ` (2)`, … via `findFreePath` capped at 999 attempts. Writes always go through `FilesystemService.write()` so audit, version bump, ancestor folder upsert, and stats stay consistent.
+
+## `<active_command>` parser is greedy by design — never embed literal close-tag in body
+
+The chat UI parser in `apps/studio/web/components/chat/active-command-block.tsx` matches the LAST `</active_command>` (capped at next opening tag) using `lastIndexOf`, NOT the first match. This is intentional: the dispatcher's preamble may legitimately mention the closing tag string while describing its meaning, and a lazy first-match parser would truncate the accordion at the false close. Anything emitted into the body (in `commands/dispatcher.ts`) MUST avoid the literal substring `</active_command>` — describe it spaced ("active_command closing tag") or another way. If you add a SECOND XML-like wrapper (mis. `<resolved_command>...</resolved_command>` for a different feature) and reuse the same parser pattern, write a similar test fixture for the false-close case before shipping. See ADR-100.
+
 ## Connector traffic_mode = pure routing/tool gate, NOT a lifecycle gate
 
 `connectors.traffic_mode` ∈ `'both' | 'inbound_only' | 'outbound_only'` (default `'both'`). Cached in `connectorRegistry` activeContexts at activation. Polling/connect lifecycle is the ADAPTER'S concern — `traffic_mode` does NOT stop the adapter from polling, connecting, or maintaining sessions. It only gates: (1) `routeConnectorEvent` early-drops inbound when `outbound_only` (`drop_reason: 'traffic_outbound_only'`); (2) `executeConversationAdapter` early-returns when `inbound_only`; (3) outbound notifications (`👋 access request sent`, `✅ access granted`) skip when `inbound_only`; (4) tools `connector_send` / `connector_send_to_target` / `connector_run_action` return `{ code: 'TRAFFIC_INBOUND_ONLY' }` when `inbound_only`. PATCH route calls `connectorRegistry.setTrafficMode` so changes take effect WITHOUT connector restart. If you add new outbound paths (new tools, new auto-reactions in event-router), gate them with `connectorRegistry.getTrafficMode(connectorId) !== 'inbound_only'` — same pattern. New inbound paths (multi-adapter event-routers, new event types): gate at the top with the `outbound_only` check. Adapters can also read `ctx.trafficMode` if they want to skip work proactively, but it's optional — server-side gates are the source of truth.

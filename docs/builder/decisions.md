@@ -1,5 +1,51 @@
 # Decisions
 
+## ADR-100 — `<active_command>` parser uses greedy `lastIndexOf` to handle preamble false-positives
+
+**Context:** The slash-command dispatcher wraps the SOP body in `<active_command slug="...">...</active_command>`. The chat UI parser segments user-message text into accordion blocks. The dispatcher's preamble (inside the wrapper) explained where to find the trigger text by mentioning the literal closing tag string `</active_command>`. The lazy first-match parser then bounded the body at THAT mention, truncating the accordion to just the preamble — the actual SOP body + the real closing tag spilled into a raw text segment after the accordion. A subtle, high-traffic bug found in the field.
+
+**Decision:** Two-layer fix:
+1. **Parser**: switch from regex `[\s\S]*?` lazy match to `lastIndexOf(CLOSE_TAG)` capped at the next opening tag's index (or end-of-text if no next open). Greedy match against the LAST close before the next block. Multiple separate `<active_command>` blocks still work (each capped by the next opening); streaming branch unchanged. Defense-in-depth — handles legacy DB rows that already contain the bad preamble.
+2. **Dispatcher**: rephrase the preamble — replace `"after </active_command>"` with `"after the active_command closing tag"`. Inline comment warns future editors not to embed the literal close-tag string inside the body.
+
+**Consequences:** New commands won't have the false-close issue at all. Old DB rows with the legacy preamble auto-render correctly because the parser is greedy. Multi-block support is preserved. Streaming-aware accordion (renders on opening tag arrival, marks `streaming: true` until close) keeps working. Test fixtures cover all three cases. Future invariant: any text the dispatcher embeds in the active_command body MUST NOT contain the literal substring `</active_command>` — describe it spaced ("active_command closing tag") or via another formulation.
+
+## ADR-099 — Connector `traffic_mode` gates routing + tools, NOT lifecycle
+
+**Context:** Operators wanted per-connector direction scoping for strategy reasons — broadcast-only notifier (outbound, ignore inbound), listen-only archive (inbound, no replies), or default both. Two implementation styles considered: (a) gate at adapter lifecycle (skip `bot.start()` polling for outbound_only, skip `sendMessage` for inbound_only) — cleaner runtime cost but invasive across every adapter and breaks the "polling lifecycle is the adapter's concern" abstraction; (b) gate at routing + tool layer — adapter polls/connects normally, server-side gates intercept events going IN and outbound calls going OUT.
+
+**Decision:** Path (b). Gate at the routing layer (`routeConnectorEvent` early-drops inbound when `outbound_only`, finalizes the arrival row to `status='dropped'` + `drop_reason='traffic_outbound_only'`), at `executeConversationAdapter` (early-return when `inbound_only`), at the access-request notification sends (skip when `inbound_only`), and at the outbound tools (`connector_send`, `connector_send_to_target`, `connector_run_action` return `{ code: 'TRAFFIC_INBOUND_ONLY' }` when `inbound_only`). Mode is cached in `connectorRegistry.activeContexts.trafficMode` at activation, refreshed live by PATCH route via `setTrafficMode(connectorId, mode)` — no connector restart required. Surfaced to adapters via required `ConnectorContext.trafficMode` field for adapters that want to honour it proactively (optional — server-side gates are the source of truth).
+
+Schema: `connectors.traffic_mode text NOT NULL DEFAULT 'both'` added to Drizzle schema only — no migration file shipped; user runs `db generate`/`db push` themselves per project preference.
+
+**Consequences:** Mode change takes effect instantly without polling restart (which on Telegram has the 30s slot reservation cost — see ADR-081). Outbound_only connectors still pay the polling bandwidth cost (acceptable trade-off — usually negligible vs the lifecycle complexity). Inbound rows for outbound_only mode stay in `connector_events` as `dropped` for observability ("why isn't my agent responding?" → check Events tab); user can opt for zero-DB-footprint via separate `log_mode='active_binding_only'` config. New outbound paths (future tools, new auto-replies) MUST add a `connectorRegistry.getTrafficMode(id) !== 'inbound_only'` check; new inbound entry points MUST add the early-drop check at the top.
+
+## ADR-098 — Connector inbound = ONE event row per update; routing UPDATEs, never INSERTs a duplicate
+
+**Context:** Every inbound update produced TWO `connector_events` rows: one `received` from `logArrivalImmediate` (synchronous, before routing — load-bearing per ADR-080 for ops debugging "is Telegram polling at all"), and a SECOND row from the routing pipeline with the outcome status (`pending_approval`, `routed`, `dropped`, etc.). Visible in the Channels Events tab as side-by-side duplicates of the same message. Was tracked as a known follow-up (`tasks.md`).
+
+**Decision:** Telegram adapters now stamp the inserted arrival row id onto `event.metadata.arrival_event_id`. New `updateConnectorEvent(id, patch)` query in `apps/studio/db/src/queries/connector.ts`. New `finalizeEv(projectId, event, args)` helper in `event-router.ts` UPDATEs the arrival row using that id; falls back to INSERT only when the id is missing (non-Telegram source). All 5 routing-pipeline insert sites switched from `gatedLogEv`/`logEv` to `finalizeEv`. Adapter's `logArrivalImmediate` invariant preserved.
+
+Vocabulary collapsed at the same time: `pending_approval` status removed entirely from `connector_events`. The two cases that used it (no_binding match, identity pending approval) now both use `status='unhandled'` with `drop_reason` distinguishing the cause (`'no_binding'` vs `'identity_pending'`). Canonical vocabulary now: `received | routed | unhandled | dropped | rate_limited | error`. `connector_messages` `'pending'` status also folded into `'unhandled'` for cross-table consistency.
+
+**Consequences:** ONE row per inbound — Events tab is no longer noisy. `connector_messages` (separate table, conversation-history-style log) is unchanged. Frontend SSE upserts by row id (replace existing entry instead of prepending) so live view reflects status transitions in place. New inbound adapters MUST stamp `arrival_event_id` to participate; otherwise routing falls back to INSERT and the duplication returns for that adapter. `RouteResult` type updated; no consumer cared about specific `'pending_approval'` value (both call sites only check for errors).
+
+## ADR-097 — Action Request agent flow is detached-only; no `wait` tool
+
+**Context:** Plan 25 shipped `action_request_create` + `action_request_wait` + `action_request_list`. The `wait` tool let agents long-poll (in-process pubsub) until the operator decision arrived. In practice this encouraged agents to BLOCK after creating an AR — wasting LLM context on an idle wait, conflicting with the destination-handler model that already runs the side-effect independently when the operator responds.
+
+**Decision:** Removed `action_request_wait` entirely. Agent flow is ALWAYS detached: `create` returns `{ action_request_id, status: 'pending' }` and the agent moves on. The operator decision flows to its destination handler (`outbound_approval` runs the queued send, `task_resume` re-invokes the task with the decision injected as a synthetic message) without any agent involvement. Wait hint stripped from `action_request_create` description, return value, `connector_send` outbound-approval response, and `connector_run_action` outbound-approval response — all now explicitly say "Move on". Pubsub `subscribeActionRequest` + `arChannel('ar:{id}')` removed (no remaining subscriber); only the project-level channel survives for the SSE UI.
+
+**Consequences:** Agent context stays lean. Inline-wait task pattern is gone; only detached-resume remains for the "decision flows back into the agent" use case. If a future requirement DOES need synchronous wait, reintroduction would require revisiting why the destination-handler model isn't sufficient — don't add `wait` back without a concrete justification. Docs `feats/action-request.md` rewritten to reflect detached-only flow.
+
+## ADR-096 — `PluginLoader` query methods MUST be called with projectId from runner
+
+**Context:** `PluginLoader.getResolvedTools(projectId?)` and `getPromptSegmentsWithMetaAsync(projectId?)` correctly filter `plugin.meta.project_scope === true` against the per-project enabled set when `projectId` is passed. But 4 call sites in `packages/core/src/runner.ts` (`run()` line 212 + 422, `previewRun()` line 886 + 907) called these methods with NO argument, hitting the loader's "return all" fallback branch. Result: tools + system-prompt segments from project-scoped plugins (`jiku.web-reader`, `jiku.analytics`, `jiku.social`) leaked into EVERY project regardless of activation state.
+
+**Decision:** Pass `this.runtimeId` (which is the projectId on `AgentRunner`) to all 4 call sites. The loader's filter logic was already correct — the bug was purely "forgot to thread the id".
+
+**Consequences:** Project-scoped plugins now stay invisible until activated via `project_plugins`. Other persistence paths (skills via `propagatePluginSkills`, storage via keyed `${projectId}:${pluginId}`, `onProjectPluginActivated` lifecycle) were already correctly gated — nothing else needed fixing. Future invariant: any new call site to a `PluginLoader` query method MUST pass `projectId` if a project context exists. Adapter / route / background-job code should grep for an existing projectId source before defaulting to `undefined`.
+
 ## ADR-094 — Chat-run cancels are owner-only; `runs:cancel` only covers task/heartbeat
 
 **Context:** The cancel endpoint (`POST /conversations/:id/cancel`) was gated by `runs:read`, which meant any project member who could view the Runs page could cancel anyone else's running conversation — including a colleague's personal chat with an agent. That's an abuse vector (malice or mistake) with no legitimate team use case: chat streams are one-to-one, the initiator is the only rightful owner. Task/heartbeat runs are different — they're autonomous, often cron-triggered with `caller_id=null`, and ops genuinely needs a way to stop runaway ones without requiring superadmin.

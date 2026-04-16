@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { ToolDefinition, ToolStreamChunk, ToolContext } from '@jiku/types'
 import { getFilesystemService } from './factory.ts'
-import { recordFsRead, getFsRead, forgetFsRead, getFileByPath, resolveFsToolPermission } from '@jiku-studio/db'
+import { recordFsRead, getFsRead, forgetFsRead, forgetFsReadsUnderPrefix, getFileByPath, getFolderByPath, resolveFsToolPermission } from '@jiku-studio/db'
 import { audit } from '../audit/logger.ts'
 
 /**
@@ -514,15 +514,15 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       meta: {
         id: 'fs_move',
         name: 'fs_move',
-        description: 'Move or rename a file in the project filesystem',
+        description: 'Move or rename a file OR folder in the project filesystem. For folders, every descendant file + nested folder is rewritten in a single atomic transaction. Cannot move root `/`. Cannot move a folder into its own descendant.',
         group: 'filesystem',
       },
       prompt: FS_WRITE_HINT,
       permission: 'fs:write',
       modes: ['chat', 'task'],
       input: z.object({
-        from: z.string().describe('Current file path'),
-        to: z.string().describe('New file path'),
+        from: z.string().describe('Current path (file or folder)'),
+        to: z.string().describe('New path. Include the basename (e.g. for rename use the same parent folder; for move use a new parent folder).'),
       }),
       execute: async (args: unknown, ctx: ToolContext) => {
         const { from, to } = args as { from: string; to: string }
@@ -537,9 +537,14 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
 
         try {
           await fs.move(from, to)
-          // Tracker rows are keyed by path — drop the old path, the agent can
-          // fs_read the new path if it needs to mutate it.
-          if (conversationId) await forgetFsRead(conversationId, from)
+          // Tracker rows are keyed by path — drop the old path. For folder
+          // moves, also drop any tracker row whose path begins with the old
+          // folder, otherwise descendant files would be marked stale on the
+          // next mutate even though we just moved them.
+          if (conversationId) {
+            await forgetFsRead(conversationId, from)
+            await forgetFsReadsUnderPrefix(conversationId, from)
+          }
           return { success: true, from, to }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Move failed' }
@@ -551,17 +556,19 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
       meta: {
         id: 'fs_delete',
         name: 'fs_delete',
-        description: 'Delete a file from the project filesystem',
+        description:
+          'Delete a file OR folder from the project filesystem. For folders, set `recursive: true` to delete the folder + ALL descendants — without it, folder deletes are rejected (safety guard against accidental wipes). File deletes ignore `recursive`.',
         group: 'filesystem',
       },
       prompt: FS_WRITE_HINT,
       permission: 'fs:write',
       modes: ['chat', 'task'],
       input: z.object({
-        path: z.string().describe('File path to delete'),
+        path: z.string().describe('Path to delete (file or folder)'),
+        recursive: z.boolean().optional().describe('Required when deleting a folder. Confirms you want to wipe everything under it.'),
       }),
       execute: async (args: unknown, ctx: ToolContext) => {
-        const { path } = args as { path: string }
+        const { path, recursive } = args as { path: string; recursive?: boolean }
         const conversationId = ctx?.runtime?.conversation_id
         const fs = await getFilesystemService(projectId)
         if (!fs) return { error: 'Filesystem is not configured for this project' }
@@ -570,11 +577,59 @@ export function buildFilesystemTools(projectId: string, binaryHints?: BinaryFile
         if (permGate) return permGate
 
         try {
-          await fs.delete(path)
-          if (conversationId) await forgetFsRead(conversationId, path)
-          return { success: true, path }
+          // Detect file vs folder. Try file first — if missing, try folder.
+          const file = await getFileByPath(projectId, path)
+          if (file) {
+            await fs.delete(path)
+            if (conversationId) await forgetFsRead(conversationId, path)
+            return { success: true, path, type: 'file' }
+          }
+          const folderRow = await getFolderByPath(projectId, path)
+          if (!folderRow) return { error: `Path not found: ${path}` }
+          if (!recursive) {
+            return {
+              error: `Path "${path}" is a folder. Pass { recursive: true } to delete it and ALL descendants. This is a safety guard.`,
+              code: 'FOLDER_DELETE_REQUIRES_RECURSIVE',
+            }
+          }
+          const deleted = await fs.deleteFolder(path)
+          if (conversationId) {
+            await forgetFsRead(conversationId, path)
+            await forgetFsReadsUnderPrefix(conversationId, path)
+          }
+          return { success: true, path, type: 'folder', deleted_files: deleted }
         } catch (err) {
           return { error: err instanceof Error ? err.message : 'Delete failed' }
+        }
+      },
+    },
+
+    {
+      meta: {
+        id: 'fs_mkdir',
+        name: 'fs_mkdir',
+        description: 'Create an empty folder in the project filesystem. Idempotent — succeeds even if the folder already exists. Intermediate ancestor folders are created automatically. Folders are normally created implicitly by fs_write — call this only when you need an EMPTY folder.',
+        group: 'filesystem',
+      },
+      prompt: FS_WRITE_HINT,
+      permission: 'fs:write',
+      modes: ['chat', 'task'],
+      input: z.object({
+        path: z.string().describe("Folder path, e.g. '/reports/2026-04'. Must start with '/' and not be the root."),
+      }),
+      execute: async (args: unknown, ctx: ToolContext) => {
+        const { path } = args as { path: string }
+        const fs = await getFilesystemService(projectId)
+        if (!fs) return { error: 'Filesystem is not configured for this project' }
+
+        const permGate = await checkToolPermGate(projectId, path, 'write', { user_id: ctx?.caller?.user_id, agent_id: ctx?.runtime?.agent_id })
+        if (permGate) return permGate
+
+        try {
+          await fs.mkdir(path)
+          return { success: true, path }
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'mkdir failed' }
         }
       },
     },

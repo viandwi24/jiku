@@ -216,26 +216,100 @@ export class FilesystemService {
   async move(fromPath: string, toPath: string): Promise<void> {
     const from = normalizePath(fromPath)
     const to = normalizePath(toPath)
+    if (from === to) return // no-op
 
+    // Try file first; fall back to folder. Distinguishing matters because
+    // folder move has to rewrite every descendant file + folder row.
     const file = await getFileByPath(this.projectId, from)
-    if (!file) throw new NotFoundError(`File not found: ${fromPath}`)
+    if (file) {
+      const existing = await getFileByPath(this.projectId, to)
+      if (existing) throw new ConflictError(`File already exists at: ${toPath}`)
 
-    const existing = await getFileByPath(this.projectId, to)
-    if (existing) throw new ConflictError(`File already exists at: ${toPath}`)
+      // Plan 16: zero S3 operations — storage_key is UUID-based and does NOT
+      // change on move/rename. Only DB metadata (path, name, folder_path,
+      // extension) is updated. This is atomic (single UPDATE statement).
+      const filename = nodePath.basename(to)
+      await updateFilePath(file.id, {
+        path: to,
+        name: filename,
+        folder_path: nodePath.dirname(to),
+        extension: nodePath.extname(filename).toLowerCase(),
+        // storage_key intentionally NOT included — immutable after file creation
+      })
+      await this.upsertAncestorFolders(to)
+      return
+    }
 
-    // Plan 16: zero S3 operations — storage_key is UUID-based and does NOT
-    // change on move/rename. Only DB metadata (path, name, folder_path,
-    // extension) is updated. This is atomic (single UPDATE statement).
-    const filename = nodePath.basename(to)
-    await updateFilePath(file.id, {
-      path: to,
-      name: filename,
-      folder_path: nodePath.dirname(to),
-      extension: nodePath.extname(filename).toLowerCase(),
-      // storage_key intentionally NOT included — immutable after file creation
+    // Folder move path. Reject if `from` doesn't exist as a folder either.
+    const folderExists = await db
+      .select({ id: project_folders.id })
+      .from(project_folders)
+      .where(and(eq(project_folders.project_id, this.projectId), eq(project_folders.path, from)))
+      .limit(1)
+    if (folderExists.length === 0) {
+      throw new NotFoundError(`Path not found: ${fromPath}`)
+    }
+    if (to === '/') throw new ValidationError('Cannot move folder onto root')
+    if (to === from || to.startsWith(from + '/')) {
+      throw new ValidationError('Cannot move a folder into itself or its descendant')
+    }
+    const conflictFolder = await db
+      .select({ id: project_folders.id })
+      .from(project_folders)
+      .where(and(eq(project_folders.project_id, this.projectId), eq(project_folders.path, to)))
+      .limit(1)
+    if (conflictFolder.length > 0) {
+      throw new ConflictError(`Folder already exists at: ${toPath}`)
+    }
+    const conflictFile = await getFileByPath(this.projectId, to)
+    if (conflictFile) {
+      throw new ConflictError(`A file already exists at: ${toPath}`)
+    }
+
+    // Walk every descendant file + folder and rewrite the prefix.
+    // sql REPLACE-on-prefix would be cleaner but inconsistent across drivers;
+    // explicit row updates inside one transaction are safe + portable.
+    const descendantFiles = await getFilesUnderFolder(this.projectId, from)
+    const descendantFolders = await db
+      .select()
+      .from(project_folders)
+      .where(and(
+        eq(project_folders.project_id, this.projectId),
+        or(
+          eq(project_folders.path, from),
+          like(project_folders.path, `${from}/%`),
+        ),
+      ))
+
+    const rewritePath = (oldPath: string): string => to + oldPath.slice(from.length)
+
+    await db.transaction(async (tx) => {
+      for (const f of descendantFiles) {
+        const newFilePath = rewritePath(f.path)
+        await tx.update(project_files)
+          .set({
+            path: newFilePath,
+            folder_path: nodePath.dirname(newFilePath),
+            updated_at: new Date(),
+          })
+          .where(eq(project_files.id, f.id))
+      }
+      for (const fd of descendantFolders) {
+        const newFolderPath = rewritePath(fd.path)
+        const newParent = newFolderPath === '/' ? null : nodePath.dirname(newFolderPath)
+        const depth = newFolderPath.split('/').filter(Boolean).length
+        await tx.update(project_folders)
+          .set({
+            path: newFolderPath,
+            parent_path: newParent,
+            depth,
+          })
+          .where(eq(project_folders.id, fd.id))
+      }
     })
 
-    // Upsert ancestor folders for the new path
+    // Ensure the new ancestor chain exists (target's parent might be a brand-
+    // new folder if `to`'s parent isn't already in the table).
     await this.upsertAncestorFolders(to)
   }
 

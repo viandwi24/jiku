@@ -25,6 +25,12 @@ Command body adalah markdown instruksi untuk agent — bisa referensi `@plans/ma
 - ✅ Heartbeat (via task runner)
 - ✅ Connector inbound (Telegram + any adapter that goes through `event-router`) — ADR-088 reversed ADR-085's earlier defer. Gated uniformly via `command_access_mode` (ADR-089).
 
+## UI: `<active_command>` accordion in message bubble
+
+Shared component `apps/studio/web/components/chat/active-command-block.tsx` (`MessageTextWithActiveCommands` + `ActiveCommandBlock`) detects the dispatcher's `<active_command slug="...">...</active_command>` wrapper inside user-message text and renders it as a collapsible accordion (system-prompt label, slug as `/<slug>`, body in a monospaced `<pre>` block). Used by both the live chat-interface and the conversation-viewer (history). Streaming-aware: an opening tag without a close yet renders the same chip with a pulsing amber dot + "streaming" label and a trailing `…` in the body.
+
+Parser uses **greedy `lastIndexOf(CLOSE_TAG)`** capped at the next opening tag — NOT lazy first-match. Reason: the dispatcher's preamble may legitimately mention the closing tag string while describing it, and lazy match would truncate the body at that fake close. If you ever embed text into the body via `commands/dispatcher.ts`, do NOT include the literal substring `</active_command>`. See ADR-100 + memory entry "active_command parser is greedy by design".
+
 ## UI: `/` autocomplete in chat input
 
 Typing `/` as the first character of the chat input pops a dropdown of matching commands:

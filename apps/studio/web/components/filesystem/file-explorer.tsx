@@ -10,13 +10,14 @@ import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
   Badge,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@jiku/ui'
 import { toast } from 'sonner'
 import {
   Folder, FileText, ChevronRight, Upload, Plus,
   RefreshCw, Loader2, Search, Copy, X, Save, Eye,
   MoreHorizontal, Pencil, FolderOpen, Trash2, FolderPlus,
-  Lock, Shield, Check,
+  Lock, Shield, Check, Download, FileArchive,
 } from 'lucide-react'
 import { FileDetailPanel } from './file-detail-panel'
 
@@ -24,6 +25,19 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Parent folder of a virtual path. `/a/b/c` → `/a/b`; `/x` → `/`; `/` → `/`. */
+function dirOf(p: string): string {
+  const i = p.lastIndexOf('/')
+  if (i <= 0) return '/'
+  return p.slice(0, i)
+}
+
+/** Last segment of a virtual path. `/a/b/c` → `c`; `/` → ''. */
+function basenameOf(p: string): string {
+  const parts = p.split('/').filter(Boolean)
+  return parts[parts.length - 1] ?? ''
 }
 
 function getEntryIcon(entry: FilesystemEntry) {
@@ -35,6 +49,7 @@ interface EntryDropdownProps {
   entry: FilesystemEntry
   onRename: () => void
   onCopyPath: () => void
+  onExportZip: () => void
   onDelete: () => void
   onOpen?: () => void
   onSetPermission: (permission: 'read' | 'read+write' | null) => void
@@ -42,7 +57,7 @@ interface EntryDropdownProps {
   canWrite?: boolean
 }
 
-export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, onSetPermission, canWrite = true }: EntryDropdownProps) {
+export function EntryDropdown({ entry, onRename, onCopyPath, onExportZip, onDelete, onOpen, onSetPermission, canWrite = true }: EntryDropdownProps) {
   const current = entry.tool_permission ?? null
   return (
     <DropdownMenu>
@@ -70,6 +85,10 @@ export function EntryDropdown({ entry, onRename, onCopyPath, onDelete, onOpen, o
         <DropdownMenuItem onClick={onCopyPath} className="text-xs gap-2">
           <Copy className="w-3.5 h-3.5" />
           Copy path
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onExportZip} className="text-xs gap-2">
+          <FileArchive className="w-3.5 h-3.5" />
+          {entry.type === 'folder' ? 'Export folder as ZIP' : 'Export as ZIP'}
         </DropdownMenuItem>
         {canWrite && (
           <>
@@ -187,6 +206,13 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
   const [showNewFolderInput, setShowNewFolderInput] = useState(false)
   const [renamingEntry, setRenamingEntry] = useState<FilesystemEntry | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [importZipOpen, setImportZipOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  // Drag-and-drop move state: `draggingPath` is the entry being dragged,
+  // `dragOverPath` is the current drop target highlighted in the UI. Both
+  // clear on drop / dragend / dragleave.
+  const [draggingPath, setDraggingPath] = useState<string | null>(null)
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null)
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['files', projectId, currentPath],
@@ -234,12 +260,13 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
   const moveMutation = useMutation({
     mutationFn: ({ from, to }: { from: string; to: string }) =>
       api.filesystem.move(projectId, { from, to }),
-    onSuccess: () => {
+    onSuccess: (_res, vars) => {
       setRenamingEntry(null)
       qc.invalidateQueries({ queryKey: ['files', projectId] })
-      toast.success('Renamed')
+      const sameFolder = dirOf(vars.from) === dirOf(vars.to)
+      toast.success(sameFolder ? 'Renamed' : 'Moved')
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Rename failed'),
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Move failed'),
   })
 
   const setPermissionMutation = useMutation({
@@ -262,6 +289,90 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Create folder failed'),
   })
+
+  // ── Drag-and-drop move ─────────────────────────────────────────────────
+  //
+  // Entry rows are draggable. Folders (in-list) and breadcrumb segments are
+  // drop targets. On drop, the dragged entry's filename is appended to the
+  // target folder path and the existing moveMutation fires. Guards below
+  // reject no-op moves (same parent) and folder-into-own-descendant loops.
+
+  const canDropAt = useCallback((target: string): boolean => {
+    if (!canWrite || !draggingPath) return false
+    const normalized = target || '/'
+    if (draggingPath === normalized) return false
+    if (dirOf(draggingPath) === normalized) return false // already in this folder
+    if (normalized === draggingPath || normalized.startsWith(draggingPath + '/')) return false
+    return true
+  }, [canWrite, draggingPath])
+
+  const handleDragStart = useCallback((e: React.DragEvent, entry: FilesystemEntry) => {
+    if (!canWrite) { e.preventDefault(); return }
+    setDraggingPath(entry.path)
+    e.dataTransfer.effectAllowed = 'move'
+    try { e.dataTransfer.setData('text/plain', entry.path) } catch { /* some browsers restrict */ }
+  }, [canWrite])
+
+  const handleDragEnd = useCallback(() => {
+    setDraggingPath(null)
+    setDragOverPath(null)
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, target: string) => {
+    const normalized = target || '/'
+    if (!canDropAt(normalized)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    if (dragOverPath !== normalized) setDragOverPath(normalized)
+  }, [canDropAt, dragOverPath])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear when leaving to a non-descendant — avoids flicker when the
+    // cursor moves to a child element of the drop target.
+    const related = e.relatedTarget as Node | null
+    const current = e.currentTarget as Node
+    if (related && current.contains(related)) return
+    setDragOverPath(null)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent, target: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const normalized = target || '/'
+    const src = draggingPath
+    setDragOverPath(null)
+    setDraggingPath(null)
+    if (!src) return
+    if (!canDropAt(normalized)) return
+    const base = basenameOf(src)
+    const to = normalized === '/' ? `/${base}` : `${normalized}/${base}`
+    moveMutation.mutate({ from: src, to })
+  }, [canDropAt, draggingPath, moveMutation])
+
+  const handleExportZip = useCallback(async (paths: string[], suggestedName?: string) => {
+    if (paths.length === 0) return
+    setExporting(true)
+    try {
+      const { blob, fileCount, folderCount } = await api.filesystem.exportZip(projectId, paths)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      a.download = suggestedName ? `${suggestedName}-${stamp}.zip` : `disk-export-${stamp}.zip`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      const parts = [`${fileCount} file${fileCount !== 1 ? 's' : ''}`]
+      if (folderCount > 0) parts.push(`${folderCount} folder${folderCount !== 1 ? 's' : ''}`)
+      toast.success(`Exported ${parts.join(' + ')}`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setExporting(false)
+    }
+  }, [projectId])
 
   const loadFile = useCallback(async (file: FilesystemFileEntry) => {
     if (isDirty) {
@@ -333,6 +444,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
     : entries
 
   return (
+    <>
     <div className="flex flex-1 overflow-hidden">
       {/* ── Left panel: file tree ── */}
       <div className="w-64 shrink-0 border-r flex flex-col overflow-hidden">
@@ -351,6 +463,29 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => refetch()} title="Refresh">
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => handleExportZip([currentPath], `disk${currentPath === '/' ? '' : currentPath.replace(/\//g, '-')}`)}
+              disabled={exporting}
+              title={exporting ? 'Exporting…' : `Export "${currentPath}" as ZIP`}
+            >
+              {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            </Button>
+            {canWrite && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setImportZipOpen(true)}
+                title="Import ZIP into this folder"
+              >
+                <FileArchive className="w-3.5 h-3.5" />
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Search */}
@@ -369,29 +504,39 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
           </div>
         </div>
 
-        {/* Breadcrumbs */}
+        {/* Breadcrumbs (also drop targets — drag an entry onto a crumb to move it to that ancestor) */}
         {!searchQuery && (
           <div className="flex items-center gap-0.5 px-2 py-1.5 border-b text-xs text-muted-foreground overflow-x-auto">
             <button
-              className="hover:text-foreground transition-colors shrink-0"
+              className={`hover:text-foreground transition-colors shrink-0 px-1 rounded ${
+                dragOverPath === (normalizedRoot || '/') ? 'ring-2 ring-primary/60 bg-primary/5 text-foreground' : ''
+              }`}
               onClick={() => navigate(normalizedRoot || '/')}
+              onDragOver={e => handleDragOver(e, normalizedRoot || '/')}
+              onDragLeave={handleDragLeave}
+              onDrop={e => handleDrop(e, normalizedRoot || '/')}
             >
               /
             </button>
-            {relativeSegments.map((seg, i) => (
-              <span key={i} className="flex items-center gap-0.5 shrink-0">
-                <ChevronRight className="w-3 h-3" />
-                <button
-                  className="hover:text-foreground transition-colors"
-                  onClick={() => {
-                    const fullPath = '/' + fullSegments.slice(0, rootDepth + i + 1).join('/')
-                    navigate(fullPath)
-                  }}
-                >
-                  {seg}
-                </button>
-              </span>
-            ))}
+            {relativeSegments.map((seg, i) => {
+              const fullPath = '/' + fullSegments.slice(0, rootDepth + i + 1).join('/')
+              return (
+                <span key={i} className="flex items-center gap-0.5 shrink-0">
+                  <ChevronRight className="w-3 h-3" />
+                  <button
+                    className={`hover:text-foreground transition-colors px-1 rounded ${
+                      dragOverPath === fullPath ? 'ring-2 ring-primary/60 bg-primary/5 text-foreground' : ''
+                    }`}
+                    onClick={() => navigate(fullPath)}
+                    onDragOver={e => handleDragOver(e, fullPath)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={e => handleDrop(e, fullPath)}
+                  >
+                    {seg}
+                  </button>
+                </span>
+              )
+            })}
           </div>
         )}
 
@@ -453,8 +598,25 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
               {searchQuery ? 'No files found' : 'Empty folder'}
             </div>
           ) : (
-            filteredEntries.map(entry => (
-              <div key={entry.path} className="group relative">
+            filteredEntries.map(entry => {
+              const isFolder = entry.type === 'folder'
+              const isDragging = draggingPath === entry.path
+              const isDropTarget = isFolder && canDropAt(entry.path) && dragOverPath === entry.path
+              const folderDropHandlers = isFolder && canWrite ? {
+                onDragOver: (e: React.DragEvent) => handleDragOver(e, entry.path),
+                onDragLeave: handleDragLeave,
+                onDrop: (e: React.DragEvent) => handleDrop(e, entry.path),
+              } : {}
+              return (
+              <div
+                key={entry.path}
+                className={`group relative transition-colors ${
+                  isDragging ? 'opacity-40' : ''
+                } ${
+                  isDropTarget ? 'ring-2 ring-primary/60 bg-primary/5 rounded' : ''
+                }`}
+                {...folderDropHandlers}
+              >
                 {renamingEntry?.path === entry.path ? (
                   <div className="flex items-center gap-1 px-2 py-1.5">
                     <input
@@ -473,9 +635,12 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
                   </div>
                 ) : (
                   <button
+                    draggable={canWrite}
+                    onDragStart={e => handleDragStart(e, entry)}
+                    onDragEnd={handleDragEnd}
                     className={`w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 transition-colors text-left ${
                       selectedFile?.path === entry.path ? 'bg-muted' : ''
-                    }`}
+                    } ${canWrite ? 'cursor-grab active:cursor-grabbing' : ''}`}
                     onClick={() => handleNavigate(entry)}
                   >
                     {getEntryIcon(entry)}
@@ -495,6 +660,7 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
                       onOpen={() => handleNavigate(entry)}
                       onRename={() => { setRenamingEntry(entry); setRenameValue(entry.name) }}
                       onCopyPath={() => { navigator.clipboard.writeText(entry.path); toast.success('Path copied') }}
+                      onExportZip={() => handleExportZip([entry.path], entry.name.replace(/\.[^.]+$/, ''))}
                       onSetPermission={(permission) =>
                         setPermissionMutation.mutate({ path: entry.path, type: entry.type, permission })
                       }
@@ -507,7 +673,8 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
                   </div>
                 )}
               </div>
-            ))
+              )
+            })
           )}
         </div>
 
@@ -564,5 +731,167 @@ export function FileExplorer({ projectId, rootPath, hideUpload, canWrite = true 
         )}
       </div>
     </div>
+
+    {importZipOpen && (
+      <ImportZipDialog
+        projectId={projectId}
+        targetFolder={currentPath}
+        onClose={() => setImportZipOpen(false)}
+        onDone={() => {
+          setImportZipOpen(false)
+          qc.invalidateQueries({ queryKey: ['files', projectId] })
+        }}
+      />
+    )}
+    </>
+  )
+}
+
+// ─── Import ZIP dialog ────────────────────────────────────────────────────────
+
+interface ImportZipDialogProps {
+  projectId: string
+  targetFolder: string
+  onClose: () => void
+  onDone: () => void
+}
+
+function ImportZipDialog({ projectId, targetFolder, onClose, onDone }: ImportZipDialogProps) {
+  const [file, setFile] = useState<File | null>(null)
+  const [conflict, setConflict] = useState<'overwrite' | 'skip' | 'rename'>('skip')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.filesystem.importZip>> | null>(null)
+
+  async function handleSubmit() {
+    if (!file) return
+    setRunning(true)
+    try {
+      const res = await api.filesystem.importZip(projectId, targetFolder, conflict, file)
+      setResult(res)
+      const total = res.imported + res.overwritten + res.renamed
+      const parts: string[] = []
+      if (res.imported) parts.push(`${res.imported} new`)
+      if (res.overwritten) parts.push(`${res.overwritten} overwritten`)
+      if (res.renamed) parts.push(`${res.renamed} renamed`)
+      if (res.folders_created) parts.push(`${res.folders_created} folder${res.folders_created === 1 ? '' : 's'}`)
+      if (res.skipped) parts.push(`${res.skipped} skipped`)
+      if (res.failed) parts.push(`${res.failed} failed`)
+      toast[res.failed > 0 ? 'warning' : 'success'](
+        `Import done — ${parts.join(', ') || `${total} files`}`,
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && (result ? onDone() : onClose())}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-sm">Import ZIP</DialogTitle>
+          <DialogDescription className="text-xs">
+            Extract a ZIP archive into <span className="font-mono">{targetFolder}</span>. Each file is validated against the disk's extension allow-list before write.
+          </DialogDescription>
+        </DialogHeader>
+
+        {result ? (
+          <div className="space-y-3 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label="New" value={result.imported} tone="green" />
+              <Stat label="Overwritten" value={result.overwritten} tone="amber" />
+              <Stat label="Renamed" value={result.renamed} tone="blue" />
+              <Stat label="Skipped" value={result.skipped} tone="muted" />
+              {result.folders_created > 0 && <Stat label="Folders" value={result.folders_created} tone="blue" />}
+              {result.failed > 0 && <Stat label="Failed" value={result.failed} tone="red" />}
+            </div>
+            {result.skipped_junk > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                Silently dropped {result.skipped_junk} platform-junk {result.skipped_junk === 1 ? 'entry' : 'entries'} (macOS
+                <span className="font-mono"> __MACOSX/</span>, <span className="font-mono">.DS_Store</span>, Windows
+                <span className="font-mono"> Thumbs.db</span>, etc.).
+              </p>
+            )}
+            {result.errors.length > 0 && (
+              <div className="border rounded p-2 max-h-40 overflow-y-auto space-y-1 bg-red-500/5">
+                <p className="text-[10px] uppercase tracking-wide text-red-600 dark:text-red-400">Errors</p>
+                {result.errors.map((e, i) => (
+                  <div key={i} className="text-[11px]">
+                    <span className="font-mono">{e.path}</span>
+                    <span className="text-muted-foreground"> — {e.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <DialogFooter>
+              <Button size="sm" onClick={onDone}>Done</Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              <label className="flex items-center justify-center gap-2 cursor-pointer w-full py-3 text-xs rounded border border-dashed border-border hover:border-muted-foreground/40 text-muted-foreground hover:text-foreground transition-colors">
+                <FileArchive className="w-4 h-4" />
+                {file ? <span className="font-mono text-foreground">{file.name}</span> : 'Choose ZIP file…'}
+                <input
+                  type="file"
+                  accept=".zip,application/zip,application/x-zip-compressed"
+                  className="hidden"
+                  onChange={e => setFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-muted-foreground">If a file with the same path already exists:</p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <ConflictPill label="Skip" desc="Keep existing" active={conflict === 'skip'} onClick={() => setConflict('skip')} />
+                  <ConflictPill label="Overwrite" desc="Replace existing" active={conflict === 'overwrite'} onClick={() => setConflict('overwrite')} />
+                  <ConflictPill label="Rename" desc='Add " (1)" suffix' active={conflict === 'rename'} onClick={() => setConflict('rename')} />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" size="sm" onClick={onClose} disabled={running}>Cancel</Button>
+              <Button size="sm" onClick={handleSubmit} disabled={!file || running}>
+                {running ? <><Loader2 className="w-3 h-3 animate-spin mr-1" /> Importing…</> : 'Import'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function Stat({ label, value, tone }: { label: string; value: number; tone: 'green' | 'amber' | 'blue' | 'muted' | 'red' }) {
+  const toneClass = {
+    green: 'text-green-600 dark:text-green-400',
+    amber: 'text-amber-600 dark:text-amber-400',
+    blue: 'text-blue-600 dark:text-blue-400',
+    muted: 'text-muted-foreground',
+    red: 'text-red-600 dark:text-red-400',
+  }[tone]
+  return (
+    <div className="border rounded px-2 py-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`text-sm font-semibold ${toneClass}`}>{value}</p>
+    </div>
+  )
+}
+
+function ConflictPill({ label, desc, active, onClick }: { label: string; desc: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex flex-col items-start gap-0.5 px-2 py-1.5 rounded border text-left transition-colors ${
+        active
+          ? 'border-primary bg-primary/5'
+          : 'border-border hover:border-muted-foreground/40 hover:bg-muted/50'
+      }`}
+    >
+      <span className="text-xs font-medium">{label}</span>
+      <span className="text-[10px] text-muted-foreground">{desc}</span>
+    </button>
   )
 }

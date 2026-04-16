@@ -1,5 +1,6 @@
 import {
   createUIMessageStream,
+  generateText,
   tool,
   zodSchema,
   jsonSchema,
@@ -22,6 +23,7 @@ import type {
   SubjectMatcher,
   JikuStorageAdapter,
   RuntimeContext,
+  LLMBridge,
   ToolContext,
   PreviewRunResult,
   ContextSegment,
@@ -255,11 +257,29 @@ export class AgentRunner {
     }
 
     // 2. Resolve model — run-level > agent-level > runtime defaults
-    const model = this.providers.resolve(
-      params.provider_id ?? this.agent.provider_id,
-      params.model_id ?? this.agent.model_id,
-    )
+    const activeProviderId = params.provider_id ?? this.agent.provider_id
+    const activeModelId = params.model_id ?? this.agent.model_id
+    const model = this.providers.resolve(activeProviderId, activeModelId)
     const model_id = params.model_id ?? this.agent.model_id ?? 'unknown'
+
+    // Plan 26 — LLM bridge exposed to tool handlers via RuntimeContext.llm.
+    // Default: reuse the agent's resolved model. Plugins may override provider/model per-call.
+    const providers = this.providers
+    const llmBridge: LLMBridge = {
+      generate: async (prompt, opts) => {
+        const target = (opts?.provider || opts?.model)
+          ? providers.resolve(opts?.provider ?? activeProviderId, opts?.model ?? activeModelId)
+          : model
+        const result = await generateText({
+          model: target,
+          system: opts?.system,
+          prompt,
+          maxOutputTokens: opts?.maxTokens,
+          temperature: opts?.temperature,
+        })
+        return result.text
+      },
+    }
     const compaction_threshold = (this.agent as AgentDefinition & { compaction_threshold?: number }).compaction_threshold ?? 80
 
     // 3. Get or create conversation
@@ -621,6 +641,7 @@ export class AgentRunner {
       // project_id mirrors runtimeId so tools can access the project filesystem
       // without needing a separate injection mechanism.
       project_id: this.runtimeId,
+      llm: llmBridge,
       ...this.plugins.resolveProviders(caller),
     }
 

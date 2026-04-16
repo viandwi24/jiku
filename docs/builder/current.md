@@ -1,3 +1,55 @@
+## Phase (2026-04-16) — Plan 26 Sandbox: `jiku.sandbox` plugin + `run_js` tool ✅
+
+Shipped Plan 26 end-to-end (`docs/plans/26-sandbox.md`). System-scoped plugin `jiku.sandbox` registering a single tool `run_js` that executes JS/TS in a QuickJS isolate. Three source modes via discriminated union input:
+- `code` — raw JS/TS string (auto-detect + Bun.Transpiler for TS)
+- `path` — absolute disk path (with optional `allowed_path_roots` guard)
+- `prompt` — natural-language goal → LLM generates code → eval. LLM call is inherited from the agent via new `RuntimeContext.llm` bridge (ADR-104), so prompt-mode doesn't burn agent context with the raw code blob — the agent only sees the goal and result. Generated code is always returned as `executedCode` so the agent can debug what ran.
+
+Concurrency: module-level `Semaphore` cap 5 (configurable), FIFO queue depth cap 20. Two-layer timeouts: `queue_timeout_ms` (default 30s, error `queue_timeout`) and `exec_timeout_ms` (default 120s via `shouldInterruptAfterDeadline`, error `exec_timeout`). Errors differentiated so agent knows whether system is overloaded vs code is infinite-looping.
+
+### Core change (Phase 0, prerequisite)
+New `LLMBridge` interface in `packages/types/src/index.ts` and `RuntimeContext.llm?: LLMBridge` field. Runner (`packages/core/src/runner.ts` ~line 260) constructs the bridge bound to the agent's resolved model via AI SDK `generateText`. Plugins can override `provider`/`model` per call via opts — useful when the agent runs a reasoning model but codegen should use Haiku. See ADR-104 for rejected alternatives.
+
+### Files
+- `packages/types/src/index.ts` — `LLMBridge`, `LLMBridgeOptions`, `RuntimeContext.llm?`.
+- `packages/core/src/runner.ts` — `generateText` import, `activeProviderId`/`activeModelId` hoisted, `llmBridge` constructed, injected into `runtimeCtx`.
+- `plugins/jiku.sandbox/` — new plugin (package.json, tsconfig.json).
+  - `src/index.ts` — `definePlugin` system-scoped, configSchema auto-rendered in Studio.
+  - `src/types.ts` — SandboxResult, SandboxErrorCode, SandboxLimits, SandboxConfig.
+  - `src/tools/run_js.ts` — `createRunJsTool(getConfig)` factory, discriminated Zod input schema.
+  - `src/sandbox/runner.ts` — QuickJS runner (ported from `refs-bak/js-sandbox.ts`, senken-specific bridges stripped, `wrapCode` empty-body bug fixed, legacy duplicate refs cleaned up).
+  - `src/sandbox/wrap.ts` — auto-return last expression wrapper (async IIFE + try/catch).
+  - `src/sandbox/transpile.ts` — `Bun.Transpiler` for TS→JS + `looksLikeTs` heuristic.
+  - `src/queue/semaphore.ts` — concurrency cap + FIFO queue + queue depth cap + queue timeout.
+  - `src/source/resolve.ts` — discriminated dispatcher for three modes.
+  - `src/source/from-path.ts` — fs read with path traversal guard + optional root whitelist.
+  - `src/source/from-prompt.ts` — LLM codegen via `ctx.llm` + sha256-keyed cache in plugin storage (TTL configurable).
+- `docs/plans/26-sandbox.md` — design plan (open questions resolved 2026-04-16).
+- `docs/feats/sandbox.md` — feature reference (API, error codes, limitations).
+- `docs/builder/decisions.md` — ADR-104 (`RuntimeContext.llm` as canonical LLM bridge).
+
+### Deploy checklist
+1. `bun install` at repo root to fetch `quickjs-emscripten` (^0.31.0).
+2. Plugin is system-scoped — no migration needed, no per-project activation required. Gets picked up on next server start.
+3. Verify Studio UI auto-renders the `configSchema` form. If system-scoped config UI isn't wired yet (see follow-ups), defaults from `configSchema.parse({})` are used — can be adjusted in code until then.
+4. Smoke test each mode: `code` (`1+1` → `{ output: 2 }`), `path` (load a local `.ts` file → transpile + run), `prompt` ("sum of 1..10" → LLM generates `[...Array(10)].reduce...` → eval).
+5. Queue test: fire 10 concurrent `run_js` calls → verify 5 execute + 5 queue; fire 25 → verify the tail rejects with `queue_full`.
+
+### Resolved open questions
+- Core change to `runner.ts` + `types/index.ts` OK.
+- `path` mode default allow-all; `allowed_path_roots` kept as opt-in config.
+- TS transpile via `Bun.Transpiler` (zero-dep).
+- `ANALYSIS_HELPERS` (sma/ema/rsi/macd from refs-bak) dropped — senken-specific.
+
+### Known limitations (see `docs/feats/sandbox.md`)
+- No Node APIs inside sandbox (fs/net/process/require/import).
+- No package installer — inline deps.
+- Bun-only (transpile uses Bun.Transpiler).
+- System-scoped config doesn't hot-reload yet.
+- Per-process queue (multi-instance deploys each get own cap).
+
+---
+
 ## Phase (2026-04-16) — Telegram userbot: streaming `handleResolvedEvent` ported from bot ✅
 
 User asked why typing simulation + tool chips only on bot, not selfbot. Answer: bot has `handleResolvedEvent` override (ADR-087); userbot was on legacy accumulate path. Ported the same pattern with userbot-specific tunings.

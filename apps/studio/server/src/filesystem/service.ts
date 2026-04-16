@@ -296,7 +296,11 @@ export class FilesystemService {
       }
       for (const fd of descendantFolders) {
         const newFolderPath = rewritePath(fd.path)
-        const newParent = newFolderPath === '/' ? null : nodePath.dirname(newFolderPath)
+        // Match upsertAncestorFolders: root-level folders store parent_path = NULL,
+        // not '/'. listSubfolders('/') filters on `parent_path IS NULL`, so a
+        // string '/' here makes the folder vanish from the root listing.
+        const parentDir = newFolderPath === '/' ? null : nodePath.dirname(newFolderPath)
+        const newParent = parentDir === '/' ? null : parentDir
         const depth = newFolderPath.split('/').filter(Boolean).length
         await tx.update(project_folders)
           .set({

@@ -439,6 +439,29 @@ export interface CallerContext {
 // RUNTIME CONTEXT
 // ============================================================
 
+export interface LLMBridgeOptions {
+  /** Override provider id (default: agent's active provider) */
+  provider?: string
+  /** Override model id (default: agent's active model) */
+  model?: string
+  /** Optional system prompt prepended to the call */
+  system?: string
+  /** Max output tokens */
+  maxTokens?: number
+  /** Sampling temperature */
+  temperature?: number
+}
+
+/**
+ * Plan 26 — Lightweight LLM access handed to tool handlers so plugins can
+ * generate text (e.g. code-gen for sandbox, summarization) using the same
+ * provider/model the calling agent is running on. Inherits by default;
+ * plugins may override provider/model per-call via opts.
+ */
+export interface LLMBridge {
+  generate(prompt: string, opts?: LLMBridgeOptions): Promise<string>
+}
+
 export interface RuntimeContext {
   caller: CallerContext
   agent: {
@@ -448,6 +471,8 @@ export interface RuntimeContext {
   }
   conversation_id: string
   run_id: string
+  /** Plan 26 — agent's active LLM, exposed to tool handlers for prompt→text tasks. */
+  llm?: LLMBridge
   [key: string]: unknown
 }
 

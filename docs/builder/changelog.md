@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-04-16 — Plan 26: `jiku.sandbox` plugin + `run_js` tool + `RuntimeContext.llm` bridge
+
+System-scoped plugin for sandboxed JS/TS execution. Agents get one compute primitive (`run_js`) with three source modes — raw `code`, disk `path`, or `prompt` (LLM generates code from goal inside the tool, so agent context doesn't eat the full source). Sandbox is QuickJS isolate with hard memory/stack/CPU limits; no Node APIs leak in.
+
+- **Core change (prerequisite):** new `LLMBridge` interface on `RuntimeContext.llm?` so tool handlers can call the agent's active LLM directly. Runner constructs the bridge via AI SDK `generateText` bound to the agent's resolved provider/model; plugins may override `provider`/`model`/`system`/`temperature`/`maxTokens` per call. See ADR-104.
+- **Plugin entry** (`plugins/jiku.sandbox/src/index.ts`): `project_scope: false`, `configSchema` exposes `max_concurrent` (5), `max_queue_depth` (20), `queue_timeout_ms` (30s), `exec_timeout_ms` (120s), `memory_limit_mb` (50), `stack_limit_kb` (1024), `allowed_path_roots` (empty = allow-all), optional `llm_override`, `prompt_cache_ttl_ms` (1h).
+- **Tool `run_js`**: Zod discriminated union input on `source.type` = `code` | `path` | `prompt`. Returns `{ mode, output, logs, error?, errorDetail?, executedCode?, executionMs, queueWaitMs }`. Typed errors: `queue_full`, `queue_timeout`, `exec_timeout`, `eval_error`, `transpile_error`, `read_error`, `llm_error` — agent can differentiate "system overloaded" vs "code broken". `executedCode` always populated for `path` + `prompt` modes so the agent can debug what actually ran.
+- **Queue** (`src/queue/semaphore.ts`): module-level `Semaphore` captured in closure. Configure-able at runtime via `configure()`. FIFO waiting list; request rejected when waiting count exceeds cap.
+- **Sandbox runner** (`src/sandbox/runner.ts`): ported from `refs-bak/js-sandbox.ts` (senken-specific bridges stripped — `senken.getCandles`, `senken.finance.*`, `senken.vfs.*`, `ANALYSIS_HELPERS`). Kept: QuickJS dispose lifecycle, `console.log/warn/error` capture into `logs[]`, `__jiku_result`/`__jiku_error` capture pattern. Bugs fixed: empty `wrapCode` body reimplemented in `src/sandbox/wrap.ts` (auto-return last expression via STMT_KEYWORDS regex); duplicate legacy `inFlightCount`/`disposing` aliases removed.
+- **Transpile** (`src/sandbox/transpile.ts`): `Bun.Transpiler` with `loader: 'ts'` when TS declared or heuristically detected (type annotations, interfaces, `as const`, generic `<T>`). JS passes through.
+- **Prompt mode** (`src/source/from-prompt.ts`): constructs a tight system prompt ("output raw JS only, no markdown fences"), calls `ctx.runtime.llm.generate(...)` with `temperature: 0`, strips any stray ```` ``` ```` fences. Cache keyed by `sha256(system_version + model + prompt)` stored in plugin storage with TTL. Cache hits skip the LLM call entirely.
+- **Path mode** (`src/source/from-path.ts`): requires absolute path, rejects `..` segments, honors `allowed_path_roots` whitelist when non-empty. Language auto-detected from file extension.
+
+Deploy: `bun install` to pick up `quickjs-emscripten` (^0.31.0). No migrations needed — system-scoped plugin picked up at next server start.
+
+Follow-ups (in `tasks.md`): hot-reload system-plugin config from Studio UI storage; `emitUsage` accounting for bridge LLM calls; Python sandbox leg; wire `skill_exec_file` (JS/TS skills) to `run_js`; extra bridges inside QuickJS (`fetch`, timers, project-disk read-only); agent-facing queue snapshot tool.
+
+Files: `packages/types/src/index.ts`, `packages/core/src/runner.ts`, `plugins/jiku.sandbox/**`, `docs/plans/26-sandbox.md`, `docs/feats/sandbox.md`, `docs/builder/decisions.md` (ADR-104).
+
+## 2026-04-17 — Fix: folder rename at root makes folder vanish from explorer
+
+Reported in prod: rename `/bak` → `/bak1` and the folder disappears from the file explorer disk view. Root cause: the folder-move branch in `FilesystemService.move()` wrote `parent_path = '/'` (the string) for top-level folders, while `listSubfolders('/')` only matches rows where `parent_path IS NULL`. Convention mismatch — `mkdir` and `upsertAncestorFolders` already normalize root parent to `null`; move missed it.
+
+- Fix: in `service.ts` folder-move loop, treat `nodePath.dirname(...) === '/'` the same as root (write `null`), matching `upsertAncestorFolders`.
+- Note for ops: rows seeded by migration `0009_filesystem_revision_v2.sql` use `parent_path = '/'` (string) for top-level folders. Those would also be invisible to `listSubfolders('/')`. If any user reports missing root-level folders that pre-date the rename fix, heal with: `UPDATE project_folders SET parent_path = NULL WHERE parent_path = '/';`
+- Files: `apps/studio/server/src/filesystem/service.ts`
+
 ## 2026-04-16 — Telegram userbot: streaming `handleResolvedEvent` (placeholder + tool chips, slow debounce)
 
 Per user feedback "kok typing simulate ga ada di telegram self bot". Bot adapter has shipped streaming UX since ADR-087 (placeholder `⌛` → debounced edits → tool chips → final markdown render); userbot was stuck on the legacy accumulate-then-send path because mtcute's edit semantics + userbot flood thresholds needed different pacing.

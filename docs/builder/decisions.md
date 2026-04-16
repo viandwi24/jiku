@@ -1,5 +1,18 @@
 # Decisions
 
+## ADR-104 — `RuntimeContext.llm` as the canonical LLM bridge exposed to tool handlers
+
+**Context:** Plan 26 (`jiku.sandbox`) needs a way for a tool handler to call an LLM inside its execute() — specifically to translate a natural-language prompt into code before running it in QuickJS. Two shapes were considered: (a) each plugin that needs an LLM declares a dependency on a "provider" plugin via `contributes` and receives an injected client, or (b) the core runner exposes an LLM bridge directly on `RuntimeContext` so any tool can access the same provider/model the calling agent is using.
+
+**Decision:** Bridge lives on `RuntimeContext.llm` (`packages/types/src/index.ts`) as an `LLMBridge { generate(prompt, opts?) }` interface. The core runner (`packages/core/src/runner.ts` around the model-resolution step) constructs the bridge once per run, bound to the agent's resolved model via AI SDK `generateText`. Opts allow per-call overrides of `provider` / `model` / `system` / `temperature` / `maxTokens`, so plugins can route codegen to a cheaper model when the agent is on a reasoning tier.
+
+**Consequences:**
+- Inheritance by default: a sandbox `prompt` call uses the same model the agent is running on unless the plugin explicitly overrides via its own config. This matches user expectation ("the agent asked the sandbox to do a thing — it should use the agent's brain"). No extra wiring needed for basic use.
+- Tools stay decoupled from provider SDKs — they don't import `@ai-sdk/*` themselves, just call `ctx.runtime.llm.generate(...)`. If we ever swap providers, only the runner bridge construction changes.
+- `llm` is optional on `RuntimeContext` so plugins that never call it don't see runtime errors when the field is missing (e.g. synthetic runs from tests). Plugins that need it must guard: `if (!ctx.runtime.llm) throw new Error('...')`.
+- Cost visibility: bridge calls flow through the same AI SDK path and benefit from any future `emitUsage`-style hooks, but currently bridge usage doesn't show up in per-run usage accounting. Follow-up.
+- Rejected "depends" approach: forcing plugins to `depends: [LlmProvider]` and contribute factories via `ctx` would duplicate what the runner already has bound (the agent's provider). Overhead for no isolation gain — the bridge is not a trust boundary.
+
 ## ADR-103 — Telegram inbound media-group debounced at the adapter, emitted as ONE event
 
 **Context:** Telegram ships an "album" (multiple photos/videos sent in one user action) as N separate `message` updates that happen to share a `media_group_id`. Before this change the bot adapter emitted one `ConnectorEvent` per update, which meant an agent binding fired N times — the user saw N replies (or a race where each reply only "saw" one of the N photos, since `ctx.onEvent` is called N times in parallel). Field feedback was unambiguous: the agent should see the album as a single inbound with all items attached.

@@ -1,5 +1,9 @@
 # Memory
 
+## Tool handlers can call the agent's LLM via `ctx.runtime.llm.generate(...)`
+
+Plan 26 added `RuntimeContext.llm?: LLMBridge` (`packages/types/src/index.ts`). The runner (`packages/core/src/runner.ts`) binds it to the agent's resolved provider/model via AI SDK `generateText` — so any plugin that wants to call an LLM inside `execute()` just does `const text = await toolCtx.runtime.llm?.generate(prompt, { system?, provider?, model?, temperature?, maxTokens? })`. No need to declare a `depends: [LlmProvider]` or inject a client — the bridge is the canonical access point (ADR-104). Pattern used by `jiku.sandbox` for prompt-mode codegen. `llm` is optional on the type so guard with `if (!ctx.runtime.llm) throw ...` in flows that genuinely need it. Don't forget the opts argument if you want to route codegen to a cheaper model than whatever the agent is running on.
+
 ## Every feature needs permission enforcement at four layers
 
 A feature is "gated" only when all four are in place: (1) server `requirePermission(...)` on every route, (2) UI page `withPermissionGuard(Page, 'feature:read')` so direct URL access is blocked, (3) sidebar item uses the right permission key so the menu hides, (4) UI write buttons gated by `can('feature:write')` so `:read`-only users don't see create/edit/delete buttons. Missing any one leaves a hole — server-only gating lets people see menu items that 403 on click (bad UX); UI-only gating is defeated by `curl`. Grep `requirePermission\|withPermissionGuard\|useProjectPermission\|can\(` during audit.

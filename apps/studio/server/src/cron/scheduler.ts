@@ -9,6 +9,7 @@ import {
 } from '@jiku-studio/db'
 import { runTaskConversation } from '../task/runner.ts'
 import { composeCronRunInput, type CronContext } from './context.ts'
+import { dispatchSlashCommand } from '../commands/dispatcher.ts'
 
 type ScheduledJob =
   | { kind: 'recurring'; taskId: string; projectId: string; job: Cron }
@@ -107,7 +108,22 @@ export class CronTaskScheduler {
       },
     })
 
-    const runInput = composeCronRunInput(task.prompt, (task.context ?? {}) as CronContext)
+    // Plan 24 — slash-command pre-dispatch. When the stored prompt is a
+    // `/slug …` invocation, resolve the SOP body BEFORE composing the cron
+    // preamble so the agent sees the full command body inside the
+    // `Instruction:` section. The task runner also calls the dispatcher but
+    // its input would start with `[Cron Trigger]` (preamble prefix) and fail
+    // the `startsWith('/')` guard — so we dispatch upstream here.
+    const cmd = await dispatchSlashCommand({
+      projectId: task.project_id,
+      agentId: task.agent_id,
+      input: task.prompt,
+      surface: 'cron',
+      userId: task.caller_id ?? null,
+    }).catch(() => ({ matched: false, resolvedInput: undefined } as const))
+    const effectivePrompt = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : task.prompt
+
+    const runInput = composeCronRunInput(effectivePrompt, (task.context ?? {}) as CronContext)
     runTaskConversation(task.project_id, conv.id, task.agent_id, runInput, task.caller_id ?? null, { triggeredByCron: true, allowCreateCron: true })
       .then(async () => {
         await incrementRunCount(taskId)

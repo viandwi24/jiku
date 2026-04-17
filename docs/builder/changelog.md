@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-17 — Cron: slash-command pre-dispatch in scheduler — `/slug …` stored prompts now actually invoke the command
+
+Field bug: a cron task whose stored `prompt` is a slash invocation like `/marky-send only_content link` never triggered the command body. Root cause: the cron scheduler composes the prompt with the `[Cron Trigger]` preamble before handing to `runTaskConversation`, which calls `dispatchSlashCommand` with the full composed input. The dispatcher's first check (`commands/dispatcher.ts:24`) is `trimmed.startsWith('/')` — the trimmed composed input starts with `[Cron Trigger]`, not `/`, so `{ matched: false }` is returned and `/marky-send …` lingers as plain text for the LLM to re-interpret (usually inaccurately).
+
+Fix (`apps/studio/server/src/cron/scheduler.ts`): pre-dispatch the slash command at the scheduler level, BEFORE `composeCronRunInput`. Pattern:
+
+```ts
+const cmd = await dispatchSlashCommand({
+  projectId: task.project_id, agentId: task.agent_id,
+  input: task.prompt, surface: 'cron', userId: task.caller_id ?? null,
+}).catch(() => ({ matched: false, resolvedInput: undefined } as const))
+const effectivePrompt = (cmd.matched && cmd.resolvedInput) ? cmd.resolvedInput : task.prompt
+const runInput = composeCronRunInput(effectivePrompt, ...)
+```
+
+The dispatcher's `resolvedInput` already wraps the SOP body in `<active_command>` + the literal trigger text, so the preamble-composed input now contains the command body inside the `Instruction:` section — exactly where the agent expects actionable content. Task runner's downstream `dispatchSlashCommand` call remains (it handles chat/task/heartbeat surfaces) — in the cron path it's a harmless no-op because the input starts with `[Cron Trigger]` so `startsWith('/')` is false and dispatch short-circuits.
+
+Non-slash prompts are untouched — dispatcher returns `matched: false`, `effectivePrompt` falls back to `task.prompt`, preamble composition proceeds as before.
+
+Files: `apps/studio/server/src/cron/scheduler.ts`.
+
 ## 2026-04-16 — Cron: edit-form delivery editor, server warning, auto-populate from Connector Context
 
 Three follow-ups from the earlier cron-delivery work:

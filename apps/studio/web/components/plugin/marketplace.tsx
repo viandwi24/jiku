@@ -142,8 +142,8 @@ function MarketplaceCard({ plugin, isActive, projectId }: MarketplaceCardProps) 
       <Card className="flex flex-col">
         <CardContent className="pt-5 flex-1">
           <div className="flex items-start gap-3 mb-3">
-            <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
-              <Puzzle className="h-4 w-4 text-muted-foreground" />
+            <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center shrink-0 text-xl">
+              {plugin.icon || '🧩'}
             </div>
             <div className="min-w-0">
               <h3 className="font-medium text-sm truncate">{plugin.name}</h3>

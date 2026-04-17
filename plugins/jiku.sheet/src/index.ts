@@ -166,7 +166,7 @@ export default definePlugin({
     version: '1.0.0',
     description: 'CSV/spreadsheet viewer and parser. Adds a Sheet view tab in the file explorer and gives agents csv_read and sheet_read tools to query tabular data.',
     author: 'Jiku',
-    icon: 'Table2',
+    icon: '📋',
     category: 'productivity',
     project_scope: false,
   },
@@ -251,6 +251,7 @@ export default definePlugin({
         meta: {
           id: 'csv_read',
           name: 'Read CSV File',
+          group: 'sheet',
           description: 'Parse a CSV file that you have already read with fs_read. Returns structured headers and rows. Optionally filter rows by column value.',
         },
         permission: '*',
@@ -312,6 +313,7 @@ export default definePlugin({
         meta: {
           id: 'sheet_read',
           name: 'Read Spreadsheet',
+          group: 'sheet',
           description: [
             'Read an XLSX, XLS, ODS, or CSV spreadsheet.',
             'Preferred: pass path="/file.xlsx" to read directly from disk (avoids context overflow).',

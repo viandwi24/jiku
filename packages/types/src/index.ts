@@ -497,6 +497,7 @@ export interface Conversation {
   status: 'active' | 'completed' | 'failed'
   goal?: string
   output?: unknown
+  caller_id?: string | null
   /** Plan 23 — tip of the currently active branch path. */
   active_tip_message_id?: string | null
   created_at: Date

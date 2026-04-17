@@ -1,4 +1,4 @@
-// jiku.sandbox — System-scoped plugin exposing `run_js` tool for sandboxed
+// jiku.code-runtime — System-scoped plugin exposing `run_js` tool for sandboxed
 // JS/TS execution in QuickJS isolates. Supports three source modes:
 //   • code   — raw JS/TS string
 //   • path   — absolute disk path to a .js/.ts file
@@ -41,12 +41,12 @@ const configSchema = z.object({
 
 export default definePlugin({
   meta: {
-    id: 'jiku.sandbox',
-    name: 'Sandbox',
+    id: 'jiku.code-runtime',
+    name: 'Code Runtime',
     version: '1.0.0',
     description: 'Sandboxed JS/TS execution for agents. Exposes `run_js` tool with three source modes (code / path / prompt). Isolated via QuickJS, concurrency-capped with queue, two-layer timeouts.',
     author: 'Jiku',
-    icon: 'Terminal',
+    icon: '⚡',
     category: 'developer',
     project_scope: false,
     

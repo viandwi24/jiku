@@ -9,7 +9,7 @@ export default definePlugin({
     version: '1.0.0',
     description: 'Adds CamoFox as a browser adapter — Firefox-based browser with anti-fingerprinting. Register profiles that point at an externally-launched CamoFox CDP endpoint.',
     author: 'Jiku',
-    icon: 'Globe',
+    icon: '🦊',
     category: 'browser',
   },
   depends: [StudioPlugin],

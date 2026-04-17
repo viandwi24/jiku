@@ -52,11 +52,16 @@ export function PluginSidebarSlot(props: PluginSidebarSlotProps) {
             const href = `${props.base}/plugin-pages/${entry.pluginId}/${(entry.meta as { path?: string }).path ?? ''}`
             const active = pathname?.startsWith(`${props.base}/plugin-pages/${entry.pluginId}`)
             const title = (entry.meta as { title?: string }).title ?? entry.pluginId
+            const pluginIcon = registry.getPlugin(entry.pluginId)?.icon
             return (
               <SidebarMenuItem key={`page-${entry.pluginId}:${entry.id}`}>
                 <SidebarMenuButton asChild isActive={active ?? false}>
                   <Link href={href}>
-                    <Puzzle className="h-4 w-4" />
+                    {pluginIcon ? (
+                      <span className="text-base leading-none">{pluginIcon}</span>
+                    ) : (
+                      <Puzzle className="h-4 w-4" />
+                    )}
                     {title}
                   </Link>
                 </SidebarMenuButton>

@@ -1081,7 +1081,8 @@ class TelegramUserAdapter extends ConnectorAdapter {
           editCount = 0
           return
         }
-        const ok = await runEdit(renderPlain())
+        const indicator = editCount % 2 === 0 ? '⚫' : '⚪'
+        const ok = await runEdit(`${renderPlain()}\n\n${indicator}`)
         if (ok) editCount++
       })
     }

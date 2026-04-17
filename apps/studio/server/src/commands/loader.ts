@@ -16,6 +16,7 @@ import type {
 } from '@jiku/types'
 import {
   deactivateCommandsBySource,
+  deactivateCommandBySlug,
   upsertCommandCache,
 } from '@jiku-studio/db'
 import { getFilesystemService } from '../filesystem/service.ts'
@@ -131,6 +132,9 @@ export class CommandLoader {
       if (e.source === 'fs' && !slugsSeen.has(e.slug)) {
         this.registry.remove('fs', e.slug)
         this.bodyCache.delete(this.key('fs', e.slug))
+        deactivateCommandBySlug(this.projectId, e.slug).catch(err =>
+          console.warn(`[commands] failed to deactivate stale command "${e.slug}":`, err),
+        )
       }
     }
 

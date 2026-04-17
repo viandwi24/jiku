@@ -23,6 +23,7 @@ import {
   Terminal,
   ScrollText,
   Webhook,
+  Wrench,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth.store'
@@ -87,6 +88,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/memory',   label: 'Memory',   icon: Brain,         permission: 'memory:read' },
       { href: '/skills',   label: 'Skills',   icon: BookOpen,      permission: 'skills:read' },
       { href: '/commands', label: 'Commands', icon: Terminal,      permission: 'commands:read' },
+      { href: '/tools',    label: 'Tools',    icon: Wrench,        permission: 'agents:read' },
     ],
   },
   {

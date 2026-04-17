@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState, useMemo } from 'react'
+import { use, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { ProjectUsageLog } from '@/lib/api'
@@ -15,14 +15,13 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  Input,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@jiku/ui'
-import { BarChart2, RefreshCw, Search, X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { BarChart2, RefreshCw, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { aggregateByAgent, aggregateByDay, buildPricingMap, estimateCost, estimateTotalCost, formatTokens } from '@/lib/usage'
 import { AgentUsageBarChart, TokenUsageAreaChart } from '@/components/usage/usage-charts'
@@ -173,15 +172,12 @@ function ProjectUsagePage({ params }: PageProps) {
   const { company: companySlug, project: projectSlug } = use(params)
   const [page, setPage] = useState(0)
 
-  // Date range (server-side)
+  // All filters are server-side. Changing any filter resets to page 0.
   const [dateRange, setDateRange] = useState<DateRange>('month')
-
-  // Client-side filters
   const [filterAgent, setFilterAgent] = useState<string>('all')
   const [filterMode, setFilterMode] = useState<string>('all')
   const [filterSource, setFilterSource] = useState<string>('all')
   const [filterUser, setFilterUser] = useState<string>('all')
-  const [search, setSearch] = useState('')
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -199,8 +195,16 @@ function ProjectUsagePage({ params }: PageProps) {
   const since = getSince(dateRange)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['project-usage', projectId, page, dateRange],
-    queryFn: () => api.projects.usage(projectId!, { limit: PAGE_SIZE, offset: page * PAGE_SIZE, since }),
+    queryKey: ['project-usage', projectId, page, dateRange, filterAgent, filterMode, filterSource, filterUser],
+    queryFn: () => api.projects.usage(projectId!, {
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      since,
+      ...(filterAgent !== 'all' ? { agent_id: filterAgent } : {}),
+      ...(filterUser !== 'all' ? { user_id: filterUser } : {}),
+      ...(filterMode !== 'all' ? { mode: filterMode } : {}),
+      ...(filterSource !== 'all' ? { source: filterSource } : {}),
+    }),
     enabled: !!projectId,
     refetchInterval: 5000,
   })
@@ -217,79 +221,42 @@ function ProjectUsagePage({ params }: PageProps) {
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  // Derive filter options from loaded page
-  const agents = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const log of allLogs) {
-      if (log.agent) map.set(log.agent.id, log.agent.name)
-    }
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
-  }, [allLogs])
-
+  // Filter options come from server (across ALL matching rows, not just current page)
+  const filterOpts = data?.filter_options
+  const agents = filterOpts?.agents ?? []
   const users = useMemo(() => {
-    const map = new Map<string, string>()
+    // Server returns user_ids only — enrich with names from any loaded log
+    const nameMap = new Map<string, string>()
     for (const log of allLogs) {
-      if (log.user) map.set(log.user.id, log.user.name ?? log.user.email)
+      if (log.user) nameMap.set(log.user.id, log.user.name ?? log.user.email)
     }
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
-  }, [allLogs])
+    return (filterOpts?.user_ids ?? []).map(id => ({ id, name: nameMap.get(id) ?? id.slice(0, 8) }))
+  }, [filterOpts?.user_ids, allLogs])
+  const modes = filterOpts?.modes ?? []
+  const sources = filterOpts?.sources ?? []
 
-  const modes = useMemo(() => {
-    const set = new Set<string>()
-    for (const log of allLogs) set.add(log.mode)
-    return Array.from(set)
-  }, [allLogs])
+  const isFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterSource !== 'all' || filterUser !== 'all'
+  const totalTokens = (summary?.total_input ?? 0) + (summary?.total_output ?? 0)
+  const estimatedCost = useMemo(() => estimateTotalCost(allLogs, pricingMap), [allLogs, pricingMap])
+  const dailyData = useMemo(() => aggregateByDay(allLogs), [allLogs])
+  const agentData = useMemo(() => aggregateByAgent(allLogs), [allLogs])
 
-  const sources = useMemo(() => {
-    const set = new Set<string>()
-    for (const log of allLogs) if (log.source) set.add(log.source)
-    return Array.from(set).sort()
-  }, [allLogs])
-
-  // Client-side filters on top of server-paginated data
-  const filteredLogs = useMemo(() => {
-    return allLogs.filter(log => {
-      if (filterAgent !== 'all' && log.agent_id !== filterAgent) return false
-      if (filterMode !== 'all' && log.mode !== filterMode) return false
-      if (filterSource !== 'all' && log.source !== filterSource) return false
-      if (filterUser !== 'all' && log.user_id !== filterUser) return false
-      if (search) {
-        const q = search.toLowerCase()
-        const agentMatch = log.agent?.name?.toLowerCase().includes(q)
-        const userMatch = log.user?.name?.toLowerCase().includes(q) || log.user?.email?.toLowerCase().includes(q)
-        const modeMatch = log.mode.toLowerCase().includes(q)
-        const sourceMatch = log.source?.toLowerCase().includes(q)
-        if (!agentMatch && !userMatch && !modeMatch && !sourceMatch) return false
-      }
-      return true
-    })
-  }, [allLogs, filterAgent, filterMode, filterSource, filterUser, search])
-
-  const filteredSummary = useMemo(() => ({
-    total_runs: filteredLogs.length,
-    total_input: filteredLogs.reduce((s, l) => s + l.input_tokens, 0),
-    total_output: filteredLogs.reduce((s, l) => s + l.output_tokens, 0),
-  }), [filteredLogs])
-
-  const isClientFiltered = filterAgent !== 'all' || filterMode !== 'all' || filterSource !== 'all' || filterUser !== 'all' || search !== ''
-  const displaySummary = isClientFiltered ? filteredSummary : summary
-  const activeLogs = isClientFiltered ? filteredLogs : allLogs
-  const totalTokens = (displaySummary?.total_input ?? 0) + (displaySummary?.total_output ?? 0)
-  const estimatedCost = useMemo(() => estimateTotalCost(activeLogs, pricingMap), [activeLogs, pricingMap])
-  const dailyData = useMemo(() => aggregateByDay(activeLogs), [activeLogs])
-  const agentData = useMemo(() => aggregateByAgent(activeLogs), [activeLogs])
-
-  function resetClientFilters() {
+  function resetFilters() {
     setFilterAgent('all')
     setFilterMode('all')
     setFilterSource('all')
     setFilterUser('all')
-    setSearch('')
+    setPage(0)
+  }
+
+  function applyFilter(setter: (v: string) => void, value: string) {
+    setter(value)
+    setPage(0)
   }
 
   function handleDateRange(range: DateRange) {
     setDateRange(range)
-    setPage(0) // reset to first page when date range changes
+    setPage(0)
   }
 
   return (
@@ -330,33 +297,33 @@ function ProjectUsagePage({ params }: PageProps) {
       </div>
 
       {/* Summary cards */}
-      {displaySummary && (
+      {summary && (
         <div className="grid grid-cols-5 gap-3">
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Total Runs {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
-            <p className="text-2xl font-semibold">{displaySummary.total_runs.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground">Total Runs {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-2xl font-semibold">{summary.total_runs.toLocaleString()}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Token In ←model {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
-            <p className="text-2xl font-semibold">{formatTokens(displaySummary.total_output)}</p>
+            <p className="text-xs text-muted-foreground">Token In ←model {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-2xl font-semibold">{formatTokens(summary.total_output)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Token Out →model {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
-            <p className="text-2xl font-semibold">{formatTokens(displaySummary.total_input)}</p>
+            <p className="text-xs text-muted-foreground">Token Out →model {isFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-2xl font-semibold">{formatTokens(summary.total_input)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Total Tokens {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Total Tokens {isFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{formatTokens(totalTokens)}</p>
           </div>
           <div className="border rounded-lg p-4 space-y-0.5">
-            <p className="text-xs text-muted-foreground">Estimated Cost {isClientFiltered && <span className="text-primary">(filtered)</span>}</p>
+            <p className="text-xs text-muted-foreground">Estimated Cost {isFiltered && <span className="text-primary">(filtered)</span>}</p>
             <p className="text-2xl font-semibold">{estimatedCost}</p>
           </div>
         </div>
       )}
 
       {/* Charts */}
-      {activeLogs.length > 0 && (
+      {allLogs.length > 0 && (
         <div className="grid grid-cols-2 gap-4">
           <TokenUsageAreaChart data={dailyData} />
           <AgentUsageBarChart data={agentData} />
@@ -365,17 +332,7 @@ function ProjectUsagePage({ params }: PageProps) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            className="pl-8 h-8 text-xs w-48"
-            placeholder="Search agent, user..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-
-        <Select value={filterAgent} onValueChange={setFilterAgent}>
+        <Select value={filterAgent} onValueChange={v => applyFilter(setFilterAgent, v)}>
           <SelectTrigger className="h-8 text-xs w-36">
             <SelectValue placeholder="All agents" />
           </SelectTrigger>
@@ -387,7 +344,7 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
-        <Select value={filterMode} onValueChange={setFilterMode}>
+        <Select value={filterMode} onValueChange={v => applyFilter(setFilterMode, v)}>
           <SelectTrigger className="h-8 text-xs w-32">
             <SelectValue placeholder="All modes" />
           </SelectTrigger>
@@ -399,7 +356,7 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
-        <Select value={filterSource} onValueChange={setFilterSource}>
+        <Select value={filterSource} onValueChange={v => applyFilter(setFilterSource, v)}>
           <SelectTrigger className="h-8 text-xs w-40">
             <SelectValue placeholder="All sources" />
           </SelectTrigger>
@@ -411,7 +368,7 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
-        <Select value={filterUser} onValueChange={setFilterUser}>
+        <Select value={filterUser} onValueChange={v => applyFilter(setFilterUser, v)}>
           <SelectTrigger className="h-8 text-xs w-36">
             <SelectValue placeholder="All users" />
           </SelectTrigger>
@@ -423,8 +380,8 @@ function ProjectUsagePage({ params }: PageProps) {
           </SelectContent>
         </Select>
 
-        {isClientFiltered && (
-          <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={resetClientFilters}>
+        {isFiltered && (
+          <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={resetFilters}>
             <X className="h-3.5 w-3.5 mr-1" />
             Clear
           </Button>
@@ -457,14 +414,14 @@ function ProjectUsagePage({ params }: PageProps) {
                 </td>
               </tr>
             )}
-            {!isLoading && filteredLogs.length === 0 && (
+            {!isLoading && allLogs.length === 0 && (
               <tr>
                 <td colSpan={11} className="px-3 py-8 text-center text-xs text-muted-foreground">
-                  {isClientFiltered ? 'No results match the current filters.' : 'No usage logs yet. Start a chat to see data here.'}
+                  {isFiltered ? 'No results match the current filters.' : 'No usage logs yet. Start a chat to see data here.'}
                 </td>
               </tr>
             )}
-            {filteredLogs.map(log => (
+            {allLogs.map(log => (
               <tr key={log.id} className="hover:bg-muted/30 transition-colors">
                 <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                   {formatDate(log.created_at)}
@@ -520,7 +477,7 @@ function ProjectUsagePage({ params }: PageProps) {
           {total > 0
             ? `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, total)} of ${total.toLocaleString()} entries`
             : '0 entries'}
-          {isClientFiltered && ` — ${filteredLogs.length} shown after filter`}
+          {isFiltered && ' (filtered)'}
         </span>
         <div className="flex items-center gap-1">
           <Button

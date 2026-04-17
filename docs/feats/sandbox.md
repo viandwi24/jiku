@@ -1,4 +1,4 @@
-# Sandbox (`jiku.sandbox`)
+# Sandbox (`jiku.code-runtime`)
 
 System-scoped plugin that exposes a single tool `run_js` for sandboxed JavaScript / TypeScript execution. Agents call it when they need to compute, transform, or analyse data without burning the main conversation's context window.
 
@@ -16,7 +16,7 @@ The prompt mode is the context-saving play: code generation happens inside the t
 
 ## Architecture
 
-- **Plugin entry** (`plugins/jiku.sandbox/src/index.ts`): `definePlugin` with `project_scope: false`, registers `run_js` in `setup`. Config parsed from schema at setup time and captured via closure.
+- **Plugin entry** (`plugins/jiku.code-runtime/src/index.ts`): `definePlugin` with `project_scope: false`, registers `run_js` in `setup`. Config parsed from schema at setup time and captured via closure.
 - **Tool factory** (`src/tools/run_js.ts`): `createRunJsTool(getConfig)` returns the `ToolDefinition`. Module-level `Semaphore` captured in closure so every invocation in-process shares the concurrency cap.
 - **Source resolver** (`src/source/resolve.ts`): dispatches the discriminated `source` input to one of `from-path.ts` (disk read with optional `allowed_path_roots` guard) or `from-prompt.ts` (LLM-backed codegen with cache).
 - **Prompt cache** (`src/source/from-prompt.ts`): keyed by `sha256(system_version + model + prompt)`, stored in `toolCtx.storage` with TTL. Hits skip the LLM call entirely.
@@ -71,7 +71,7 @@ See ADR-104 (`docs/builder/decisions.md`) for why this sits on `RuntimeContext` 
 
 ## Related files
 
-- `plugins/jiku.sandbox/src/**` — plugin implementation
+- `plugins/jiku.code-runtime/src/**` — plugin implementation
 - `packages/types/src/index.ts` — `LLMBridge`, `RuntimeContext.llm`
 - `packages/core/src/runner.ts` — LLM bridge construction (around line 260)
 - `refs-bak/js-sandbox.ts` — legacy senken-specific sandbox, kept as reference only

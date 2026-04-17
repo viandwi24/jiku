@@ -19,7 +19,7 @@ let tsTranspiler: ReturnType<typeof createTranspiler> | null = null
 
 function createTranspiler(loader: 'ts' | 'js') {
   if (typeof Bun === 'undefined' || !Bun.Transpiler) {
-    throw new Error('Bun.Transpiler not available — jiku.sandbox requires Bun runtime')
+    throw new Error('Bun.Transpiler not available — jiku.code-runtime requires Bun runtime')
   }
   return new Bun.Transpiler({ loader })
 }

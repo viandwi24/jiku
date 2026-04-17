@@ -293,6 +293,7 @@ export class AgentRunner {
         mode,
         status: 'active',
         goal: mode === 'task' ? input : undefined,
+        caller_id: caller.user_id || null,
       })
     }
 

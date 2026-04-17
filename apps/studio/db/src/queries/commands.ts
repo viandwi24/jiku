@@ -92,6 +92,15 @@ export async function deactivateCommandsBySource(projectId: string, source: stri
     ))
 }
 
+export async function deactivateCommandBySlug(projectId: string, slug: string): Promise<void> {
+  await db.update(project_commands)
+    .set({ active: false, updated_at: new Date() })
+    .where(and(
+      eq(project_commands.project_id, projectId),
+      eq(project_commands.slug, slug),
+    ))
+}
+
 export async function getActiveCommands(projectId: string): Promise<ProjectCommand[]> {
   return db.select().from(project_commands).where(
     and(

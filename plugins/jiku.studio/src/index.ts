@@ -79,7 +79,7 @@ const StudioPlugin = definePlugin({
     version: '1.0.0',
     description: 'Type anchor for Jiku Studio host surfaces — http, events, studio. No runtime behavior.',
     author: 'Jiku',
-    icon: 'LayoutDashboard',
+    icon: '🏠',
     category: 'system',
   },
 

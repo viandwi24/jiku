@@ -34,6 +34,7 @@ import { commandsRouter } from './routes/commands.ts'
 import { connectorSetupRouter } from './routes/connector-setup.ts'
 import { cronTasksRouter } from './routes/cron-tasks.ts'
 import { mcpServersRouter } from './routes/mcp-servers.ts'
+import { toolsRouter } from './routes/tools.ts'
 import { toolStatesRouter } from './routes/tool-states.ts'
 import { auditRouter } from './routes/audit.ts'
 import { pluginPermissionsRouter } from './routes/plugin-permissions.ts'
@@ -107,6 +108,7 @@ app.use('/api', commandsRouter)
 app.use('/api', connectorSetupRouter)
 app.use('/api', cronTasksRouter)
 app.use('/api', mcpServersRouter)
+app.use('/api', toolsRouter)
 app.use('/api', toolStatesRouter)
 app.use('/api', auditRouter)
 app.use('/api', pluginPermissionsRouter)

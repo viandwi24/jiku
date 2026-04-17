@@ -120,7 +120,7 @@ export default definePlugin({
     version: '1.0.0',
     description: 'Scrape any public URL and return a clean reader-mode article (title, byline, content as Markdown, images, metadata) — powered by @mozilla/readability + linkedom.',
     author: 'Jiku',
-    icon: 'BookOpen',
+    icon: '🌐',
     category: 'productivity',
     project_scope: true,
   },
@@ -249,6 +249,7 @@ export default definePlugin({
         meta: {
           id: 'web_read',
           name: 'Web Read',
+          group: 'web',
           description: 'Fetch a public URL and return a clean reader-mode article (title, byline, content as Markdown/HTML/text, lead image, publish date). Use for news articles, blog posts, docs. Returns structured fields — do NOT paste the raw content back to the user unless asked; use it as input for further reasoning.',
         },
         permission: '*',
@@ -309,6 +310,7 @@ export default definePlugin({
         meta: {
           id: 'web_fetch_metadata',
           name: 'Web Fetch Metadata',
+          group: 'web',
           description: 'Cheap metadata-only fetch for a URL (title, description, og:image, author, site_name). Use this to preview a link without paying the cost of full article extraction.',
         },
         permission: '*',
@@ -342,6 +344,7 @@ export default definePlugin({
         meta: {
           id: 'web_read_many',
           name: 'Web Read Many',
+          group: 'web',
           description: 'Batch-read up to 10 URLs in parallel (concurrency 3). Returns per-URL results with errors isolated. Use for multi-source research.',
         },
         permission: '*',

@@ -87,10 +87,10 @@
 - [ ] Harness iteration pill in UI (we emit `jiku-harness-iteration` events from iter ≥ 2; nothing consumes them yet).
 
 ### Plan 26 follow-ups (post-ship)
-- [ ] System-scoped plugin config storage + UI hot-reload — `jiku.sandbox` currently parses defaults at setup time and captures via closure. Config changes in Studio UI won't apply without restart until this is wired.
+- [ ] System-scoped plugin config storage + UI hot-reload — `jiku.code-runtime` currently parses defaults at setup time and captures via closure. Config changes in Studio UI won't apply without restart until this is wired.
 - [ ] `emitUsage` on `RuntimeContext.llm.generate` — sandbox prompt-mode LLM calls don't show up in per-run usage accounting yet.
 - [ ] Python sandbox leg (Plan 26 shipped JS/TS only — skill_exec_file JS hand-off + Python is still backlog).
-- [ ] Wire `skill_exec_file` (JS/TS skills) to `jiku.sandbox.run_js` so skills can execute as sandboxed code without duplicating the QuickJS setup.
+- [ ] Wire `skill_exec_file` (JS/TS skills) to `jiku.code-runtime.run_js` so skills can execute as sandboxed code without duplicating the QuickJS setup.
 - [ ] Additional bridges inside QuickJS: `fetch` (SSRF-guarded), `setTimeout`/`setInterval`, optional `ctx.fs` read-only hook to the project disk — currently the sandbox has no I/O beyond `console.log`.
 - [ ] `connector_sandbox_status` equivalent — agent tool that surfaces queue snapshot (`in_flight`, `queued`, current limits) so agents can self-throttle under pressure.
 
@@ -100,7 +100,7 @@
 - [ ] Private registry publish for `jiku-camofox` image so deploys don't rebuild from git each time.
 
 ### Plan 19 follow-ups
-- [ ] Sandboxed `skill_exec_file` runtime — JS/TS leg shipped via Plan 26 (`jiku.sandbox` plugin, `run_js` tool). Python sandbox still pending; wiring `skill_exec_file` to `run_js` for JS/TS skills is a separate wiring task.
+- [ ] Sandboxed `skill_exec_file` runtime — JS/TS leg shipped via Plan 26 (`jiku.code-runtime` plugin, `run_js` tool). Python sandbox still pending; wiring `skill_exec_file` to `run_js` for JS/TS skills is a separate wiring task.
 - [ ] Private-repo skill import via GitHub PAT (credentials vault integration)
 - [ ] Expose per-phase credential/model override in Dreaming UI (schema already supports)
 - [ ] Skill marketplace browse — catalog from skills.sh inside app

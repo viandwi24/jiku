@@ -81,6 +81,8 @@ function RunsPage({ params }: PageProps) {
   const [page, setPage] = useState(1)
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [agentFilter, setAgentFilter] = useState<string>('all')
+  const [callerFilter, setCallerFilter] = useState<string>('all')
 
   const { data: companyData } = useQuery({
     queryKey: ['companies'],
@@ -95,16 +97,31 @@ function RunsPage({ params }: PageProps) {
   })
 
   const project = projectsData?.projects.find(p => p.slug === projectSlug)
+  const projectId = project?.id ?? ''
+
+  const { data: agentsData } = useQuery({
+    queryKey: ['agents', projectId],
+    queryFn: () => api.agents.list(projectId),
+    enabled: !!projectId,
+  })
+
+  const { data: membersData } = useQuery({
+    queryKey: ['project-members', projectId],
+    queryFn: () => api.permissions.listMembers(projectId),
+    enabled: !!projectId,
+  })
 
   const { data, isLoading } = useQuery({
-    queryKey: ['runs', project?.id, page, typeFilter, statusFilter],
-    queryFn: () => api.runs.list(project!.id, {
+    queryKey: ['runs', projectId, page, typeFilter, statusFilter, agentFilter, callerFilter],
+    queryFn: () => api.runs.list(projectId, {
       page,
       per_page: 20,
       type: typeFilter !== 'all' ? typeFilter : undefined,
       run_status: statusFilter !== 'all' ? statusFilter : undefined,
+      agent_id: agentFilter !== 'all' ? agentFilter : undefined,
+      caller_id: callerFilter !== 'all' ? callerFilter : undefined,
     }),
-    enabled: !!project?.id,
+    enabled: !!projectId,
     refetchInterval: 5000,
   })
 
@@ -132,7 +149,7 @@ function RunsPage({ params }: PageProps) {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Select value={typeFilter} onValueChange={v => { setTypeFilter(v); setPage(1) }}>
           <SelectTrigger className="h-8 w-32 text-xs">
             <SelectValue placeholder="Type" />
@@ -158,6 +175,30 @@ function RunsPage({ params }: PageProps) {
             <SelectItem value="idle">Idle</SelectItem>
           </SelectContent>
         </Select>
+
+        <Select value={agentFilter} onValueChange={v => { setAgentFilter(v); setPage(1) }}>
+          <SelectTrigger className="h-8 w-40 text-xs">
+            <SelectValue placeholder="All agents" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All agents</SelectItem>
+            {(agentsData?.agents ?? []).map(a => (
+              <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={callerFilter} onValueChange={v => { setCallerFilter(v); setPage(1) }}>
+          <SelectTrigger className="h-8 w-40 text-xs">
+            <SelectValue placeholder="All callers" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All callers</SelectItem>
+            {(membersData?.members ?? []).map(m => (
+              <SelectItem key={m.user.id} value={m.user.id}>{m.user.name ?? m.user.email}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Table */}
@@ -168,6 +209,7 @@ function RunsPage({ params }: PageProps) {
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-28">Type</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Title</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-40">Agent</th>
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-32">Caller</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-28">Status</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-20">Duration</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground w-24">Started</th>
@@ -177,14 +219,14 @@ function RunsPage({ params }: PageProps) {
           <tbody className="divide-y">
             {isLoading && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   Loading...
                 </td>
               </tr>
             )}
             {!isLoading && runs.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No runs found
                 </td>
               </tr>
@@ -220,12 +262,13 @@ function RunsPage({ params }: PageProps) {
 }
 
 function RunRow({ run, base, onCancel }: { run: RunRow; base: string; onCancel: () => void }) {
+  const rowRouter = useRouter()
   const goal = (run.metadata as { goal?: string }).goal
   const displayTitle = run.title?.trim() || goal?.trim() || null
   return (
     <tr
       className="hover:bg-muted/30 cursor-pointer transition-colors"
-      onClick={() => window.location.href = `${base}/runs/${run.id}`}
+      onClick={() => rowRouter.push(`${base}/runs/${run.id}`)}
     >
       <td className="px-4 py-3">
         <TypeBadge type={run.type} />
@@ -239,6 +282,9 @@ function RunRow({ run, base, onCancel }: { run: RunRow; base: string; onCancel: 
       </td>
       <td className="px-4 py-3">
         <div className="font-medium text-xs truncate" title={run.agent_name}>{run.agent_name}</div>
+      </td>
+      <td className="px-4 py-3 text-xs text-muted-foreground truncate">
+        {run.caller_name ?? run.caller_email ?? <span className="italic">system</span>}
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={run.run_status} />

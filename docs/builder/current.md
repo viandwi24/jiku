@@ -1,6 +1,6 @@
-## Phase (2026-04-16) — Plan 26 Sandbox: `jiku.sandbox` plugin + `run_js` tool ✅
+## Phase (2026-04-16) — Plan 26 Sandbox: `jiku.code-runtime` plugin + `run_js` tool ✅
 
-Shipped Plan 26 end-to-end (`docs/plans/26-sandbox.md`). System-scoped plugin `jiku.sandbox` registering a single tool `run_js` that executes JS/TS in a QuickJS isolate. Three source modes via discriminated union input:
+Shipped Plan 26 end-to-end (`docs/plans/26-sandbox.md`). System-scoped plugin `jiku.code-runtime` registering a single tool `run_js` that executes JS/TS in a QuickJS isolate. Three source modes via discriminated union input:
 - `code` — raw JS/TS string (auto-detect + Bun.Transpiler for TS)
 - `path` — absolute disk path (with optional `allowed_path_roots` guard)
 - `prompt` — natural-language goal → LLM generates code → eval. LLM call is inherited from the agent via new `RuntimeContext.llm` bridge (ADR-104), so prompt-mode doesn't burn agent context with the raw code blob — the agent only sees the goal and result. Generated code is always returned as `executedCode` so the agent can debug what ran.
@@ -13,7 +13,7 @@ New `LLMBridge` interface in `packages/types/src/index.ts` and `RuntimeContext.l
 ### Files
 - `packages/types/src/index.ts` — `LLMBridge`, `LLMBridgeOptions`, `RuntimeContext.llm?`.
 - `packages/core/src/runner.ts` — `generateText` import, `activeProviderId`/`activeModelId` hoisted, `llmBridge` constructed, injected into `runtimeCtx`.
-- `plugins/jiku.sandbox/` — new plugin (package.json, tsconfig.json).
+- `plugins/jiku.code-runtime/` — new plugin (package.json, tsconfig.json).
   - `src/index.ts` — `definePlugin` system-scoped, configSchema auto-rendered in Studio.
   - `src/types.ts` — SandboxResult, SandboxErrorCode, SandboxLimits, SandboxConfig.
   - `src/tools/run_js.ts` — `createRunJsTool(getConfig)` factory, discriminated Zod input schema.

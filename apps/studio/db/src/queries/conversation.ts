@@ -1,6 +1,6 @@
 import { eq, inArray, and, desc, asc, count, sql } from 'drizzle-orm'
 import { db } from '../client.ts'
-import { conversations, messages, agents } from '../schema/index.ts'
+import { conversations, messages, agents, users } from '../schema/index.ts'
 import type { NewConversation, NewMessage } from '../schema/index.ts'
 
 export async function getConversationsByAgent(agentId: string, userId: string) {
@@ -88,6 +88,7 @@ export interface ListConversationsParams {
   project_id: string
   type?: string
   agent_id?: string
+  caller_id?: string
   run_status?: string
   page?: number
   per_page?: number
@@ -116,6 +117,7 @@ export async function listRunsByProject(params: ListConversationsParams) {
   const conditions = [inArray(conversations.agent_id, agentIds)]
   if (params.type) conditions.push(eq(conversations.type, params.type))
   if (params.agent_id) conditions.push(eq(conversations.agent_id, params.agent_id))
+  if (params.caller_id) conditions.push(eq(conversations.caller_id, params.caller_id))
   if (params.run_status) conditions.push(eq(conversations.run_status, params.run_status))
 
   const where = conditions.length === 1 ? conditions[0]! : and(...conditions)
@@ -142,6 +144,8 @@ export async function listRunsByProject(params: ListConversationsParams) {
         agent_id: conversations.agent_id,
         agent_name: agents.name,
         caller_id: conversations.caller_id,
+        caller_name: users.name,
+        caller_email: users.email,
         parent_conversation_id: conversations.parent_conversation_id,
         metadata: conversations.metadata,
         started_at: conversations.started_at,
@@ -152,6 +156,7 @@ export async function listRunsByProject(params: ListConversationsParams) {
       })
       .from(conversations)
       .innerJoin(agents, eq(conversations.agent_id, agents.id))
+      .leftJoin(users, eq(conversations.caller_id, users.id))
       .leftJoin(msgCountSq, eq(conversations.id, msgCountSq.conversation_id))
       .where(where)
       .orderBy(sortExpr)

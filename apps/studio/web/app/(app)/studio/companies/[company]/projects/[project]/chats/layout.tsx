@@ -15,37 +15,65 @@ const STORAGE_KEY = 'chats.sidebar.open'
 export default function ChatShell({ children, params }: LayoutProps) {
   const { company: companySlug, project: projectSlug } = use(params)
 
-  // Persisted per-user: default open on md+ screens, closed on narrow (mobile).
-  // `null` during SSR + initial paint → render matches server, effect hydrates.
   const [open, setOpen] = useState<boolean | null>(null)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   useEffect(() => {
     const stored = typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_KEY) : null
     if (stored === 'true') { setOpen(true); return }
     if (stored === 'false') { setOpen(false); return }
-    // No persisted value — default based on viewport width.
     setOpen(typeof window !== 'undefined' ? window.innerWidth >= 768 : true)
   }, [])
 
   const toggle = (next: boolean) => {
     setOpen(next)
-    try { window.localStorage.setItem(STORAGE_KEY, String(next)) } catch { /* ignore */ }
+    if (!isMobile) {
+      try { window.localStorage.setItem(STORAGE_KEY, String(next)) } catch { /* ignore */ }
+    }
   }
+
+  const panel = (
+    <ConversationListPanel
+      companySlug={companySlug}
+      projectSlug={projectSlug}
+      onCollapse={() => toggle(false)}
+    />
+  )
 
   return (
     <div className="flex overflow-hidden relative" style={{ height: 'calc(100svh - 3rem)' }}>
-      {open && (
+      {/* Desktop: inline sidebar */}
+      {open && !isMobile && (
         <>
-          <div className="w-72 shrink-0 h-full">
-            <ConversationListPanel
-              companySlug={companySlug}
-              projectSlug={projectSlug}
-              onCollapse={() => toggle(false)}
-            />
-          </div>
+          <div className="w-72 shrink-0 h-full">{panel}</div>
           <div className="w-px bg-border shrink-0" />
         </>
       )}
+
+      {/* Mobile: overlay with backdrop */}
+      {open && isMobile && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/40 z-30 animate-in fade-in duration-150"
+            style={{ top: '3rem' }}
+            onClick={() => toggle(false)}
+          />
+          <div
+            className="fixed inset-y-0 left-0 w-72 z-40 bg-background border-r shadow-lg animate-in slide-in-from-left duration-150"
+            style={{ top: '3rem' }}
+          >
+            {panel}
+          </div>
+        </>
+      )}
+
       <div className="flex-1 h-full overflow-hidden relative">
         {open === false && (
           <Button

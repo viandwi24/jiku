@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getProjectsByCompanyId, getProjectById, createProject, updateProject, deleteProject, getProjectBySlug, getUsageLogsByProject, getUsageSummaryByProject, getUsageCountByProject, createProjectMembership } from '@jiku-studio/db'
+import { getProjectsByCompanyId, getProjectById, createProject, updateProject, deleteProject, getProjectBySlug, getUsageLogsByProject, getUsageSummaryByProject, getUsageCountByProject, getUsageFilterOptions, createProjectMembership, type UsageFilters } from '@jiku-studio/db'
 import { authMiddleware } from '../middleware/auth.ts'
 import { requirePermission, requireSuperadmin } from '../middleware/permission.ts'
 import { runtimeManager } from '../runtime/manager.ts'
@@ -68,12 +68,24 @@ router.get('/projects/:pid/usage', requirePermission('usage:read'), async (req, 
   const offset = Number(req.query['offset'] ?? 0)
   const sinceParam = req.query['since'] as string | undefined
   const since = sinceParam ? new Date(sinceParam) : undefined
-  const [logs, summary, total] = await Promise.all([
-    getUsageLogsByProject(projectId, limit, offset, since),
-    getUsageSummaryByProject(projectId, since),
-    getUsageCountByProject(projectId, since),
+
+  const filters: UsageFilters = { since }
+  const agentId = req.query['agent_id'] as string | undefined
+  const userId = req.query['user_id'] as string | undefined
+  const mode = req.query['mode'] as string | undefined
+  const source = req.query['source'] as string | undefined
+  if (agentId) filters.agent_id = agentId
+  if (userId) filters.user_id = userId
+  if (mode) filters.mode = mode
+  if (source) filters.source = source
+
+  const [logs, summary, total, filterOptions] = await Promise.all([
+    getUsageLogsByProject(projectId, limit, offset, filters),
+    getUsageSummaryByProject(projectId, filters),
+    getUsageCountByProject(projectId, filters),
+    getUsageFilterOptions(projectId, since),
   ])
-  res.json({ logs, summary, total })
+  res.json({ logs, summary, total, filter_options: filterOptions })
 })
 
 router.delete('/companies/:cid/projects/:pid', async (req, res) => {

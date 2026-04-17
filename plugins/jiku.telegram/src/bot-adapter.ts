@@ -1771,6 +1771,7 @@ class TelegramBotAdapter extends ConnectorAdapter {
     let editChain: Promise<void> = Promise.resolve()
     let pendingTimer: NodeJS.Timeout | null = null
     let finalizing = false
+    let editCount = 0
 
     const renderInterim = (): string => {
       if (segments.length === 0) return '⌛'
@@ -1802,9 +1803,11 @@ class TelegramBotAdapter extends ConnectorAdapter {
           segments.length = 0
           toolIndex.clear()
         }
-        const text = renderInterim()
+        const indicator = editCount % 2 === 0 ? '⚫' : '⚪'
+        const text = `${renderInterim()}\n\n${indicator}`
         try {
           await bot.api.editMessageText(chatId, currentMsgId, text)
+          editCount++
         } catch {
           // Swallow — transient rate-limit / no-change. Next tick retries.
         }

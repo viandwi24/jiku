@@ -137,7 +137,7 @@ function PluginGroup({ label, description, plugins, selectedId, onSelect }: Plug
             (selectedId === plugin.id) && 'bg-muted border-l-2 border-l-primary',
           )}
         >
-          <div className="h-2 w-2 rounded-full shrink-0 bg-green-500" />
+          <span className="text-lg shrink-0 leading-none" role="img">{plugin.icon || '🧩'}</span>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">{plugin.name}</p>
             <p className="text-xs text-muted-foreground truncate">{plugin.id} v{plugin.version}</p>
@@ -164,8 +164,8 @@ function PluginDetail({ plugin, onDisable, isDisabling, onSaveConfig, isSavingCo
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-start gap-3">
-        <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
-          <Puzzle className="h-5 w-5 text-muted-foreground" />
+        <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0 text-2xl">
+          {plugin.icon || '🧩'}
         </div>
         <div className="flex-1 min-w-0">
           <h2 className="font-semibold text-lg">{plugin.name}</h2>

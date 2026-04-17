@@ -16,6 +16,7 @@ router.get('/projects/:pid/runs', requirePermission('runs:read'), async (req, re
     project_id: projectId,
     type: q['type'],
     agent_id: q['agent_id'],
+    caller_id: q['caller_id'],
     run_status: q['run_status'],
     page: q['page'] ? parseInt(q['page'], 10) : 1,
     per_page: q['per_page'] ? parseInt(q['per_page'], 10) : 20,

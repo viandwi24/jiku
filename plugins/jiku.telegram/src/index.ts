@@ -29,7 +29,7 @@ export default definePlugin({
     version: '1.0.0',
     description: 'Telegram integration — connector adapter, bot polling via grammy, and more.',
     author: 'Jiku',
-    icon: 'telegram',
+    icon: '✈️',
     category: 'channel',
   },
   depends: [StudioPlugin],

@@ -55,12 +55,24 @@ export const api = {
       request<{ project: Project }>(`/api/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (companyId: string, projectId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/projects/${projectId}`, { method: 'DELETE' }),
-    usage: (projectId: string, params?: { limit?: number; offset?: number; since?: string }) => {
+    usage: (projectId: string, params?: {
+      limit?: number; offset?: number; since?: string
+      agent_id?: string; user_id?: string; mode?: string; source?: string
+    }) => {
       const qs = new URLSearchParams()
       if (params?.limit) qs.set('limit', String(params.limit))
       if (params?.offset) qs.set('offset', String(params.offset))
       if (params?.since) qs.set('since', params.since)
-      return request<{ logs: ProjectUsageLog[]; summary: UsageSummary; total: number }>(`/api/projects/${projectId}/usage?${qs}`)
+      if (params?.agent_id) qs.set('agent_id', params.agent_id)
+      if (params?.user_id) qs.set('user_id', params.user_id)
+      if (params?.mode) qs.set('mode', params.mode)
+      if (params?.source) qs.set('source', params.source)
+      return request<{
+        logs: ProjectUsageLog[]
+        summary: UsageSummary
+        total: number
+        filter_options: { agents: Array<{ id: string; name: string }>; user_ids: string[]; modes: string[]; sources: string[] }
+      }>(`/api/projects/${projectId}/usage?${qs}`)
     },
   },
 
@@ -389,6 +401,7 @@ export const api = {
     list: (projectId: string, params?: {
       type?: string
       agent_id?: string
+      caller_id?: string
       run_status?: string
       page?: number
       per_page?: number
@@ -398,6 +411,7 @@ export const api = {
       const qs = new URLSearchParams()
       if (params?.type) qs.set('type', params.type)
       if (params?.agent_id) qs.set('agent_id', params.agent_id)
+      if (params?.caller_id) qs.set('caller_id', params.caller_id)
       if (params?.run_status) qs.set('run_status', params.run_status)
       if (params?.page) qs.set('page', String(params.page))
       if (params?.per_page) qs.set('per_page', String(params.per_page))
@@ -902,6 +916,24 @@ export const api = {
       request<{ invitation: InvitationItem }>(`/api/companies/${companyId}/invitations`, { method: 'POST', body: JSON.stringify(body) }),
     cancelInvitation: (companyId: string, invitationId: string) =>
       request<{ ok: boolean }>(`/api/companies/${companyId}/invitations/${invitationId}`, { method: 'DELETE' }),
+  },
+
+  resolvedTools: {
+    list: (projectId: string) =>
+      request<{ tools: ResolvedToolItem[] }>(`/api/projects/${projectId}/tools`),
+  },
+
+  mcpServers: {
+    list: (projectId: string) =>
+      request<{ servers: McpServerItem[] }>(`/api/projects/${projectId}/mcp-servers`),
+    create: (projectId: string, body: { name: string; transport: string; config: Record<string, unknown>; agent_id?: string; enabled?: boolean }) =>
+      request<{ server: McpServerItem }>(`/api/projects/${projectId}/mcp-servers`, { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: Record<string, unknown>) =>
+      request<{ server: McpServerItem }>(`/api/mcp-servers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
+    test: (id: string) =>
+      request<{ success: boolean; tool_count?: number; tools?: Array<{ id: string; name: string }>; error?: string }>(`/api/mcp-servers/${id}/test`, { method: 'POST' }),
   },
 
   cronTasks: {
@@ -1460,6 +1492,34 @@ export interface AvailabilitySchedule {
 export type CronTaskMode = 'recurring' | 'once'
 export type CronTaskStatus = 'active' | 'archived'
 
+export interface ResolvedToolItem {
+  id: string
+  tool_name: string
+  name: string
+  description: string
+  group: string | null
+  modes: string[]
+  permission: string
+  plugin_id: string | null
+  source_type: 'builtin' | 'plugin' | 'mcp'
+  source_label: string
+  side_effectful: boolean
+}
+
+export interface McpServerItem {
+  id: string
+  project_id: string
+  agent_id: string | null
+  name: string
+  transport: string
+  config: Record<string, unknown>
+  enabled: boolean
+  connected?: boolean
+  tool_count?: number
+  created_at: string
+  updated_at: string
+}
+
 export interface CronDeliverySpec {
   connector_id?: string
   target_name?: string
@@ -1679,6 +1739,8 @@ export interface RunRow {
   agent_id: string
   agent_name: string
   caller_id: string | null
+  caller_name: string | null
+  caller_email: string | null
   parent_conversation_id: string | null
   metadata: Record<string, unknown>
   message_count: number

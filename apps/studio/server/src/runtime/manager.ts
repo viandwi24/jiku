@@ -93,6 +93,8 @@ export class JikuRuntimeManager {
   private runtimes = new Map<string, JikuRuntime>()
   private storages = new Map<string, StudioStorageAdapter>()
   private _pluginLoader: PluginLoader | null = null
+  /** Snapshot of built-in tools per project, captured at wakeUp time. */
+  private builtInToolsSnapshot = new Map<string, ToolDefinition[]>()
 
   // Per-project shared tools cache — rebuilt on syncProjectTools()
   private sharedToolsCache = new Map<string, ProjectSharedTools>()
@@ -108,6 +110,11 @@ export class JikuRuntimeManager {
   /** Get the shared plugin loader */
   getPluginLoader(): PluginLoader | null {
     return this._pluginLoader
+  }
+
+  /** Snapshot of built-in tools captured at wakeUp for the Tools inventory page. */
+  getBuiltInTools(projectId: string): ToolDefinition[] {
+    return this.builtInToolsSnapshot.get(projectId) ?? []
   }
 
   // ─── Shared tools resolution ──────────────────────────────────────────────
@@ -330,6 +337,27 @@ export class JikuRuntimeManager {
         skillSection ?? null,
         skillHint ?? null,
       )
+
+      // Snapshot built-in tools on the first agent — all agents in a project
+      // share the same base set. The Tools page reads this for its inventory.
+      if (!this.builtInToolsSnapshot.has(projectId)) {
+        const allBuiltIn: ToolDefinition[] = [
+          ...systemTools,
+          ...buildActionRequestTools(projectId),
+          ...memoryTools,
+          ...shared.connectorTools,
+          ...shared.browserTools,
+          ...shared.filesystemTools,
+          ...skillTools,
+          ...cronTools,
+          ...mcpTools,
+          runTaskTool,
+          listAgentsTool,
+          agentReadHistoryTool,
+          listProjectMembersTool,
+        ]
+        this.builtInToolsSnapshot.set(projectId, allBuiltIn)
+      }
 
       if (a.heartbeat_enabled && a.heartbeat_cron) {
         heartbeatScheduler.scheduleAgent(a.id, projectId).catch(err =>

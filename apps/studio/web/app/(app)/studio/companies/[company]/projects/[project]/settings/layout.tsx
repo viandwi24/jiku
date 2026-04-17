@@ -33,7 +33,6 @@ export default function ProjectSettingsLayout({ children, params }: LayoutProps)
       items: [
         { label: 'General', href: `${base}/general` },
         { label: 'Credentials', href: `${base}/credentials` },
-        { label: 'MCP Servers', href: `${base}/mcp` },
       ],
     },
     {

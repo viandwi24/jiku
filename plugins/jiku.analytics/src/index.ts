@@ -34,7 +34,7 @@ export default definePlugin({
     version: '1.0.0',
     description: 'Project-level analytics dashboard — demo plugin for the isolated UI runtime.',
     author: 'Jiku',
-    icon: 'BarChart2',
+    icon: '📊',
     category: 'analytics',
     project_scope: true,
   },
@@ -106,7 +106,7 @@ export default definePlugin({
 
     ctx.project.tools.register(
       defineTool({
-        meta: { id: 'analytics_record', name: 'Record Analytics Event', description: 'Record a named event with optional metadata' },
+        meta: { id: 'analytics_record', name: 'Record Analytics Event', group: 'analytics', description: 'Record a named event with optional metadata' },
         permission: 'analytics:write',
         modes: ['chat', 'task'],
         input: z.object({

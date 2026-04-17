@@ -107,7 +107,7 @@ function RunsPage({ params }: PageProps) {
 
   const { data: membersData } = useQuery({
     queryKey: ['project-members', projectId],
-    queryFn: () => api.permissions.listMembers(projectId),
+    queryFn: () => api.acl.listMembers(projectId),
     enabled: !!projectId,
   })
 

@@ -1118,19 +1118,6 @@ export const api = {
     },
   },
 
-  mcpServers: {
-    list: (projectId: string) =>
-      request<{ servers: McpServerItem[] }>(`/api/projects/${projectId}/mcp-servers`),
-    create: (projectId: string, body: { name: string; transport: string; config: Record<string, unknown>; agent_id?: string; enabled?: boolean }) =>
-      request<{ server: McpServerItem }>(`/api/projects/${projectId}/mcp-servers`, { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: Partial<{ name: string; transport: string; config: Record<string, unknown>; enabled: boolean; agent_id: string | null }>) =>
-      request<{ server: McpServerItem }>(`/api/mcp-servers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-    delete: (id: string) =>
-      request<{ ok: boolean }>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
-    test: (id: string) =>
-      request<{ success: boolean; tool_count?: number; error?: string; tools?: Array<{ id: string; name: string }> }>(`/api/mcp-servers/${id}/test`, { method: 'POST' }),
-  },
-
   toolStates: {
     get: (agentId: string) =>
       request<{ states: { project: Record<string, boolean>; agent: Record<string, boolean> } }>(`/api/agents/${agentId}/tools/states`),
@@ -2315,19 +2302,6 @@ export interface AgentCommandAssignment {
   command: CommandItem
 }
 
-export interface McpServerItem {
-  id: string
-  project_id: string
-  agent_id?: string | null
-  name: string
-  transport: string
-  config: Record<string, unknown>
-  enabled: boolean
-  connected?: boolean
-  tool_count?: number
-  created_at: string
-  updated_at: string
-}
 
 
 export interface ActionRequestItem {

@@ -432,13 +432,20 @@ class TelegramUserAdapter extends ConnectorAdapter {
         // at all (separate from "normalize returned null"). Sample chat info
         // so we don't dump massive object — just enough to identify it.
         const r = raw as { id?: number | bigint; chat?: { id?: number | bigint; chatType?: string; title?: string }; sender?: { id?: number | bigint; username?: string }; text?: string }
-        console.log(`[telegram.user] inbound raw: msg_id=${String(r?.id ?? 'n/a')} chat_id=${String(r?.chat?.id ?? 'n/a')} chat_type=${r?.chat?.chatType ?? 'n/a'} sender=@${r?.sender?.username ?? r?.sender?.id ?? 'n/a'} text_preview=${(r?.text ?? '').slice(0, 60)}`)
+        const senderTag = r?.sender?.username ? `@${r.sender.username}` : String(r?.sender?.id ?? '?')
+        const inboundSummary = `msg=${String(r?.id ?? '?')} chat=${String(r?.chat?.id ?? '?')} ${r?.chat?.chatType ?? 'dm'}`
+        const textPreview = (r?.text ?? '').slice(0, 60)
+        this.con(ctx.connectorId)?.info(`[${senderTag}] ${inboundSummary}: ${textPreview}`, {
+          msg_id: String(r?.id ?? ''),
+          chat_id: String(r?.chat?.id ?? ''),
+          sender: senderTag,
+        })
         // Pass ctx.connectorId so multi-tenant userbots produce events with the
         // RIGHT connector_id (legacy `this.connectorId` would point to the
         // most-recently-activated credential — wrong for credential A's inbound).
         const event = this.normalizeInbound(raw, ctx.connectorId)
         if (!event) {
-          console.log(`[telegram.user] inbound DROPPED by normalize (msg_id=${String(r?.id ?? 'n/a')}) — likely missing required field`)
+          this.con(ctx.connectorId)?.warn(`[${senderTag}] DROPPED msg=${String(r?.id ?? '?')} — missing required field`)
           return
         }
 
@@ -476,12 +483,12 @@ class TelegramUserAdapter extends ConnectorAdapter {
             })
             event.metadata = { ...(event.metadata ?? {}), arrival_event_id: row.id }
           } catch (err) {
-            console.warn('[telegram.user] logArrival failed:', err)
+            this.con(ctx.connectorId)?.error(`[${senderTag}] logArrival failed: ${err instanceof Error ? err.message : String(err)}`)
           }
         }
-        ctx.onEvent(event).catch(err => console.warn('[telegram.user] onEvent error:', err))
+        ctx.onEvent(event).catch(err => this.con(ctx.connectorId)?.error(`[${senderTag}] onEvent error: ${err instanceof Error ? err.message : String(err)}`))
       } catch (err) {
-        console.warn('[telegram.user] inbound normalize error:', err)
+        this.con(ctx.connectorId)?.error(`inbound normalize error: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     // mtcute v0.27 API: emitters under `client.onNewMessage` / `client.onUpdate`
@@ -873,7 +880,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
     const client = this.clientFor(ctx.connectorId)
     const queue = this.queueFor(ctx.connectorId)
     if (!client) {
-      console.warn('[telegram.user] handleResolvedEvent: no client for connector', ctx.connectorId)
+      this.con(ctx.connectorId)?.error('handleResolvedEvent: no active client for this connector')
       return
     }
 
@@ -931,7 +938,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
         // no placeholder, no streaming. The final send at the end will
         // likely hit the same latch, but we'll try so the user at least
         // gets an error surfaced via event-router logging.
-        console.warn('[telegram.user] handleResolvedEvent: placeholder rejected:', err)
+        this.con(ctx.connectorId)?.warn(`placeholder rejected: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -1163,7 +1170,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
           )
           if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
         } catch (err) {
-          console.warn('[telegram.user] stream final fallback send failed:', err)
+          this.con(ctx.connectorId)?.warn(`stream final fallback send failed: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
     } else {
@@ -1176,7 +1183,7 @@ class TelegramUserAdapter extends ConnectorAdapter {
         )
         if (typeof queued.result?.id === 'number') finalMsgId = queued.result.id
       } catch (err) {
-        console.warn('[telegram.user] stream no-edit final send failed:', err)
+        this.con(ctx.connectorId)?.warn(`stream no-edit final send failed: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -1299,9 +1306,9 @@ class TelegramUserAdapter extends ConnectorAdapter {
           registered_at: new Date().toISOString(),
         },
       })
-      console.log(`[telegram.user] auto-registered topic target "${targetName}" (group:${chatId}:topic:${threadId})`)
+      this.con(connectorId)?.info(`auto-registered topic target "${targetName}" (group:${chatId}:topic:${threadId})`)
     } catch (err) {
-      console.warn('[telegram.user] failed to auto-register topic target:', err)
+      this.con(connectorId)?.warn(`failed to auto-register topic target: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

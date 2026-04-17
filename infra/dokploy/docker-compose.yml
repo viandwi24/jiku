@@ -94,6 +94,8 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       # Qdrant
       QDRANT_URL: http://qdrant:6333
+      # Telegram
+      TELEGRAM_BOOT_POLL_DELAY_MS: ${TELEGRAM_BOOT_POLL_DELAY_MS:-20000}
     expose:
       - "3001"   # server (Express/Bun)
       - "3000"   # web (Next.js)

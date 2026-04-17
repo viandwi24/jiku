@@ -85,17 +85,25 @@ export function buildCronCreateTool(
       ),
       prompt: z.string().describe(
         'THE INSTRUCTION FUTURE-YOU WILL RECEIVE when the cron fires. Treated as a command, not a conversation.\n' +
-        'Hard rules:\n' +
+        '\n' +
+        'TWO ACCEPTED FORMS:\n' +
+        '1) SLASH-COMMAND (PREFERRED when a suitable `/slug` exists) — e.g. `/marky-send with_content testimoni`. The scheduler pre-dispatches the command at fire time, so future-you receives the full SOP body from the command manifest. Deterministic, auditable, no improvisation risk. Safety heuristics below (self-contained length + first-person phrasing) are SKIPPED for slash-prefix prompts — the command manifest is authoritative.\n' +
+        '2) FREE-FORM PROMPT — plain natural-language instruction. Use when no slash-command fits, or when the task is ad-hoc. Must obey the hard rules below.\n' +
+        '\n' +
+        'Hard rules (apply to FREE-FORM prompts only; slash-command prompts are exempt):\n' +
         '- Must be SELF-CONTAINED. Future-you has no access to the current chat history, no user in the loop to ask, no memory of today\'s context unless you wrote it here.\n' +
         '- Must be ACTIONABLE and UNAMBIGUOUS. Start with a verb: "Kirim...", "Buat...", "Hitung...", "Cek apakah...".\n' +
         '- Must include everyone/everything referenced by name or id (user_id, chat_id already go in `delivery`; but e.g. agent identity, product names, thresholds — write them here).\n' +
         '- MUST NOT be a copy of the user\'s request verbatim. Rewrite from their perspective ("ingatkan saya") to future-you\'s perspective ("kirim pengingat ke user bahwa ...").\n' +
         '- MUST NOT include delivery channel instructions — those go in the `delivery` field.\n' +
+        '\n' +
         'Examples:\n' +
-        '- User: "Ingatkan saya jam pulang tiap hari kerja jam 17 WIB"\n' +
+        '- Slash-command: `/marky-send with_content testimoni` — recurring marketing send, fully governed by the command\'s SOP.\n' +
+        '- Slash-command: `/marky-report-today` — daily audit summary at EOD.\n' +
+        '- Free-form: User: "Ingatkan saya jam pulang tiap hari kerja jam 17 WIB"\n' +
         '  BAD prompt: "Ingatkan saya jam pulang"\n' +
         '  GOOD prompt: "Kirim pesan pengingat singkat dan ramah bahwa sekarang sudah jam 17:00 WIB — waktunya pulang. Ajak user untuk melakukan tes jam pulang jika itu yang biasanya dia lakukan. Gunakan bahasa santai sesuai gaya chat user sebelumnya."\n' +
-        '- User: "Kalau stok di bawah 10 besok jam 9, buat reminder restock"\n' +
+        '- Free-form: User: "Kalau stok di bawah 10 besok jam 9, buat reminder restock"\n' +
         '  GOOD prompt: "Cek stok produk A di filesystem /stock/current.json. Jika kurang dari 10, panggil cron_create untuk membuat reminder restock esok hari jam 09:00 WIB (cron_expression \\"0 2 * * *\\"). Jika cukup, tidak perlu tindakan."',
       ),
       delivery: z.object({
@@ -139,19 +147,28 @@ export function buildCronCreateTool(
         subject?: CronContext['subject']
       }
 
-      // Safety rails — cheap heuristics that catch the most common "bad prompt" failure modes.
+      // Safety rails — cheap heuristics that catch the most common "bad prompt"
+      // failure modes. INTENTIONALLY skipped for slash-command invocations
+      // (`/slug args…`): those are self-contained by definition — the SOP
+      // body lives in the command manifest, not in the cron prompt — and
+      // they're never written from the user's first-person perspective.
+      // Scheduler pre-dispatches the slash command before composing the cron
+      // preamble, so the agent sees the resolved SOP body at fire time.
       const trimmed = parsed.prompt.trim()
-      if (trimmed.length < 30) {
-        return {
-          success: false,
-          error: 'prompt too short to be self-contained. Expand into a full actionable instruction for future-you — include who, what, and any required context. See the `prompt` field description for examples.',
+      const isSlashCommand = /^\/[A-Za-z0-9][A-Za-z0-9_\-]*/.test(trimmed)
+      if (!isSlashCommand) {
+        if (trimmed.length < 30) {
+          return {
+            success: false,
+            error: 'prompt too short to be self-contained. Expand into a full actionable instruction for future-you — include who, what, and any required context. See the `prompt` field description for examples. (Slash-command prompts like `/slug args` are exempt from this check — they\'re self-contained via the command manifest.)',
+          }
         }
-      }
-      const firstPerson = /^(ingatkan saya|reminder me|remind me|tolong ingatkan|catat untuk saya)\b/i
-      if (firstPerson.test(trimmed)) {
-        return {
-          success: false,
-          error: 'prompt is written from the user\'s perspective ("ingatkan saya..."). Rewrite from future-you\'s perspective as a command — e.g. "Kirim pengingat ke user bahwa ...". See the `prompt` field description.',
+        const firstPerson = /^(ingatkan saya|reminder me|remind me|tolong ingatkan|catat untuk saya)\b/i
+        if (firstPerson.test(trimmed)) {
+          return {
+            success: false,
+            error: 'prompt is written from the user\'s perspective ("ingatkan saya..."). Rewrite from future-you\'s perspective as a command — e.g. "Kirim pengingat ke user bahwa ...". See the `prompt` field description.',
+          }
         }
       }
 

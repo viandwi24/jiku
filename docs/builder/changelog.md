@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-17 — Cron: `cron_create` tool accepts slash-command prompts (skip length + first-person checks)
+
+Field bug discovered while creating a 07:15/08:00 WIB `/marky-send only_content link` cron: `cron_create` rejected with "prompt too short to be self-contained". The 30-char length safety rail was designed to catch under-specified natural-language prompts ("Ingatkan saya jam pulang") — but slash invocations (<30 chars typical) like `/marky-send only_content link` (29 chars) tripped it, even though they're self-contained by definition (SOP body lives in the command manifest, args are parsed by `parseArgs`).
+
+Fix (`apps/studio/server/src/cron/tools.ts::buildCronCreateTool`): detect slash-command prompts via `/^\/[A-Za-z0-9][A-Za-z0-9_\-]*/` and skip the two safety rails when matched:
+- Length check (`< 30 chars`)
+- First-person check (`^(ingatkan saya|remind me|…)`)
+
+Both checks remain in force for natural-language prompts, where they correctly catch under-specified/wrong-perspective inputs.
+
+Also updated the `prompt` field description so agents invoking `cron_create` know slash-command shorthand is valid: *"Slash-command short-hand: `/<slug> <args>` is also valid — the scheduler pre-dispatches the command at fire time so future-you sees the full SOP body from the command manifest."*
+
+Works end-to-end with the previous scheduler pre-dispatch fix: `cron_create` accepts `/marky-send only_content link` → stored verbatim → fire time → scheduler dispatches → agent sees resolved `<active_command>` block with the SOP body → executes.
+
+Files: `apps/studio/server/src/cron/tools.ts`.
+
 ## 2026-04-17 — Cron: slash-command pre-dispatch in scheduler — `/slug …` stored prompts now actually invoke the command
 
 Field bug: a cron task whose stored `prompt` is a slash invocation like `/marky-send only_content link` never triggered the command body. Root cause: the cron scheduler composes the prompt with the `[Cron Trigger]` preamble before handing to `runTaskConversation`, which calls `dispatchSlashCommand` with the full composed input. The dispatcher's first check (`commands/dispatcher.ts:24`) is `trimmed.startsWith('/')` — the trimmed composed input starts with `[Cron Trigger]`, not `/`, so `{ matched: false }` is returned and `/marky-send …` lingers as plain text for the LLM to re-interpret (usually inaccurately).
